@@ -46,6 +46,15 @@ def test_search_request_rejects_non_iso_dates() -> None:
             return_date=None,
         )
 
+    with pytest.raises(ValidationError):
+        SearchRequestV1(
+            schema_version="1",
+            origin="CXR",
+            destination="SGN",
+            departure_date="2026-7-10",
+            return_date=None,
+        )
+
 
 def test_search_request_rejects_string_passenger_counts() -> None:
     with pytest.raises(ValidationError):

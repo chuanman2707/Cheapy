@@ -4,12 +4,19 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
+_YYYY_MM_DD_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
 def _validate_yyyy_mm_dd(value: str) -> str:
+    if not _YYYY_MM_DD_RE.fullmatch(value):
+        raise ValueError("Date must use YYYY-MM-DD format")
+
     try:
         datetime.strptime(value, "%Y-%m-%d")
     except ValueError as exc:
