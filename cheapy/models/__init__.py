@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from importlib import import_module
 from typing import Any
 
 _CONTRACT_EXPORTS = {
@@ -35,13 +36,13 @@ def __getattr__(name: str) -> Any:
         raise AttributeError(f"module 'cheapy.models' has no attribute {name!r}")
 
     try:
-        from cheapy.models import contracts
+        contracts = import_module("cheapy.models.contracts")
     except ModuleNotFoundError as exc:
-        if exc.name == "cheapy.models.contracts":
-            raise AttributeError(
-                f"{name!r} is unavailable until cheapy.models.contracts is created"
-            ) from exc
-        raise
+        if exc.name != "cheapy.models.contracts":
+            raise
+        raise ImportError(
+            f"{name!r} is unavailable until cheapy.models.contracts is created"
+        ) from exc
 
     value = getattr(contracts, name)
     globals()[name] = value
