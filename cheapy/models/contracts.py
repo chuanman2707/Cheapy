@@ -5,9 +5,9 @@ from __future__ import annotations
 from datetime import datetime
 from enum import StrEnum
 import re
-from typing import Any, Literal, TypeVar
+from typing import Any, Literal, Self, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 EnumT = TypeVar("EnumT", bound=StrEnum)
@@ -378,3 +378,19 @@ class SearchResponseV1(StrictModel):
     @classmethod
     def validate_status(cls, value: Any) -> Any:
         return _coerce_str_enum(SearchStatus, value)
+
+    @model_validator(mode="after")
+    def validate_currency_group_offer_ids(self) -> Self:
+        offer_ids = {offer.offer_id for offer in self.offers}
+        missing_offer_ids = [
+            offer_id
+            for group in self.currency_groups
+            for offer_id in group.offer_ids
+            if offer_id not in offer_ids
+        ]
+        if missing_offer_ids:
+            raise ValueError(
+                "currency_groups reference missing offer_ids: "
+                + ", ".join(missing_offer_ids)
+            )
+        return self

@@ -233,6 +233,37 @@ def test_response_uses_offers_as_canonical_source() -> None:
     assert response.candidates is None
 
 
+def test_search_response_rejects_currency_group_missing_offer_id() -> None:
+    with pytest.raises(ValidationError, match="missing"):
+        SearchResponseV1.model_validate(
+            {
+                "schema_version": "1",
+                "status": "success",
+                "request_id": "req_123",
+                "offers": [],
+                "warnings": [],
+                "errors": [],
+                "provider_statuses": [],
+                "search_plan": {
+                    "search_mode": "exact",
+                    "planned_candidate_count": 0,
+                    "executed_candidate_count": 0,
+                    "planned_provider_call_count": 0,
+                    "executed_provider_call_count": 0,
+                    "candidate_count_by_family": {},
+                    "provider_call_count_by_family": {},
+                    "truncated": False,
+                    "truncated_families": [],
+                    "candidate_families": [],
+                },
+                "mixed_currency": False,
+                "currency_groups": [{"currency": "USD", "offer_ids": ["missing"]}],
+                "currency_notes": [],
+                "candidates": None,
+            }
+        )
+
+
 def test_search_response_rejects_top_level_search_mode() -> None:
     with pytest.raises(ValidationError):
         SearchResponseV1(
