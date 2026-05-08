@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 
 import typer
 
 from cheapy import __version__
+from cheapy.models import SearchRequestV1, SearchResponseV1
 
 app = typer.Typer(
     help="Cheapy flight-search MCP utilities.",
@@ -42,6 +44,16 @@ def doctor() -> None:
     typer.echo(f"version: {__version__}")
     typer.echo(f"executable: {executable}")
     typer.echo("status: ok")
+
+
+@app.command()
+def schema() -> None:
+    """Export public contract JSON schemas."""
+    schemas = {
+        "SearchRequestV1": SearchRequestV1.model_json_schema(),
+        "SearchResponseV1": SearchResponseV1.model_json_schema(),
+    }
+    typer.echo(json.dumps(schemas, indent=2, sort_keys=True))
 
 
 @app.command()
