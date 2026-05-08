@@ -5,11 +5,12 @@ from __future__ import annotations
 from datetime import datetime
 from enum import StrEnum
 import re
-from typing import Any, Literal
+from typing import Any, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
+EnumT = TypeVar("EnumT", bound=StrEnum)
 _YYYY_MM_DD_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
@@ -25,12 +26,42 @@ def _validate_yyyy_mm_dd(value: str) -> str:
 
 
 def _validate_iso_like_datetime(value: str) -> str:
+    if len(value) <= 10 or value[10] not in {"T", " "}:
+        raise ValueError(
+            "Date-time must include a time component, for example 2026-07-10T09:00:00"
+        )
+
     try:
         datetime.fromisoformat(value)
     except ValueError as exc:
         raise ValueError(
             "Date-time must be ISO-like, for example 2026-07-10T09:00:00"
         ) from exc
+    return value
+
+
+def _coerce_str_enum(enum_type: type[EnumT], value: Any) -> Any:
+    if isinstance(value, enum_type):
+        return value
+    if isinstance(value, str):
+        try:
+            return enum_type(value)
+        except ValueError:
+            return value
+    return value
+
+
+def _coerce_str_enum_list(enum_type: type[EnumT], value: Any) -> Any:
+    if isinstance(value, list):
+        return [_coerce_str_enum(enum_type, item) for item in value]
+    return value
+
+
+def _coerce_str_enum_dict_keys(enum_type: type[EnumT], value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            _coerce_str_enum(enum_type, key): count for key, count in value.items()
+        }
     return value
 
 
@@ -136,6 +167,11 @@ class SearchRequestV1(StrictModel):
             return None
         return _validate_yyyy_mm_dd(value)
 
+    @field_validator("search_mode", mode="before")
+    @classmethod
+    def validate_search_mode(cls, value: Any) -> Any:
+        return _coerce_str_enum(SearchMode, value)
+
 
 class WarningV1(StrictModel):
     """Machine-readable warning."""
@@ -146,6 +182,16 @@ class WarningV1(StrictModel):
     details: dict[str, Any] = Field(default_factory=dict)
     retryable: bool = False
 
+    @field_validator("code", mode="before")
+    @classmethod
+    def validate_code(cls, value: Any) -> Any:
+        return _coerce_str_enum(WarningCode, value)
+
+    @field_validator("severity", mode="before")
+    @classmethod
+    def validate_severity(cls, value: Any) -> Any:
+        return _coerce_str_enum(Severity, value)
+
 
 class ErrorV1(StrictModel):
     """Machine-readable error."""
@@ -155,6 +201,16 @@ class ErrorV1(StrictModel):
     message_en: str = Field(min_length=1)
     details: dict[str, Any] = Field(default_factory=dict)
     retryable: bool = False
+
+    @field_validator("code", mode="before")
+    @classmethod
+    def validate_code(cls, value: Any) -> Any:
+        return _coerce_str_enum(ErrorCode, value)
+
+    @field_validator("severity", mode="before")
+    @classmethod
+    def validate_severity(cls, value: Any) -> Any:
+        return _coerce_str_enum(Severity, value)
 
 
 class SearchPlanV1(StrictModel):
@@ -171,6 +227,25 @@ class SearchPlanV1(StrictModel):
     truncated_families: list[CandidateFamily]
     candidate_families: list[CandidateFamily]
 
+    @field_validator("search_mode", mode="before")
+    @classmethod
+    def validate_search_mode(cls, value: Any) -> Any:
+        return _coerce_str_enum(SearchMode, value)
+
+    @field_validator(
+        "candidate_count_by_family",
+        "provider_call_count_by_family",
+        mode="before",
+    )
+    @classmethod
+    def validate_candidate_family_keys(cls, value: Any) -> Any:
+        return _coerce_str_enum_dict_keys(CandidateFamily, value)
+
+    @field_validator("truncated_families", "candidate_families", mode="before")
+    @classmethod
+    def validate_candidate_family_list(cls, value: Any) -> Any:
+        return _coerce_str_enum_list(CandidateFamily, value)
+
 
 class ProviderStatusV1(StrictModel):
     """Provider execution status."""
@@ -186,6 +261,11 @@ class ProviderStatusV1(StrictModel):
     warnings: list[WarningV1] = Field(default_factory=list)
     errors: list[ErrorV1] = Field(default_factory=list)
     retryable: bool = False
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def validate_status(cls, value: Any) -> Any:
+        return _coerce_str_enum(ProviderStatusCode, value)
 
 
 class OfferFlagsV1(StrictModel):
@@ -293,3 +373,8 @@ class SearchResponseV1(StrictModel):
     currency_groups: list[CurrencyGroupV1] = Field(default_factory=list)
     currency_notes: list[str] = Field(default_factory=list)
     candidates: list[AirportCandidateV1] | None = None
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def validate_status(cls, value: Any) -> Any:
+        return _coerce_str_enum(SearchStatus, value)

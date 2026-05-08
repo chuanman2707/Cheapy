@@ -36,6 +36,21 @@ def test_search_request_defaults_to_exact_mode_and_one_adult() -> None:
     assert request.max_results == 5
 
 
+def test_search_request_accepts_enum_strings_from_parsed_dict() -> None:
+    request = SearchRequestV1.model_validate(
+        {
+            "schema_version": "1",
+            "origin": "CXR",
+            "destination": "SGN",
+            "departure_date": "2026-07-10",
+            "return_date": None,
+            "search_mode": "exact",
+        }
+    )
+
+    assert request.search_mode == SearchMode.EXACT
+
+
 def test_search_request_rejects_non_iso_dates() -> None:
     with pytest.raises(ValidationError):
         SearchRequestV1(
@@ -56,6 +71,44 @@ def test_search_request_rejects_non_iso_dates() -> None:
         )
 
 
+def test_search_plan_accepts_candidate_family_strings_from_parsed_dict() -> None:
+    plan = SearchPlanV1.model_validate(
+        {
+            "search_mode": "expanded",
+            "planned_candidate_count": 3,
+            "executed_candidate_count": 2,
+            "planned_provider_call_count": 3,
+            "executed_provider_call_count": 2,
+            "candidate_count_by_family": {
+                "exact": 1,
+                "flexible_dates": 2,
+            },
+            "provider_call_count_by_family": {
+                "exact": 1,
+                "flexible_dates": 2,
+            },
+            "truncated": True,
+            "truncated_families": ["flexible_dates"],
+            "candidate_families": ["exact", "flexible_dates"],
+        }
+    )
+
+    assert plan.search_mode == SearchMode.EXPANDED
+    assert plan.candidate_count_by_family == {
+        CandidateFamily.EXACT: 1,
+        CandidateFamily.FLEXIBLE_DATES: 2,
+    }
+    assert plan.provider_call_count_by_family == {
+        CandidateFamily.EXACT: 1,
+        CandidateFamily.FLEXIBLE_DATES: 2,
+    }
+    assert plan.truncated_families == [CandidateFamily.FLEXIBLE_DATES]
+    assert plan.candidate_families == [
+        CandidateFamily.EXACT,
+        CandidateFamily.FLEXIBLE_DATES,
+    ]
+
+
 def test_search_request_rejects_string_passenger_counts() -> None:
     with pytest.raises(ValidationError):
         SearchRequestV1(
@@ -65,6 +118,30 @@ def test_search_request_rejects_string_passenger_counts() -> None:
             departure_date="2026-07-10",
             return_date=None,
             passengers={"adults": "1"},
+        )
+
+
+def test_flight_leg_rejects_date_only_times() -> None:
+    with pytest.raises(ValidationError):
+        FlightLegV1(
+            origin="SGN",
+            destination="BKK",
+            departure_time="2026-07-10",
+            arrival_time="2026-07-10T10:30:00",
+            airline_code="VN",
+            flight_number="VN601",
+            duration_minutes=90,
+        )
+
+    with pytest.raises(ValidationError):
+        FlightLegV1(
+            origin="SGN",
+            destination="BKK",
+            departure_time="2026-07-10T09:00:00",
+            arrival_time="2026-07-10",
+            airline_code="VN",
+            flight_number="VN601",
+            duration_minutes=90,
         )
 
 
