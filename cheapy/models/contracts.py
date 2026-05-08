@@ -152,13 +152,35 @@ class SearchRequestV1(StrictModel):
     """Input contract for `search_cheapest_flights`."""
 
     schema_version: Literal["1"]
-    origin: str = Field(min_length=1)
-    destination: str = Field(min_length=1)
-    departure_date: str
-    return_date: str | None = None
-    search_mode: SearchMode = SearchMode.EXACT
-    passengers: PassengersV1 = Field(default_factory=PassengersV1)
-    max_results: int = Field(default=5, ge=1, le=20)
+    origin: str = Field(
+        min_length=1,
+        description="Origin airport, city, or IATA code to search from.",
+    )
+    destination: str = Field(
+        min_length=1,
+        description="Destination airport, city, or IATA code to search to.",
+    )
+    departure_date: str = Field(
+        description="Outbound departure date in YYYY-MM-DD format."
+    )
+    return_date: str | None = Field(
+        default=None,
+        description="Optional return date in YYYY-MM-DD format for round trips.",
+    )
+    search_mode: SearchMode = Field(
+        default=SearchMode.EXACT,
+        description="Search breadth to use, either exact request matching or expanded candidates.",
+    )
+    passengers: PassengersV1 = Field(
+        default_factory=PassengersV1,
+        description="Passenger counts for adults, children, and infants.",
+    )
+    max_results: int = Field(
+        default=5,
+        ge=1,
+        le=20,
+        description="Maximum number of flight offers to return.",
+    )
 
     @field_validator("departure_date", "return_date")
     @classmethod
@@ -364,15 +386,33 @@ class SearchResponseV1(StrictModel):
     schema_version: Literal["1"]
     status: SearchStatus
     request_id: str = Field(min_length=1)
-    offers: list[FlightOfferV1]
-    warnings: list[WarningV1] = Field(default_factory=list)
-    errors: list[ErrorV1] = Field(default_factory=list)
-    provider_statuses: list[ProviderStatusV1] = Field(default_factory=list)
-    search_plan: SearchPlanV1
-    mixed_currency: bool
-    currency_groups: list[CurrencyGroupV1] = Field(default_factory=list)
-    currency_notes: list[str] = Field(default_factory=list)
-    candidates: list[AirportCandidateV1] | None = None
+    offers: list[FlightOfferV1] = Field(
+        description="Canonical ranked flight offers returned for the request."
+    )
+    warnings: list[WarningV1] = Field(
+        description="Non-fatal warnings produced while planning or executing the search."
+    )
+    errors: list[ErrorV1] = Field(
+        description="Fatal or provider-level errors produced during the search."
+    )
+    provider_statuses: list[ProviderStatusV1] = Field(
+        description="Per-provider execution status and call accounting."
+    )
+    search_plan: SearchPlanV1 = Field(
+        description="Executed candidate plan and search budget accounting."
+    )
+    mixed_currency: bool = Field(
+        description="Whether returned offers contain more than one currency."
+    )
+    currency_groups: list[CurrencyGroupV1] = Field(
+        description="Offer identifiers grouped by currency for comparison."
+    )
+    currency_notes: list[str] = Field(
+        description="Human-readable notes about currency comparison limitations."
+    )
+    candidates: list[AirportCandidateV1] | None = Field(
+        description="Airport clarification candidates when the request needs disambiguation, otherwise null."
+    )
 
     @field_validator("status", mode="before")
     @classmethod
