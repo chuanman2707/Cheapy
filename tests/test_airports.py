@@ -194,3 +194,118 @@ def test_select_hub_candidates_returns_missing_coordinates_when_no_hub_can_be_ev
 
     assert result.candidates == []
     assert result.reason == "missing_airport_coordinates"
+
+
+def test_select_hub_candidates_limits_candidates_to_one() -> None:
+    result = select_hub_candidates("SGN", "LHR", max_candidates=1)
+
+    assert result.reason is None
+    assert len(result.candidates) == 1
+
+
+@pytest.mark.parametrize("max_candidates", [0, -1])
+def test_select_hub_candidates_rejects_non_positive_max_candidates(max_candidates: int) -> None:
+    with pytest.raises(ValueError, match="max_candidates"):
+        select_hub_candidates("SGN", "LHR", max_candidates=max_candidates)
+
+
+def test_select_hub_candidates_sorts_by_tier_detour_ratio_and_iata() -> None:
+    airport_source = AirportSourceV1(
+        name="test",
+        url="https://example.test",
+        license="test",
+        notes="test",
+    )
+    airport_catalog = AirportCatalog(
+        AirportSnapshotV1(
+            version=1,
+            generated_at="2026-05-09",
+            source=airport_source,
+            airports=[
+                AirportV1(iata="AAA", name="A", city="A", country="A", latitude=0.0, longitude=0.0),
+                AirportV1(iata="BBB", name="B", city="B", country="B", latitude=0.0, longitude=100.0),
+                AirportV1(iata="CCC", name="C", city="C", country="C", latitude=30.0, longitude=50.0),
+                AirportV1(iata="DDD", name="D", city="D", country="D", latitude=0.0, longitude=50.0),
+                AirportV1(iata="EEE", name="E", city="E", country="E", latitude=0.0, longitude=50.0),
+                AirportV1(iata="FFF", name="F", city="F", country="F", latitude=0.0, longitude=50.0),
+            ],
+        )
+    )
+    hub_catalog = HubCatalog(
+        HubSnapshotV1(
+            version=1,
+            generated_at="2026-05-09",
+            source=HubSourceV1(
+                name="test",
+                url="https://example.test",
+                license="test",
+                attribution="test",
+                notes="test",
+            ),
+            hubs=[
+                HubV1(iata="CCC", tier=1),
+                HubV1(iata="FFF", tier=1),
+                HubV1(iata="DDD", tier=2),
+                HubV1(iata="EEE", tier=1),
+            ],
+        )
+    )
+
+    result = select_hub_candidates(
+        "AAA",
+        "BBB",
+        airport_catalog=airport_catalog,
+        hub_catalog=hub_catalog,
+        short_route_threshold_km=1,
+    )
+
+    assert [candidate.iata for candidate in result.candidates] == ["EEE", "FFF", "CCC"]
+
+
+def test_select_hub_candidates_skips_origin_and_destination_when_they_are_hubs() -> None:
+    airport_source = AirportSourceV1(
+        name="test",
+        url="https://example.test",
+        license="test",
+        notes="test",
+    )
+    airport_catalog = AirportCatalog(
+        AirportSnapshotV1(
+            version=1,
+            generated_at="2026-05-09",
+            source=airport_source,
+            airports=[
+                AirportV1(iata="AAA", name="A", city="A", country="A", latitude=0.0, longitude=0.0),
+                AirportV1(iata="BBB", name="B", city="B", country="B", latitude=0.0, longitude=100.0),
+                AirportV1(iata="CCC", name="C", city="C", country="C", latitude=0.0, longitude=50.0),
+            ],
+        )
+    )
+    hub_catalog = HubCatalog(
+        HubSnapshotV1(
+            version=1,
+            generated_at="2026-05-09",
+            source=HubSourceV1(
+                name="test",
+                url="https://example.test",
+                license="test",
+                attribution="test",
+                notes="test",
+            ),
+            hubs=[
+                HubV1(iata="AAA", tier=1),
+                HubV1(iata="CCC", tier=1),
+                HubV1(iata="BBB", tier=1),
+            ],
+        )
+    )
+
+    result = select_hub_candidates(
+        "AAA",
+        "BBB",
+        airport_catalog=airport_catalog,
+        hub_catalog=hub_catalog,
+        short_route_threshold_km=1,
+    )
+
+    assert [candidate.iata for candidate in result.candidates] == ["CCC"]

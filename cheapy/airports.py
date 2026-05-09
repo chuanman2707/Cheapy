@@ -169,6 +169,9 @@ def select_hub_candidates(
     short_route_threshold_km: float = 1500.0,
     max_detour_ratio: float = 1.8,
 ) -> HubSelectionResult:
+    if max_candidates < 1:
+        raise ValueError("max_candidates must be greater than or equal to 1")
+
     airports = airport_catalog or load_airport_catalog()
     hubs = hub_catalog or load_hub_catalog()
 
