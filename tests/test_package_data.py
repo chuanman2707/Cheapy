@@ -10,20 +10,31 @@ def test_built_wheel_can_load_packaged_airport_data(tmp_path: Path) -> None:
     dist_dir.mkdir()
 
     subprocess.run(
-        ["uv", "build", "--wheel", "--out-dir", str(dist_dir)],
+        [
+            "uv",
+            "build",
+            "--wheel",
+            "--no-build-isolation",
+            "--offline",
+            "--no-index",
+            "--out-dir",
+            str(dist_dir),
+        ],
         check=True,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
 
-    wheel = next(dist_dir.glob("*.whl"))
+    wheels = list(dist_dir.glob("*.whl"))
+    assert len(wheels) == 1
+    wheel = wheels[0]
     venv_dir = tmp_path / "venv"
     subprocess.run([sys.executable, "-m", "venv", str(venv_dir)], check=True)
 
     python = venv_dir / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
     subprocess.run(
-        [str(python), "-m", "pip", "install", str(wheel)],
+        [str(python), "-m", "pip", "install", "--no-index", "--no-deps", str(wheel)],
         check=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
