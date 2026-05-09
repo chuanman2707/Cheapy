@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "generated_at": "2026-05-09",
+  "source": {
+    "name": "Wikipedia List of hub airports",
+    "url": "https://en.wikipedia.org/wiki/List_of_hub_airports",
+    "license": "CC BY-SA",
+    "attribution": "Manual curated excerpt from Wikipedia List of hub airports, accessed 2026-05-09. Cheapy stores only selected IATA codes and local MVP tiers.",
+    "notes": "Tier values are Cheapy MVP routing priorities, not Wikipedia data."
+  },
+  "hubs": [
+    {"iata": "SIN", "tier": 1},
+    {"iata": "DOH", "tier": 1},
+    {"iata": "DXB", "tier": 1},
+    {"iata": "ICN", "tier": 1},
+    {"iata": "NRT", "tier": 1},
+    {"iata": "LHR", "tier": 1},
+    {"iata": "FRA", "tier": 1},
+    {"iata": "BKK", "tier": 2},
+    {"iata": "KUL", "tier": 2},
+    {"iata": "TPE", "tier": 2},
+    {"iata": "HKG", "tier": 2},
+    {"iata": "CDG", "tier": 2},
+    {"iata": "LAX", "tier": 2},
+    {"iata": "SFO", "tier": 2},
+    {"iata": "JFK", "tier": 3},
+    {"iata": "SYD", "tier": 3},
+    {"iata": "MEL", "tier": 3}
+  ]
+}
