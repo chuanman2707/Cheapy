@@ -62,9 +62,14 @@ def test_airport_snapshot_contains_exact_mvp_airports() -> None:
     codes = {airport["iata"] for airport in airports}
 
     assert codes == EXPECTED_AIRPORTS
-    assert snapshot["version"] == 1
-    assert snapshot["source"]["name"] == "OurAirports"
-    assert snapshot["source"]["license"] == "public domain"
+    assert snapshot["schema_version"] == 1
+    assert snapshot["source_name"] == "OurAirports"
+    assert snapshot["source_url"] == "https://ourairports.com/data/"
+    assert snapshot["source_license"] == "public domain / no guarantee of accuracy"
+    assert snapshot["retrieved_date"] == "2026-05-09"
+    assert snapshot["generation_method"] == "manual mini snapshot for Gate 2 MVP"
+    assert snapshot["snapshot_version"] == 1
+    assert "data dictionary" in snapshot["notes"].lower()
 
 
 def test_airports_have_required_coordinates() -> None:
@@ -87,7 +92,24 @@ def test_hub_snapshot_contains_exact_mvp_tiers() -> None:
     tiers = {hub["iata"]: hub["tier"] for hub in hubs}
 
     assert tiers == EXPECTED_HUB_TIERS
-    assert snapshot["version"] == 1
-    assert snapshot["source"]["name"] == "Wikipedia List of hub airports"
-    assert "CC BY-SA" in snapshot["source"]["license"]
-    assert "accessed" in snapshot["source"]["attribution"].lower()
+    assert snapshot["schema_version"] == 1
+    assert snapshot["source_name"] == "Wikipedia List of hub airports"
+    assert snapshot["source_url"] == "https://en.wikipedia.org/wiki/List_of_hub_airports"
+    assert (
+        snapshot["source_revision_url"]
+        == "https://en.wikipedia.org/w/index.php?oldid=1344170237&title=List_of_hub_airports"
+    )
+    assert snapshot["retrieved_date"] == "2026-05-09"
+    assert "CC BY-SA" in snapshot["license_name"]
+    assert snapshot["license_url"] == "https://creativecommons.org/licenses/by-sa/4.0/"
+    assert "Wikipedia contributors" in snapshot["attribution"]
+    assert "oldid=1344170237" in snapshot["attribution"]
+    assert "manual curated excerpt" in snapshot["modification_notice"].lower()
+    assert "modified local tiering" in snapshot["modification_notice"].lower()
+    assert snapshot["selection_method"] == "manual curated excerpt for MVP routing experiments"
+    assert snapshot["snapshot_version"] == 1
+    assert "tier" in snapshot["notes"].lower()
+
+    for hub in hubs:
+        assert isinstance(hub["source_note"], str)
+        assert hub["source_note"]

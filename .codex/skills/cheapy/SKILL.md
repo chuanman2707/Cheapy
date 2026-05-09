@@ -24,11 +24,15 @@ Use these aliases only when the user's meaning is clear.
 | sân bay cam ranh | CXR |
 | sài gòn | SGN |
 | sai gon | SGN |
+| saigon | SGN |
+| tphcm | SGN |
 | tp hcm | SGN |
 | ho chi minh | SGN |
+| ho chi minh city | SGN |
 | hồ chí minh | SGN |
 | hà nội | HAN |
 | ha noi | HAN |
+| hanoi | HAN |
 | nội bài | HAN |
 | noi bai | HAN |
 | đà nẵng | DAD |

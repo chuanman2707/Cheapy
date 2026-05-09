@@ -1,12 +1,13 @@
 {
+  "schema_version": 1,
+  "source_name": "OurAirports",
+  "source_url": "https://ourairports.com/data/",
+  "source_license": "public domain / no guarantee of accuracy",
+  "retrieved_date": "2026-05-09",
+  "generation_method": "manual mini snapshot for Gate 2 MVP",
+  "snapshot_version": 1,
+  "notes": "Manual mini snapshot derived from OurAirports airport data for Gate 2 MVP coverage. See https://ourairports.com/help/data-dictionary.html for the data dictionary. OurAirports publishes the data as public domain with no guarantee of accuracy.",
   "version": 1,
-  "generated_at": "2026-05-09",
-  "source": {
-    "name": "OurAirports",
-    "url": "https://ourairports.com/data/",
-    "license": "public domain",
-    "notes": "Manual mini snapshot derived from OurAirports airport data for Gate 2 MVP coverage."
-  },
   "airports": [
     {"iata": "CXR", "name": "Cam Ranh International Airport", "city": "Nha Trang", "country": "Vietnam", "latitude": 11.9982, "longitude": 109.2194},
     {"iata": "SGN", "name": "Tan Son Nhat International Airport", "city": "Ho Chi Minh City", "country": "Vietnam", "latitude": 10.8188, "longitude": 106.6520},

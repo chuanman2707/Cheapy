@@ -32,18 +32,17 @@ class AirportV1(_StrictDataModel):
     longitude: float | None = None
 
 
-class AirportSourceV1(_StrictDataModel):
-    name: str
-    url: str
-    license: str
-    notes: str
-
-
 class AirportSnapshotV1(_StrictDataModel):
-    version: Literal[1]
-    generated_at: str
-    source: AirportSourceV1
+    schema_version: Literal[1]
+    source_name: str
+    source_url: str
+    source_license: str
+    retrieved_date: str
+    generation_method: str
+    snapshot_version: int
+    notes: str
     airports: list[AirportV1]
+    version: Literal[1] | None = None
 
 
 HubSelectionReason = Literal[
@@ -53,24 +52,27 @@ HubSelectionReason = Literal[
 ]
 
 
-class HubSourceV1(_StrictDataModel):
-    name: str
-    url: str
-    license: str
-    attribution: str
-    notes: str
-
-
 class HubV1(_StrictDataModel):
     iata: str = Field(min_length=3, max_length=3)
     tier: int = Field(ge=1, le=3)
+    source_note: str
 
 
 class HubSnapshotV1(_StrictDataModel):
-    version: Literal[1]
-    generated_at: str
-    source: HubSourceV1
+    schema_version: Literal[1]
+    source_name: str
+    source_url: str
+    source_revision_url: str
+    retrieved_date: str
+    license_name: str
+    license_url: str
+    attribution: str
+    modification_notice: str
+    selection_method: str
+    snapshot_version: int
+    notes: str
     hubs: list[HubV1]
+    version: Literal[1] | None = None
 
 
 class AirportCatalog:

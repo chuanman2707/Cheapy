@@ -6,17 +6,47 @@ from cheapy.airports import (
     AirportCatalog,
     AirportNotFound,
     AirportSnapshotV1,
-    AirportSourceV1,
     AirportV1,
     HubCatalog,
     HubSnapshotV1,
-    HubSourceV1,
     HubV1,
     haversine_km,
     load_airport_catalog,
     resolve_airport,
     select_hub_candidates,
 )
+
+
+def _airport_snapshot(airports: list[AirportV1]) -> AirportSnapshotV1:
+    return AirportSnapshotV1(
+        schema_version=1,
+        source_name="test",
+        source_url="https://example.test",
+        source_license="test",
+        retrieved_date="2026-05-09",
+        generation_method="test",
+        snapshot_version=1,
+        notes="test",
+        airports=airports,
+    )
+
+
+def _hub_snapshot(hubs: list[HubV1]) -> HubSnapshotV1:
+    return HubSnapshotV1(
+        schema_version=1,
+        source_name="test",
+        source_url="https://example.test",
+        source_revision_url="https://example.test/revision",
+        retrieved_date="2026-05-09",
+        license_name="test",
+        license_url="https://example.test/license",
+        attribution="test",
+        modification_notice="test",
+        selection_method="test",
+        snapshot_version=1,
+        notes="test",
+        hubs=hubs,
+    )
 
 
 def test_load_airport_catalog_indexes_by_iata() -> None:
@@ -77,17 +107,8 @@ def test_select_hub_candidates_returns_no_hub_when_detour_filter_rejects_all() -
 
 
 def test_select_hub_candidates_returns_missing_coordinates_before_short_route_check() -> None:
-    airport_source = AirportSourceV1(
-        name="test",
-        url="https://example.test",
-        license="test",
-        notes="test",
-    )
     airport_catalog = AirportCatalog(
-        AirportSnapshotV1(
-            version=1,
-            generated_at="2026-05-09",
-            source=airport_source,
+        _airport_snapshot(
             airports=[
                 AirportV1(
                     iata="AAA",
@@ -109,18 +130,7 @@ def test_select_hub_candidates_returns_missing_coordinates_before_short_route_ch
         )
     )
     hub_catalog = HubCatalog(
-        HubSnapshotV1(
-            version=1,
-            generated_at="2026-05-09",
-            source=HubSourceV1(
-                name="test",
-                url="https://example.test",
-                license="test",
-                attribution="test",
-                notes="test",
-            ),
-            hubs=[HubV1(iata="BBB", tier=1)],
-        )
+        _hub_snapshot(hubs=[HubV1(iata="BBB", tier=1, source_note="test")])
     )
 
     result = select_hub_candidates("AAA", "BBB", airport_catalog=airport_catalog, hub_catalog=hub_catalog)
@@ -130,17 +140,8 @@ def test_select_hub_candidates_returns_missing_coordinates_before_short_route_ch
 
 
 def test_select_hub_candidates_returns_missing_coordinates_when_no_hub_can_be_evaluated() -> None:
-    airport_source = AirportSourceV1(
-        name="test",
-        url="https://example.test",
-        license="test",
-        notes="test",
-    )
     airport_catalog = AirportCatalog(
-        AirportSnapshotV1(
-            version=1,
-            generated_at="2026-05-09",
-            source=airport_source,
+        _airport_snapshot(
             airports=[
                 AirportV1(
                     iata="AAA",
@@ -170,18 +171,7 @@ def test_select_hub_candidates_returns_missing_coordinates_when_no_hub_can_be_ev
         )
     )
     hub_catalog = HubCatalog(
-        HubSnapshotV1(
-            version=1,
-            generated_at="2026-05-09",
-            source=HubSourceV1(
-                name="test",
-                url="https://example.test",
-                license="test",
-                attribution="test",
-                notes="test",
-            ),
-            hubs=[HubV1(iata="CCC", tier=1)],
-        )
+        _hub_snapshot(hubs=[HubV1(iata="CCC", tier=1, source_note="test")])
     )
 
     result = select_hub_candidates(
@@ -210,17 +200,8 @@ def test_select_hub_candidates_rejects_non_positive_max_candidates(max_candidate
 
 
 def test_select_hub_candidates_sorts_by_tier_detour_ratio_and_iata() -> None:
-    airport_source = AirportSourceV1(
-        name="test",
-        url="https://example.test",
-        license="test",
-        notes="test",
-    )
     airport_catalog = AirportCatalog(
-        AirportSnapshotV1(
-            version=1,
-            generated_at="2026-05-09",
-            source=airport_source,
+        _airport_snapshot(
             airports=[
                 AirportV1(iata="AAA", name="A", city="A", country="A", latitude=0.0, longitude=0.0),
                 AirportV1(iata="BBB", name="B", city="B", country="B", latitude=0.0, longitude=100.0),
@@ -232,21 +213,12 @@ def test_select_hub_candidates_sorts_by_tier_detour_ratio_and_iata() -> None:
         )
     )
     hub_catalog = HubCatalog(
-        HubSnapshotV1(
-            version=1,
-            generated_at="2026-05-09",
-            source=HubSourceV1(
-                name="test",
-                url="https://example.test",
-                license="test",
-                attribution="test",
-                notes="test",
-            ),
+        _hub_snapshot(
             hubs=[
-                HubV1(iata="CCC", tier=1),
-                HubV1(iata="FFF", tier=1),
-                HubV1(iata="DDD", tier=2),
-                HubV1(iata="EEE", tier=1),
+                HubV1(iata="CCC", tier=1, source_note="test"),
+                HubV1(iata="FFF", tier=1, source_note="test"),
+                HubV1(iata="DDD", tier=2, source_note="test"),
+                HubV1(iata="EEE", tier=1, source_note="test"),
             ],
         )
     )
@@ -263,17 +235,8 @@ def test_select_hub_candidates_sorts_by_tier_detour_ratio_and_iata() -> None:
 
 
 def test_select_hub_candidates_skips_origin_and_destination_when_they_are_hubs() -> None:
-    airport_source = AirportSourceV1(
-        name="test",
-        url="https://example.test",
-        license="test",
-        notes="test",
-    )
     airport_catalog = AirportCatalog(
-        AirportSnapshotV1(
-            version=1,
-            generated_at="2026-05-09",
-            source=airport_source,
+        _airport_snapshot(
             airports=[
                 AirportV1(iata="AAA", name="A", city="A", country="A", latitude=0.0, longitude=0.0),
                 AirportV1(iata="BBB", name="B", city="B", country="B", latitude=0.0, longitude=100.0),
@@ -282,20 +245,11 @@ def test_select_hub_candidates_skips_origin_and_destination_when_they_are_hubs()
         )
     )
     hub_catalog = HubCatalog(
-        HubSnapshotV1(
-            version=1,
-            generated_at="2026-05-09",
-            source=HubSourceV1(
-                name="test",
-                url="https://example.test",
-                license="test",
-                attribution="test",
-                notes="test",
-            ),
+        _hub_snapshot(
             hubs=[
-                HubV1(iata="AAA", tier=1),
-                HubV1(iata="CCC", tier=1),
-                HubV1(iata="BBB", tier=1),
+                HubV1(iata="AAA", tier=1, source_note="test"),
+                HubV1(iata="CCC", tier=1, source_note="test"),
+                HubV1(iata="BBB", tier=1, source_note="test"),
             ],
         )
     )
