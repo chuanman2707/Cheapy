@@ -46,6 +46,33 @@ class AirportSnapshotV1(_StrictDataModel):
     airports: list[AirportV1]
 
 
+HubSelectionReason = Literal[
+    "route_too_short",
+    "no_hub_passed_detour_filter",
+    "missing_airport_coordinates",
+]
+
+
+class HubSourceV1(_StrictDataModel):
+    name: str
+    url: str
+    license: str
+    attribution: str
+    notes: str
+
+
+class HubV1(_StrictDataModel):
+    iata: str = Field(min_length=3, max_length=3)
+    tier: int = Field(ge=1, le=3)
+
+
+class HubSnapshotV1(_StrictDataModel):
+    version: Literal[1]
+    generated_at: str
+    source: HubSourceV1
+    hubs: list[HubV1]
+
+
 class AirportCatalog:
     def __init__(self, snapshot: AirportSnapshotV1) -> None:
         self.snapshot = snapshot
@@ -57,6 +84,25 @@ class AirportCatalog:
         if airport is None:
             raise AirportNotFound(value)
         return airport
+
+
+class HubCatalog:
+    def __init__(self, snapshot: HubSnapshotV1) -> None:
+        self.snapshot = snapshot
+        self.hubs_by_iata = {hub.iata: hub for hub in snapshot.hubs}
+
+
+class HubCandidate(_StrictDataModel):
+    iata: str
+    tier: int
+    origin_to_hub_km: float
+    hub_to_destination_km: float
+    detour_ratio: float
+
+
+class HubSelectionResult(_StrictDataModel):
+    candidates: list[HubCandidate]
+    reason: HubSelectionReason | None = None
 
 
 def _load_json_resource(name: str) -> dict:
@@ -74,9 +120,23 @@ def load_airport_catalog() -> AirportCatalog:
     return AirportCatalog(load_airport_snapshot())
 
 
+@lru_cache(maxsize=1)
+def load_hub_snapshot() -> HubSnapshotV1:
+    return HubSnapshotV1.model_validate(_load_json_resource("hubs.v1.json"))
+
+
+@lru_cache(maxsize=1)
+def load_hub_catalog() -> HubCatalog:
+    return HubCatalog(load_hub_snapshot())
+
+
 def resolve_airport(value: str, catalog: AirportCatalog | None = None) -> AirportV1:
     active_catalog = catalog or load_airport_catalog()
     return active_catalog.resolve(value)
+
+
+def _has_coordinates(airport: AirportV1) -> bool:
+    return airport.latitude is not None and airport.longitude is not None
 
 
 def haversine_km(origin: AirportV1, destination: AirportV1) -> float:
@@ -97,3 +157,70 @@ def haversine_km(origin: AirportV1, destination: AirportV1) -> float:
     )
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return radius_km * c
+
+
+def select_hub_candidates(
+    origin_iata: str,
+    destination_iata: str,
+    *,
+    max_candidates: int = 3,
+    airport_catalog: AirportCatalog | None = None,
+    hub_catalog: HubCatalog | None = None,
+    short_route_threshold_km: float = 1500.0,
+    max_detour_ratio: float = 1.8,
+) -> HubSelectionResult:
+    airports = airport_catalog or load_airport_catalog()
+    hubs = hub_catalog or load_hub_catalog()
+
+    origin = airports.resolve(origin_iata)
+    destination = airports.resolve(destination_iata)
+
+    if not _has_coordinates(origin) or not _has_coordinates(destination):
+        return HubSelectionResult(candidates=[], reason="missing_airport_coordinates")
+
+    direct_distance = haversine_km(origin, destination)
+    if direct_distance < short_route_threshold_km:
+        return HubSelectionResult(candidates=[], reason="route_too_short")
+
+    candidates: list[HubCandidate] = []
+    evaluated_hubs = 0
+    skipped_missing_coordinates = 0
+
+    for hub in hubs.snapshot.hubs:
+        if hub.iata in {origin.iata, destination.iata}:
+            continue
+
+        try:
+            hub_airport = airports.resolve(hub.iata)
+        except AirportNotFound:
+            skipped_missing_coordinates += 1
+            continue
+
+        if not _has_coordinates(hub_airport):
+            skipped_missing_coordinates += 1
+            continue
+
+        evaluated_hubs += 1
+        origin_to_hub = haversine_km(origin, hub_airport)
+        hub_to_destination = haversine_km(hub_airport, destination)
+        detour_ratio = (origin_to_hub + hub_to_destination) / direct_distance
+
+        if detour_ratio <= max_detour_ratio:
+            candidates.append(
+                HubCandidate(
+                    iata=hub.iata,
+                    tier=hub.tier,
+                    origin_to_hub_km=round(origin_to_hub, 2),
+                    hub_to_destination_km=round(hub_to_destination, 2),
+                    detour_ratio=round(detour_ratio, 4),
+                )
+            )
+
+    candidates.sort(key=lambda candidate: (candidate.tier, candidate.detour_ratio, candidate.iata))
+    selected = candidates[:max_candidates]
+
+    if selected:
+        return HubSelectionResult(candidates=selected, reason=None)
+    if evaluated_hubs == 0 and skipped_missing_coordinates:
+        return HubSelectionResult(candidates=[], reason="missing_airport_coordinates")
+    return HubSelectionResult(candidates=[], reason="no_hub_passed_detour_filter")
