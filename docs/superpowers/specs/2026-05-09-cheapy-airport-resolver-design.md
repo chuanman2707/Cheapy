@@ -32,7 +32,7 @@ Gate 2 includes:
 - resolver tests
 - distance tests
 - hub selector tests
-- Cheapy-specific project-local agent skill at `.codex/skills/cheapy-flight-search/SKILL.md`
+- Cheapy-specific project-local agent skill at `.codex/skills/cheapy/SKILL.md`
 - Contract schema description updates for `origin` and `destination`
 
 Gate 2 excludes:
@@ -89,12 +89,15 @@ Gate 2 does not write a generator script. Instead, `cheapy/data/README.md` must 
 
 The hub source is a manual curated excerpt from Wikipedia's List of hub airports.
 
-This is a pragmatic MVP data source, not a perfect global hub authority. The file must include provenance and attribution notes:
+This is a pragmatic MVP reference, not a perfect global hub authority. Gate 2 does not redistribute article prose or table text. `hubs.v1.json` stores Cheapy-curated factual IATA/tier decisions after consulting the Wikipedia page. Because Wikipedia article text is reusable only under its open-content license terms, the hub data file and README must still keep concrete provenance and attribution metadata:
 
 - source name: Wikipedia List of hub airports
 - source URL: `https://en.wikipedia.org/wiki/List_of_hub_airports`
+- permanent revision URL or oldid used for curation
 - retrieved date
-- license/attribution note
+- license name and license URL
+- attribution text naming Wikipedia contributors
+- modified/excerpted notice
 - selection method: manual curated excerpt for MVP routing experiments
 - tier policy
 
@@ -170,8 +173,12 @@ Required metadata:
 - `schema_version`
 - `source_name`
 - `source_url`
+- `source_revision_url`
 - `retrieved_date`
-- `license_note`
+- `license_name`
+- `license_url`
+- `attribution`
+- `modification_notice`
 - `selection_method`
 - `snapshot_version`
 - `notes`
@@ -189,6 +196,8 @@ Tier policy:
 - Tier 3: `JFK`, `SYD`, `MEL`
 
 Every hub IATA code must exist in `airports.v1.json`.
+
+Tests must enforce the exact hub tier mapping, not only that the listed hubs are present.
 
 ## Python Module
 
@@ -302,6 +311,15 @@ Gate 2 does not use distance for nearby-airport expansion.
 - returns no candidates with reason `no_hub_passed_detour_filter` when no hub passes the filter
 - returns no candidates with reason `missing_airport_coordinates` if required coordinates are unavailable
 
+Failure precedence:
+
+1. Resolve origin and destination first. Invalid or unknown origin/destination raises `AirportNotFound`.
+2. If origin or destination lacks coordinates, return empty candidates with `missing_airport_coordinates`.
+3. Compute direct distance and apply the short-route threshold.
+4. Evaluate hubs. A hub missing coordinates is skipped.
+5. If every otherwise-eligible hub is skipped because of missing coordinates and no candidate can be evaluated deterministically, return `missing_airport_coordinates`.
+6. If hubs are evaluated but none pass the detour filter, return `no_hub_passed_detour_filter`.
+
 Reason codes in Gate 2:
 
 - `route_too_short`
@@ -315,8 +333,10 @@ The selector does not create split-ticket searches and does not call providers.
 Gate 2 adds:
 
 ```text
-.codex/skills/cheapy-flight-search/SKILL.md
+.codex/skills/cheapy/SKILL.md
 ```
+
+This is the canonical Cheapy skill path. It preserves compatibility with the master spec's future installer target. The skill name may be `cheapy-flight-search` in YAML frontmatter if that improves discovery, but the file path remains `.codex/skills/cheapy/SKILL.md`.
 
 The skill must explicitly state:
 
@@ -348,7 +368,8 @@ Gate 2 test coverage must include:
 - required hub fields exist
 - airport IATA codes are unique
 - every hub IATA exists in the airport snapshot
-- exact Gate 2 airport list is present
+- `set(airport_iata)` exactly equals the Gate 2 airport list with no extras
+- hub tier mapping exactly equals the Gate 2 tier policy
 
 ### Resolver
 
@@ -373,6 +394,7 @@ Gate 2 test coverage must include:
 - detour ratio filter is enforced
 - no passing hubs returns `no_hub_passed_detour_filter`
 - missing coordinate case returns `missing_airport_coordinates`
+- resolver errors, coordinate errors, short-route filtering, and detour filtering follow the documented failure precedence
 
 ### Contract Description
 
@@ -383,20 +405,27 @@ Gate 2 test coverage must include:
 
 ### Cheapy Skill
 
-- `.codex/skills/cheapy-flight-search/SKILL.md` exists
+- `.codex/skills/cheapy/SKILL.md` exists
 - skill says Cheapy only accepts IATA codes
 - skill contains the required Vietnam aliases
 - skill does not contain aliases for airports outside the Gate 2 snapshot
 
 ### Package
 
-- airport and hub JSON are included in package/wheel resources
+- `uv build --wheel` succeeds
+- the built wheel contains `cheapy/data/airports.v1.json`
+- the built wheel contains `cheapy/data/hubs.v1.json`
+- the built wheel contains `cheapy/data/README.md`
+- an installed wheel can load the airport and hub JSON through `importlib.resources`
+- resources should be loaded through `importlib.resources.files("cheapy").joinpath("data", ...)`; `cheapy/data/__init__.py` is not required
 
 ## Acceptance Criteria
 
 Gate 2 is complete when:
 
 - `uv run pytest -v` passes
+- `uv build --wheel` passes
+- package-data tests prove airport and hub JSON are present in the wheel
 - `uv run cheapy schema | uv run python -m json.tool` passes
 - no live network access is required
 - no provider code is added
