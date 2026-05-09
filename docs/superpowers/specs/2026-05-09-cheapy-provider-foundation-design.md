@@ -49,6 +49,8 @@ The approved Gate 3 approach is provider foundation plus a deterministic fixture
 
 Gate 3 intentionally does not return full `SearchResponseV1` objects from provider calls. That translation belongs to a later orchestrator gate. Provider calls return provider-level data, mainly valid `FlightOfferV1` objects plus controlled warning or error information.
 
+Gate 3 intentionally establishes `exact_one_way` as the stable first capability string. The master spec used `exact_search` as an early example, but Gate 3 uses the narrower name because the fixture provider only supports one-way exact-date searches.
+
 ## Code Layout
 
 Gate 3 adds:
@@ -98,6 +100,61 @@ The provider-level result must include:
 - errors
 
 For a supported fixture request, `manual_fixture` returns valid `FlightOfferV1` objects. For unsupported input, it returns a controlled provider-level failure.
+
+Gate 3 adds these provider-local models in `cheapy.providers.base`:
+
+```text
+ProviderExactOneWayRequest
+ProviderResult
+```
+
+`ProviderExactOneWayRequest` has:
+
+- `origin`
+- `destination`
+- `departure_date`
+- `passengers`
+
+`passengers` reuses the existing `PassengersV1` model.
+
+`ProviderResult` has:
+
+- `provider_name: str`
+- `capability: str`
+- `status: ProviderStatusCode`
+- `offers: list[FlightOfferV1]`
+- `warnings: list[WarningV1]`
+- `errors: list[ErrorV1]`
+- `duration_ms: int`
+- `retryable: bool`
+
+`ProviderResult` reuses the existing Contract V1 models:
+
+- `ProviderStatusCode`
+- `FlightOfferV1`
+- `WarningV1`
+- `ErrorV1`
+
+`ProviderStatusV1` is not returned directly by provider calls in Gate 3. A later orchestrator gate will convert one or more `ProviderResult` values into `ProviderStatusV1` and `SearchResponseV1`.
+
+For unsupported fixture input, `manual_fixture` returns:
+
+- `status = ProviderStatusCode.FAILED`
+- `offers = []`
+- `warnings = []`
+- one `ErrorV1`
+
+The unsupported-input error uses:
+
+- `code = ErrorCode.PROVIDER_FAILED`
+- `severity = Severity.ERROR`
+- `message_en = "No manual fixture exists for the requested route/date."`
+- `details.provider = "manual_fixture"`
+- `details.capability = "exact_one_way"`
+- `details.origin`
+- `details.destination`
+- `details.departure_date`
+- `retryable = false`
 
 ## Provider Manifest
 
@@ -170,6 +227,45 @@ cheapy providers test
 
 The provider commands may support `--human` if the implementation plan chooses to mirror `cheapy doctor`, but JSON output is the default and required behavior.
 
+`cheapy providers list` success output is:
+
+```json
+{
+  "status": "ok",
+  "providers": [
+    {
+      "name": "manual_fixture",
+      "display_name": "Manual fixture provider",
+      "default_enabled": true,
+      "enabled": true,
+      "capabilities": ["exact_one_way"]
+    }
+  ]
+}
+```
+
+On success, exit code is `0`, stdout contains the JSON object, and stderr is empty.
+
+`cheapy providers test` success output is:
+
+```json
+{
+  "status": "ok",
+  "providers_tested": 1,
+  "providers": [
+    {
+      "name": "manual_fixture",
+      "capability": "exact_one_way",
+      "status": "success",
+      "offer_count": 2,
+      "error_count": 0
+    }
+  ]
+}
+```
+
+On success, exit code is `0`, stdout contains the JSON object, and stderr is empty.
+
 ## Error Behavior
 
 If no provider manifests are found, provider commands return a clear JSON error.
@@ -181,6 +277,26 @@ If `manual_fixture` receives unsupported input, it returns a controlled provider
 If a provider raises an unexpected exception during `cheapy providers test`, the command catches it and reports a failed provider check in JSON.
 
 Successful CLI commands keep stdout as JSON and avoid stderr. Failed CLI commands write structured JSON errors to stderr, matching the existing CLI style.
+
+Failed provider CLI commands use the existing CLI error shape:
+
+```json
+{
+  "error": true,
+  "code": "ERROR_CODE",
+  "message": "Human-readable English message.",
+  "suggestion": "Specific next step."
+}
+```
+
+For failed provider CLI commands, stdout is empty and stderr contains the JSON error.
+
+Required failure cases:
+
+- no manifests found: exit `1`, code `NO_PROVIDER_AVAILABLE`
+- invalid manifest: exit `1`, code `PROVIDER_MANIFEST_INVALID`
+- provider test returns a provider-level failure: exit `1`, code `PROVIDER_TEST_FAILED`
+- provider test raises an unexpected exception: exit `1`, code `PROVIDER_TEST_ERROR`
 
 ## Tests
 
@@ -198,6 +314,10 @@ Gate 3 tests cover:
 - `cheapy providers list` returns valid JSON
 - `cheapy providers test` returns valid JSON
 - `cheapy mcp` remains blocked with the existing contract-gate error
+- `uv build --wheel` includes `cheapy/providers/manual_fixture/manifest.toml`
+- an installed wheel can discover the provider manifest through package resources
+- an installed wheel can run `cheapy providers list`
+- an installed wheel can run `cheapy providers test`
 
 Default verification remains:
 
@@ -219,6 +339,9 @@ Gate 3 is complete when:
 - `uv run pytest -v` passes
 - `uv run cheapy providers list` succeeds
 - `uv run cheapy providers test` succeeds
+- `uv build --wheel` succeeds
+- the built wheel contains `cheapy/providers/manual_fixture/manifest.toml`
+- an installed wheel can discover and test `manual_fixture`
 - `manual_fixture` is discovered from packaged resources
 - `manual_fixture` is enabled by default
 - `manual_fixture` returns fixed valid offers for the approved fixture route
