@@ -53,4 +53,4 @@ assert airports["version"] == 1
 assert hubs["version"] == 1
 assert "OurAirports" in readme
 """
-    subprocess.run([str(python), "-c", script], check=True)
+    subprocess.run([str(python), "-c", script], check=True, cwd=tmp_path)
