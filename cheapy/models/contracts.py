@@ -154,11 +154,11 @@ class SearchRequestV1(StrictModel):
     schema_version: Literal["1"]
     origin: str = Field(
         min_length=1,
-        description="Origin airport, city, or IATA code to search from.",
+        description="Origin airport as a 3-letter IATA code. Cheapy tools only accept IATA codes.",
     )
     destination: str = Field(
         min_length=1,
-        description="Destination airport, city, or IATA code to search to.",
+        description="Destination airport as a 3-letter IATA code. Cheapy tools only accept IATA codes.",
     )
     departure_date: str = Field(
         description="Outbound departure date in YYYY-MM-DD format."

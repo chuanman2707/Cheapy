@@ -71,3 +71,19 @@ def test_schema_describes_key_public_fields() -> None:
         "candidates",
     ]:
         assert response_properties[field_name]["description"]
+
+
+def test_search_request_schema_documents_iata_only_airports() -> None:
+    result = runner.invoke(app, ["schema"])
+
+    assert result.exit_code == 0
+    exported = json.loads(result.output)
+
+    request_properties = exported["SearchRequestV1"]["properties"]
+    origin_description = request_properties["origin"]["description"]
+    destination_description = request_properties["destination"]["description"]
+
+    assert "IATA" in origin_description
+    assert "IATA" in destination_description
+    assert "city" not in origin_description.lower()
+    assert "city" not in destination_description.lower()
