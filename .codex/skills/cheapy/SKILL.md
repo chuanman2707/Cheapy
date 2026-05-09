@@ -11,6 +11,8 @@ Cheapy tools only accept IATA airport codes. Always pass origin and destination 
 
 The agent is responsible for understanding the user's sentence and converting clear airport aliases to IATA before calling Cheapy. Do not pass city names, airport names, or Vietnamese aliases into Cheapy tools.
 
+Cheapy runtime does not resolve Vietnamese aliases.
+
 ## Vietnamese Airport Aliases
 
 Use these aliases only when the user's meaning is clear.

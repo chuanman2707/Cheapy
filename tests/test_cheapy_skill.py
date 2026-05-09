@@ -22,8 +22,33 @@ REQUIRED_ALIASES = {
 }
 
 
+def _frontmatter(text: str) -> dict[str, str]:
+    lines = text.splitlines()
+
+    assert lines[0] == "---"
+    closing_index = lines.index("---", 1)
+
+    entries: dict[str, str] = {}
+    for line in lines[1:closing_index]:
+        key, value = line.split(":", maxsplit=1)
+        entries[key] = value.strip()
+
+    return entries
+
+
 def test_cheapy_skill_exists_in_project_local_path() -> None:
     assert SKILL_PATH.exists()
+
+
+def test_cheapy_skill_has_valid_yaml_frontmatter() -> None:
+    text = SKILL_PATH.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    frontmatter = _frontmatter(text)
+
+    assert lines[0] == "---"
+    assert lines.index("---", 1) > 0
+    assert frontmatter["name"] == "cheapy-flight-search"
+    assert frontmatter["description"].startswith("Use when")
 
 
 def test_cheapy_skill_explicitly_says_tools_accept_iata_only() -> None:
@@ -47,4 +72,5 @@ def test_cheapy_skill_does_not_claim_runtime_resolves_aliases() -> None:
     text = SKILL_PATH.read_text(encoding="utf-8").lower()
 
     assert "the agent is responsible" in text
+    assert "cheapy runtime does not resolve vietnamese aliases" in text
     assert "cheapy runtime resolves vietnamese aliases" not in text
