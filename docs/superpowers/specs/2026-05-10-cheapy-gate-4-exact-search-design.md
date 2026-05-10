@@ -94,11 +94,11 @@ These helpers remain private in Gate 4.
 
 `search_exact(request)` runs this flow:
 
-1. Resolve `request.origin` and `request.destination` with the existing airport catalog. The resolver accepts known IATA codes only.
+1. Resolve `request.origin` and `request.destination` with the existing airport catalog. The resolver accepts known IATA codes only and normalizes accepted values with `strip().upper()`.
 2. Check Gate 4 scope. `request.search_mode` must be `exact`, and `request.return_date` must be `None`.
 3. Load enabled providers with `load_enabled_providers()`.
 4. Keep providers that expose the `exact_one_way` capability.
-5. Build a `ProviderExactOneWayRequest` from origin, destination, departure date, and passengers.
+5. Build a `ProviderExactOneWayRequest` from resolved origin IATA, resolved destination IATA, departure date, and passengers. Do not pass raw request airport strings to providers.
 6. Call each exact one-way provider.
 7. Convert each provider result into `ProviderStatusV1`.
 8. Collect offers, warnings, and errors.
@@ -144,9 +144,9 @@ If more than one currency appears, keep deterministic ordering without implying 
 2. `price_amount`
 3. `offer_id`
 
-`mixed_currency` is `True` when more than one currency appears. `currency_groups` lists offer IDs grouped by currency. `currency_notes` includes a note that no currency conversion was applied.
+`mixed_currency` is `True` when more than one currency appears. `currency_groups` always includes one group per returned currency and is empty only when there are no offers. `currency_notes` includes a note that no currency conversion was applied when currencies are mixed.
 
-For the approved `manual_fixture` acceptance path, the response contains VND offers only, `mixed_currency=False`, and no currency notes.
+For the approved `manual_fixture` acceptance path, the response contains VND offers only, `mixed_currency=False`, one VND currency group containing both offer IDs, and no currency notes.
 
 ## Error Handling
 
@@ -180,6 +180,8 @@ The error details include `unsupported_reason`. This avoids adding a new Contrac
 
 If no enabled provider is loaded, or no enabled provider supports `exact_one_way`, return `NO_PROVIDER_AVAILABLE`.
 
+If `load_enabled_providers()` raises `ProviderManifestError` or `ProviderLoadError`, return `NO_PROVIDER_AVAILABLE`. The error details include `registry_error_type` and do not include a traceback. The orchestrator treats registry load failures as runtime search failures because no usable provider set can be constructed.
+
 ### Provider-Level Failure
 
 If a provider returns a failed `ProviderResult`, preserve its errors in both the provider status and the top-level response.
@@ -201,6 +203,8 @@ Gate 4 request IDs are deterministic to keep tests stable. The format is:
 exact:{origin}:{destination}:{departure_date}:{search_mode}:{adults}:{children}:{infants_on_lap}:{infants_in_seat}:{max_results}
 ```
 
+`origin` and `destination` in the request ID use the resolved IATA values, not the raw request strings.
+
 No randomness is needed in Gate 4.
 
 ## Tests
@@ -212,6 +216,7 @@ Expected test coverage:
 - successful `manual_fixture` exact one-way search returns `SearchResponseV1(status="success")`
 - successful response contains two VND offers for `CXR` to `SGN` on `2026-07-10`
 - offers are sorted and respect `max_results`
+- VND-only success includes one `CurrencyGroupV1(currency="VND")` with returned offer IDs
 - `search_plan` contains exact-family counts only
 - `provider_statuses` contains one successful `manual_fixture` status
 - unsupported route/date returns `status="failed"` and preserves the provider error
@@ -219,6 +224,7 @@ Expected test coverage:
 - expanded search returns failed response with `NO_PROVIDER_AVAILABLE`
 - round-trip request returns failed response with `NO_PROVIDER_AVAILABLE`
 - no enabled providers returns failed response with `NO_PROVIDER_AVAILABLE`
+- registry manifest/load errors return failed response with `NO_PROVIDER_AVAILABLE`
 - provider exception returns failed response with `PROVIDER_FAILED`
 - mixed-currency grouping uses a fake provider result
 
@@ -244,6 +250,7 @@ Gate 4 is complete when:
 - provider failures and warnings are preserved
 - exact search plan accounting is deterministic
 - currency groups are deterministic
+- provider requests and request IDs use resolved IATA values
 - no CLI search command is added
 - MCP remains outside scope
 - no network calls are introduced
