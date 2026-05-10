@@ -326,6 +326,40 @@ def test_search_exact_provider_exception_becomes_provider_failed(
     assert response.provider_statuses[0].status == ProviderStatusCode.FAILED
 
 
+def test_search_exact_malformed_provider_return_becomes_provider_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class MalformedProvider:
+        name = "malformed_provider"
+        capabilities = ("exact_one_way",)
+
+        async def search_exact_one_way(
+            self,
+            request: ProviderExactOneWayRequest,
+        ) -> dict[str, str]:
+            return {"raw_provider_payload": "secret payload must not leak"}
+
+    monkeypatch.setattr(
+        "cheapy.search.load_enabled_providers",
+        lambda: [MalformedProvider()],
+    )
+
+    response = search_exact(_request())
+
+    assert response.status == SearchStatus.FAILED
+    assert response.offers == []
+    assert response.errors[0].code == ErrorCode.PROVIDER_FAILED
+    assert response.errors[0].details == {
+        "provider": "malformed_provider",
+        "capability": "exact_one_way",
+        "exception_type": "ValidationError",
+    }
+    assert response.provider_statuses[0].status == ProviderStatusCode.FAILED
+    assert response.provider_statuses[0].errors == response.errors
+    assert "secret payload" not in response.model_dump_json()
+    assert "raw_provider_payload" not in response.model_dump_json()
+
+
 def test_search_exact_returns_partial_when_offers_and_provider_errors_exist(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -380,6 +414,56 @@ def test_search_exact_returns_partial_when_offers_and_provider_errors_exist(
     ]
     assert response.search_plan.planned_provider_call_count == 2
     assert response.search_plan.executed_provider_call_count == 2
+
+
+def test_search_exact_synthesizes_error_for_failed_provider_without_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    success = ProviderResult(
+        provider_name="success_provider",
+        capability="exact_one_way",
+        status=ProviderStatusCode.SUCCESS,
+        offers=[
+            _offer(
+                offer_id="success:offer-1",
+                provider="success_provider",
+                currency="USD",
+                price_amount=100.0,
+            )
+        ],
+        warnings=[],
+        errors=[],
+        duration_ms=3,
+        retryable=False,
+    )
+    silent_failure = ProviderResult(
+        provider_name="silent_failure",
+        capability="exact_one_way",
+        status=ProviderStatusCode.FAILED,
+        offers=[],
+        warnings=[],
+        errors=[],
+        duration_ms=4,
+        retryable=False,
+    )
+
+    monkeypatch.setattr(
+        "cheapy.search.load_enabled_providers",
+        lambda: [_ProviderFromResult(success), _ProviderFromResult(silent_failure)],
+    )
+
+    response = search_exact(_request())
+
+    assert response.status == SearchStatus.PARTIAL
+    assert [offer.offer_id for offer in response.offers] == ["success:offer-1"]
+    assert len(response.errors) == 1
+    assert response.errors[0].code == ErrorCode.PROVIDER_FAILED
+    assert response.errors[0].details == {
+        "provider": "silent_failure",
+        "capability": "exact_one_way",
+        "provider_status": "failed",
+    }
+    assert response.provider_statuses[1].errors == response.errors
 
 
 def test_search_exact_groups_mixed_currency_offers(

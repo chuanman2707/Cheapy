@@ -39,7 +39,12 @@ _MIXED_CURRENCY_NOTE = (
 
 
 def search_exact(request: SearchRequestV1) -> SearchResponseV1:
-    """Run Gate 4 exact one-way search and return a Contract V1 response."""
+    """Run Gate 4 exact one-way search and return a Contract V1 response.
+
+    This Gate 4 API is intentionally sync-only. It crosses into provider async
+    code with ``asyncio.run()``, so callers must invoke it outside an active
+    event loop; future async hosts should dispatch it from a worker thread.
+    """
     fallback_origin = _normalize_airport_value(request.origin)
     fallback_destination = _normalize_airport_value(request.destination)
     fallback_request_id = _request_id(request, fallback_origin, fallback_destination)
@@ -172,18 +177,67 @@ async def _call_providers(
     results: list[ProviderResult] = []
     for provider in providers:
         try:
-            results.append(await provider.search_exact_one_way(request))
+            raw_result = await provider.search_exact_one_way(request)
+            results.append(_normalize_provider_result(provider, raw_result))
         except Exception as exc:
             results.append(_provider_exception_result(provider, exc))
     return results
+
+
+def _normalize_provider_result(
+    provider: FlightProvider,
+    raw_result: object,
+) -> ProviderResult:
+    try:
+        result = ProviderResult.model_validate(raw_result)
+    except Exception as exc:
+        return _provider_malformed_result(provider, exc)
+
+    if result.status != ProviderStatusCode.SUCCESS and not result.errors:
+        error = _provider_status_error(result)
+        return result.model_copy(update={"errors": [error]})
+
+    return result
+
+
+def _provider_malformed_result(
+    provider: FlightProvider,
+    exc: Exception,
+) -> ProviderResult:
+    return _provider_failed_result(
+        provider_name=provider.name,
+        message_en="Provider returned an invalid exact one-way result.",
+        details={
+            "provider": provider.name,
+            "capability": _EXACT_CAPABILITY,
+            "exception_type": type(exc).__name__,
+        },
+    )
 
 
 def _provider_exception_result(
     provider: FlightProvider,
     exc: Exception,
 ) -> ProviderResult:
-    return ProviderResult(
+    return _provider_failed_result(
         provider_name=provider.name,
+        message_en="Provider raised an unexpected exception.",
+        details={
+            "provider": provider.name,
+            "capability": _EXACT_CAPABILITY,
+            "exception_type": type(exc).__name__,
+        },
+    )
+
+
+def _provider_failed_result(
+    *,
+    provider_name: str,
+    message_en: str,
+    details: dict[str, object],
+) -> ProviderResult:
+    return ProviderResult(
+        provider_name=provider_name,
         capability=_EXACT_CAPABILITY,
         status=ProviderStatusCode.FAILED,
         offers=[],
@@ -191,16 +245,24 @@ def _provider_exception_result(
         errors=[
             _error(
                 code=ErrorCode.PROVIDER_FAILED,
-                message_en="Provider raised an unexpected exception.",
-                details={
-                    "provider": provider.name,
-                    "capability": _EXACT_CAPABILITY,
-                    "exception_type": type(exc).__name__,
-                },
+                message_en=message_en,
+                details=details,
             )
         ],
         duration_ms=0,
         retryable=False,
+    )
+
+
+def _provider_status_error(result: ProviderResult) -> ErrorV1:
+    return _error(
+        code=ErrorCode.PROVIDER_FAILED,
+        message_en="Provider returned a non-success status without an error.",
+        details={
+            "provider": result.provider_name,
+            "capability": result.capability,
+            "provider_status": result.status.value,
+        },
     )
 
 
