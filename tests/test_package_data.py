@@ -66,12 +66,23 @@ assert 'name = "manual_fixture"' in manifest
 """
     subprocess.run([str(python), "-c", resource_script], check=True, cwd=tmp_path)
 
+    origin_script = f"""
+from pathlib import Path
+import cheapy
+
+repo_package = Path({str(Path(__file__).parents[1] / "cheapy")!r}).resolve()
+installed_package = Path(cheapy.__file__).resolve()
+assert not installed_package.is_relative_to(repo_package), installed_package
+"""
+    subprocess.run([str(python), "-c", origin_script], check=True, cwd=tmp_path)
+
     list_result = subprocess.run(
         [str(python), "-m", "cheapy", "providers", "list"],
         check=True,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        cwd=tmp_path,
     )
     assert list_result.stderr == ""
     assert json.loads(list_result.stdout)["providers"][0]["name"] == "manual_fixture"
@@ -82,6 +93,7 @@ assert 'name = "manual_fixture"' in manifest
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        cwd=tmp_path,
     )
     assert test_result.stderr == ""
     assert json.loads(test_result.stdout)["providers_tested"] == 1
