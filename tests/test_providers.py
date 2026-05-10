@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import socket
 
 import pytest
 from pydantic import ValidationError
@@ -204,6 +205,38 @@ def test_manual_fixture_returns_controlled_failure_for_unsupported_input() -> No
         "departure_date": "2026-07-10",
     }
     assert error.retryable is False
+
+
+def test_manual_fixture_does_not_open_network_socket(monkeypatch: pytest.MonkeyPatch) -> None:
+    def raise_on_socket(*args: object, **kwargs: object) -> None:
+        raise AssertionError("manual_fixture provider must not open network sockets")
+
+    provider = create_provider()
+    success_request = ProviderExactOneWayRequest(
+        origin="CXR",
+        destination="SGN",
+        departure_date="2026-07-10",
+    )
+    unsupported_request = ProviderExactOneWayRequest(
+        origin="HAN",
+        destination="SGN",
+        departure_date="2026-07-10",
+    )
+
+    loop = asyncio.new_event_loop()
+    try:
+        monkeypatch.setattr(socket, "socket", raise_on_socket)
+        success_result = loop.run_until_complete(
+            provider.search_exact_one_way(success_request)
+        )
+        unsupported_result = loop.run_until_complete(
+            provider.search_exact_one_way(unsupported_request)
+        )
+    finally:
+        loop.close()
+
+    assert success_result.status == ProviderStatusCode.SUCCESS
+    assert unsupported_result.status == ProviderStatusCode.FAILED
 
 
 def test_load_provider_wraps_missing_factory(monkeypatch: pytest.MonkeyPatch) -> None:

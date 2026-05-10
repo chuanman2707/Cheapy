@@ -260,10 +260,6 @@ def providers_test(
         raise typer.Exit(code=1)
 
     if any(report["status"] != ProviderStatusCode.SUCCESS.value for report in reports):
-        if human:
-            _echo_provider_human_report(reports, status="failed")
-            raise typer.Exit(code=1)
-
         _json_echo(
             _error_payload(
                 "PROVIDER_TEST_FAILED",

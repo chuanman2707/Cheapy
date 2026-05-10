@@ -173,12 +173,13 @@ def test_providers_test_human_prints_failure_report(monkeypatch) -> None:
     result = runner.invoke(app, ["providers", "test", "--human"])
 
     assert result.exit_code == 1
-    assert result.stderr == ""
-    assert result.stdout == (
-        "Cheapy providers test\n"
-        "manual_fixture exact_one_way: failed (offers: 0, errors: 1)\n"
-        "status: failed\n"
-    )
+    assert result.stdout == ""
+    assert json.loads(result.stderr) == {
+        "error": True,
+        "code": "PROVIDER_TEST_FAILED",
+        "message": "One or more provider checks failed.",
+        "suggestion": "Run 'cheapy providers test --human' for a concise provider report.",
+    }
 
 
 def test_providers_list_reports_no_manifests(monkeypatch) -> None:
