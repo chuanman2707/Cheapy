@@ -130,6 +130,57 @@ def test_providers_test_prints_json() -> None:
     }
 
 
+def test_providers_test_human_prints_success_report() -> None:
+    result = runner.invoke(app, ["providers", "test", "--human"])
+
+    assert result.exit_code == 0
+    assert result.stderr == ""
+    assert result.stdout == (
+        "Cheapy providers test\n"
+        "manual_fixture exact_one_way: success (offers: 2, errors: 0)\n"
+        "status: ok\n"
+    )
+
+
+def test_providers_test_human_prints_failure_report(monkeypatch) -> None:
+    class FailingProvider:
+        name = "manual_fixture"
+        capabilities = ("exact_one_way",)
+
+        async def search_exact_one_way(
+            self,
+            request: ProviderExactOneWayRequest,
+        ) -> ProviderResult:
+            return ProviderResult(
+                provider_name=self.name,
+                capability="exact_one_way",
+                status=ProviderStatusCode.FAILED,
+                offers=[],
+                warnings=[],
+                errors=[
+                    ErrorV1(
+                        code=ErrorCode.PROVIDER_FAILED,
+                        severity=Severity.ERROR,
+                        message_en="Provider fixture failed.",
+                    )
+                ],
+                duration_ms=0,
+                retryable=False,
+            )
+
+    monkeypatch.setattr("cheapy.cli.load_enabled_providers", lambda: [FailingProvider()])
+
+    result = runner.invoke(app, ["providers", "test", "--human"])
+
+    assert result.exit_code == 1
+    assert result.stderr == ""
+    assert result.stdout == (
+        "Cheapy providers test\n"
+        "manual_fixture exact_one_way: failed (offers: 0, errors: 1)\n"
+        "status: failed\n"
+    )
+
+
 def test_providers_list_reports_no_manifests(monkeypatch) -> None:
     monkeypatch.setattr("cheapy.cli.discover_provider_manifests", lambda: [])
 

@@ -204,7 +204,13 @@ def providers_list() -> None:
 
 
 @providers_app.command("test")
-def providers_test() -> None:
+def providers_test(
+    human: bool = typer.Option(
+        False,
+        "--human",
+        help="Print a concise human-readable provider report.",
+    ),
+) -> None:
     """Run packaged provider smoke checks."""
     try:
         providers = load_enabled_providers()
@@ -254,6 +260,10 @@ def providers_test() -> None:
         raise typer.Exit(code=1)
 
     if any(report["status"] != ProviderStatusCode.SUCCESS.value for report in reports):
+        if human:
+            _echo_provider_human_report(reports, status="failed")
+            raise typer.Exit(code=1)
+
         _json_echo(
             _error_payload(
                 "PROVIDER_TEST_FAILED",
@@ -264,6 +274,10 @@ def providers_test() -> None:
         )
         raise typer.Exit(code=1)
 
+    if human:
+        _echo_provider_human_report(reports, status="ok")
+        return
+
     _json_echo(
         {
             "status": "ok",
@@ -271,6 +285,16 @@ def providers_test() -> None:
             "providers": reports,
         }
     )
+
+
+def _echo_provider_human_report(reports: list[dict[str, Any]], *, status: str) -> None:
+    typer.echo("Cheapy providers test")
+    for report in reports:
+        typer.echo(
+            f"{report['name']} {report['capability']}: {report['status']} "
+            f"(offers: {report['offer_count']}, errors: {report['error_count']})"
+        )
+    typer.echo(f"status: {status}")
 
 
 async def _run_provider_checks(providers: list[Any]) -> list[dict[str, Any]]:
