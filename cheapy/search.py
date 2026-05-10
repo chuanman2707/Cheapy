@@ -193,6 +193,7 @@ def _normalize_provider_result(
     except Exception as exc:
         return _provider_malformed_result(provider, exc)
 
+    result = result.model_copy(update={"capability": _EXACT_CAPABILITY})
     if result.status != ProviderStatusCode.SUCCESS and not result.errors:
         error = _provider_status_error(result)
         return result.model_copy(update={"errors": [error]})

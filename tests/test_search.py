@@ -466,6 +466,38 @@ def test_search_exact_synthesizes_error_for_failed_provider_without_errors(
     assert response.provider_statuses[1].errors == response.errors
 
 
+def test_search_exact_normalizes_provider_status_capability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = ProviderResult(
+        provider_name="wrong_capability_provider",
+        capability="wrong_capability",
+        status=ProviderStatusCode.SUCCESS,
+        offers=[
+            _offer(
+                offer_id="wrong-capability:offer-1",
+                provider="wrong_capability_provider",
+                currency="USD",
+                price_amount=100.0,
+            )
+        ],
+        warnings=[],
+        errors=[],
+        duration_ms=3,
+        retryable=False,
+    )
+
+    monkeypatch.setattr(
+        "cheapy.search.load_enabled_providers",
+        lambda: [_ProviderFromResult(result)],
+    )
+
+    response = search_exact(_request())
+
+    assert response.status == SearchStatus.SUCCESS
+    assert response.provider_statuses[0].capability == "exact_one_way"
+
+
 def test_search_exact_groups_mixed_currency_offers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
