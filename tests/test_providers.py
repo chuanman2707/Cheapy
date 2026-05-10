@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from pydantic import ValidationError
 
@@ -10,6 +12,7 @@ from cheapy.models import (
     ProviderStatusCode,
     Severity,
 )
+from cheapy.providers.manual_fixture.provider import create_provider
 from cheapy.providers.base import ProviderExactOneWayRequest, ProviderResult
 from cheapy.providers import registry
 from cheapy.providers.registry import (
@@ -151,6 +154,61 @@ def test_discover_provider_manifests_wraps_malformed_toml(monkeypatch: pytest.Mo
         discover_provider_manifests()
 
 
-def test_registry_does_not_expose_provider_loaders_before_task_3() -> None:
-    assert not hasattr(registry, "load_provider")
-    assert not hasattr(registry, "load_enabled_providers")
+def test_manual_fixture_returns_two_valid_offers_for_fixture_route() -> None:
+    provider = create_provider()
+    request = ProviderExactOneWayRequest(
+        origin="CXR",
+        destination="SGN",
+        departure_date="2026-07-10",
+    )
+
+    result = asyncio.run(provider.search_exact_one_way(request))
+
+    assert result.provider_name == "manual_fixture"
+    assert result.capability == "exact_one_way"
+    assert result.status == ProviderStatusCode.SUCCESS
+    assert result.errors == []
+    assert len(result.offers) == 2
+    assert [offer.provider for offer in result.offers] == [
+        "manual_fixture",
+        "manual_fixture",
+    ]
+    assert [offer.global_rank for offer in result.offers] == [1, 2]
+    assert all(offer.fare_details_status == "not_collected" for offer in result.offers)
+    assert all(offer.flags.baggage_unknown is True for offer in result.offers)
+
+
+def test_manual_fixture_returns_controlled_failure_for_unsupported_input() -> None:
+    provider = create_provider()
+    request = ProviderExactOneWayRequest(
+        origin="HAN",
+        destination="SGN",
+        departure_date="2026-07-10",
+    )
+
+    result = asyncio.run(provider.search_exact_one_way(request))
+
+    assert result.status == ProviderStatusCode.FAILED
+    assert result.offers == []
+    assert len(result.errors) == 1
+    error = result.errors[0]
+    assert error.code == ErrorCode.PROVIDER_FAILED
+    assert error.severity == Severity.ERROR
+    assert error.message_en == "No manual fixture exists for the requested route/date."
+    assert error.details == {
+        "provider": "manual_fixture",
+        "capability": "exact_one_way",
+        "origin": "HAN",
+        "destination": "SGN",
+        "departure_date": "2026-07-10",
+    }
+    assert error.retryable is False
+
+
+def test_load_enabled_providers_loads_manual_fixture_after_provider_exists() -> None:
+    from cheapy.providers.registry import load_enabled_providers
+
+    providers = load_enabled_providers()
+
+    assert [provider.name for provider in providers] == ["manual_fixture"]
+    assert providers[0].capabilities == ("exact_one_way",)

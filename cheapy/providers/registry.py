@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from importlib import import_module
 from importlib.resources import files
-from typing import Literal
+from typing import Any, Literal
 import tomllib
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from cheapy.providers.base import FlightProvider
 
 
 class ProviderRegistryError(RuntimeError):
@@ -60,3 +63,20 @@ def discover_provider_manifests() -> list[ProviderManifest]:
         manifests.append(manifest)
 
     return manifests
+
+
+def load_provider(manifest: ProviderManifest) -> FlightProvider:
+    """Load a provider object from a validated bundled manifest."""
+    module = import_module(manifest.module)
+    factory: Any = getattr(module, "create_provider")
+    provider = factory()
+    return provider
+
+
+def load_enabled_providers() -> list[FlightProvider]:
+    """Load all bundled providers enabled by default."""
+    return [
+        load_provider(manifest)
+        for manifest in discover_provider_manifests()
+        if manifest.default_enabled
+    ]
