@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 import sys
@@ -12,7 +13,14 @@ import typer
 from typer.core import TyperGroup
 
 from cheapy import __version__
-from cheapy.models import SearchRequestV1, SearchResponseV1
+from cheapy.models import ProviderStatusCode, SearchRequestV1, SearchResponseV1
+from cheapy.providers.base import ProviderExactOneWayRequest
+from cheapy.providers.registry import (
+    ProviderLoadError,
+    ProviderManifestError,
+    discover_provider_manifests,
+    load_enabled_providers,
+)
 
 
 def _json_echo(payload: dict[str, Any], *, err: bool = False) -> None:
@@ -62,6 +70,11 @@ app = typer.Typer(
     no_args_is_help=True,
     invoke_without_command=True,
 )
+providers_app = typer.Typer(
+    help="Inspect packaged Cheapy providers.",
+    no_args_is_help=True,
+)
+app.add_typer(providers_app, name="providers")
 
 
 @app.callback()
@@ -136,3 +149,142 @@ def mcp() -> None:
         err=True,
     )
     raise typer.Exit(code=2)
+
+
+def _provider_fixture_request() -> ProviderExactOneWayRequest:
+    return ProviderExactOneWayRequest(
+        origin="CXR",
+        destination="SGN",
+        departure_date="2026-07-10",
+    )
+
+
+@providers_app.command("list")
+def providers_list() -> None:
+    """List packaged Cheapy providers."""
+    try:
+        manifests = discover_provider_manifests()
+    except ProviderManifestError as exc:
+        _json_echo(
+            _error_payload(
+                "PROVIDER_MANIFEST_INVALID",
+                str(exc),
+                "Reinstall Cheapy and verify provider package data is valid.",
+            ),
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    if not manifests:
+        _json_echo(
+            _error_payload(
+                "NO_PROVIDER_AVAILABLE",
+                "No packaged Cheapy providers were found.",
+                "Reinstall Cheapy and verify package data is present.",
+            ),
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    _json_echo(
+        {
+            "status": "ok",
+            "providers": [
+                {
+                    "name": manifest.name,
+                    "display_name": manifest.display_name,
+                    "capabilities": manifest.capabilities,
+                    "default_enabled": manifest.default_enabled,
+                    "enabled": manifest.default_enabled,
+                }
+                for manifest in manifests
+            ],
+        }
+    )
+
+
+@providers_app.command("test")
+def providers_test() -> None:
+    """Run packaged provider smoke checks."""
+    try:
+        providers = load_enabled_providers()
+    except ProviderManifestError as exc:
+        _json_echo(
+            _error_payload(
+                "PROVIDER_MANIFEST_INVALID",
+                str(exc),
+                "Reinstall Cheapy and verify provider package data is valid.",
+            ),
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    except ProviderLoadError as exc:
+        _json_echo(
+            _error_payload(
+                "PROVIDER_TEST_ERROR",
+                str(exc),
+                "Run 'cheapy providers test --human' for a concise provider report.",
+            ),
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    if not providers:
+        _json_echo(
+            _error_payload(
+                "NO_PROVIDER_AVAILABLE",
+                "No enabled packaged Cheapy providers were found.",
+                "Reinstall Cheapy and verify package data is present.",
+            ),
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        reports = asyncio.run(_run_provider_checks(providers))
+    except Exception:
+        _json_echo(
+            _error_payload(
+                "PROVIDER_TEST_ERROR",
+                "A provider check raised an unexpected exception.",
+                "Run 'cheapy providers test --human' for a concise provider report.",
+            ),
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    if any(report["status"] != ProviderStatusCode.SUCCESS.value for report in reports):
+        _json_echo(
+            _error_payload(
+                "PROVIDER_TEST_FAILED",
+                "One or more provider checks failed.",
+                "Run 'cheapy providers test --human' for a concise provider report.",
+            ),
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    _json_echo(
+        {
+            "status": "ok",
+            "providers_tested": len(providers),
+            "providers": reports,
+        }
+    )
+
+
+async def _run_provider_checks(providers: list[Any]) -> list[dict[str, Any]]:
+    request = _provider_fixture_request()
+    reports: list[dict[str, Any]] = []
+    for provider in providers:
+        result = await provider.search_exact_one_way(request)
+        reports.append(
+            {
+                "name": result.provider_name,
+                "capability": result.capability,
+                "status": result.status.value,
+                "offer_count": len(result.offers),
+                "error_count": len(result.errors),
+            }
+        )
+    return reports
