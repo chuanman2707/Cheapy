@@ -1,0 +1,6 @@
+manifest_schema_version = "1"
+name = "manual_fixture"
+display_name = "Manual fixture provider"
+default_enabled = true
+module = "cheapy.providers.manual_fixture.provider"
+capabilities = ["exact_one_way"]
