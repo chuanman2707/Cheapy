@@ -263,8 +263,9 @@ from cheapy.providers.registry import (
 def test_manual_fixture_manifest_is_discovered_from_package_resources() -> None:
     manifests = discover_provider_manifests()
 
-    assert [manifest.name for manifest in manifests] == ["manual_fixture"]
-    manifest = manifests[0]
+    manifest = next(
+        manifest for manifest in manifests if manifest.name == "manual_fixture"
+    )
     assert manifest == ProviderManifest(
         manifest_schema_version="1",
         name="manual_fixture",
@@ -276,7 +277,11 @@ def test_manual_fixture_manifest_is_discovered_from_package_resources() -> None:
 
 
 def test_registry_exposes_exact_one_way_as_stable_capability() -> None:
-    manifest = discover_provider_manifests()[0]
+    manifest = next(
+        manifest
+        for manifest in discover_provider_manifests()
+        if manifest.name == "manual_fixture"
+    )
 
     assert manifest.capabilities == ["exact_one_way"]
 ```
@@ -317,14 +322,11 @@ Create `cheapy/providers/registry.py`:
 
 from __future__ import annotations
 
-from importlib import import_module
 from importlib.resources import files
-from typing import Any, Literal
+from typing import Literal
 import tomllib
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-
-from cheapy.providers.base import FlightProvider
 
 
 class ProviderRegistryError(RuntimeError):
@@ -363,33 +365,16 @@ def discover_provider_manifests() -> list[ProviderManifest]:
         manifest_resource = child.joinpath("manifest.toml")
         if not manifest_resource.is_file():
             continue
-        data = tomllib.loads(manifest_resource.read_text(encoding="utf-8"))
         try:
+            data = tomllib.loads(manifest_resource.read_text(encoding="utf-8"))
             manifest = ProviderManifest.model_validate(data)
-        except ValidationError as exc:
+        except (tomllib.TOMLDecodeError, ValidationError) as exc:
             raise ProviderManifestError(
                 f"Invalid provider manifest for {child.name!r}"
             ) from exc
         manifests.append(manifest)
 
     return manifests
-
-
-def load_provider(manifest: ProviderManifest) -> FlightProvider:
-    """Load a provider object from a validated bundled manifest."""
-    module = import_module(manifest.module)
-    factory: Any = getattr(module, "create_provider")
-    provider = factory()
-    return provider
-
-
-def load_enabled_providers() -> list[FlightProvider]:
-    """Load all bundled providers enabled by default."""
-    return [
-        load_provider(manifest)
-        for manifest in discover_provider_manifests()
-        if manifest.default_enabled
-    ]
 ```
 
 - [ ] **Step 4: Run manifest registry tests**
@@ -418,6 +403,7 @@ git commit -m "feat: discover packaged provider manifests" -m "AI-Model: GPT-5 C
 **Files:**
 
 - Modify: `tests/test_providers.py`
+- Modify: `cheapy/providers/registry.py`
 - Create: `cheapy/providers/manual_fixture/provider.py`
 
 - [ ] **Step 1: Add failing fixture provider tests**
@@ -477,6 +463,15 @@ def test_manual_fixture_returns_controlled_failure_for_unsupported_input() -> No
         "departure_date": "2026-07-10",
     }
     assert error.retryable is False
+
+
+def test_load_enabled_providers_loads_manual_fixture_after_provider_exists() -> None:
+    from cheapy.providers.registry import load_enabled_providers
+
+    providers = load_enabled_providers()
+
+    assert [provider.name for provider in providers] == ["manual_fixture"]
+    assert providers[0].capabilities == ("exact_one_way",)
 ```
 
 Run:
@@ -487,7 +482,38 @@ uv run pytest tests/test_providers.py::test_manual_fixture_returns_two_valid_off
 
 Expected: FAIL because `cheapy.providers.manual_fixture.provider` does not exist.
 
-- [ ] **Step 2: Add manual fixture provider**
+- [ ] **Step 2: Add provider loading helpers**
+
+Modify `cheapy/providers/registry.py` to add provider loading only after the provider module exists:
+
+```python
+from importlib import import_module
+from typing import Any, Literal
+
+from cheapy.providers.base import FlightProvider
+```
+
+Add below `discover_provider_manifests()`:
+
+```python
+def load_provider(manifest: ProviderManifest) -> FlightProvider:
+    """Load a provider object from a validated bundled manifest."""
+    module = import_module(manifest.module)
+    factory: Any = getattr(module, "create_provider")
+    provider = factory()
+    return provider
+
+
+def load_enabled_providers() -> list[FlightProvider]:
+    """Load all bundled providers enabled by default."""
+    return [
+        load_provider(manifest)
+        for manifest in discover_provider_manifests()
+        if manifest.default_enabled
+    ]
+```
+
+- [ ] **Step 3: Add manual fixture provider**
 
 Create `cheapy/providers/manual_fixture/provider.py`:
 
@@ -663,7 +689,7 @@ def _fixture_offers() -> list[FlightOfferV1]:
     ]
 ```
 
-- [ ] **Step 3: Run fixture provider tests**
+- [ ] **Step 4: Run fixture provider tests**
 
 Run:
 
@@ -673,7 +699,7 @@ uv run pytest tests/test_providers.py::test_manual_fixture_returns_two_valid_off
 
 Expected: PASS.
 
-- [ ] **Step 4: Run full provider tests**
+- [ ] **Step 5: Run full provider tests**
 
 Run:
 
@@ -683,12 +709,12 @@ uv run pytest tests/test_providers.py -v
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit manual fixture provider**
+- [ ] **Step 6: Commit manual fixture provider**
 
 Run:
 
 ```bash
-git add cheapy/providers/manual_fixture/provider.py tests/test_providers.py
+git add cheapy/providers/registry.py cheapy/providers/manual_fixture/provider.py tests/test_providers.py
 git commit -m "feat: add manual fixture provider" -m "AI-Model: GPT-5 Codex"
 ```
 
