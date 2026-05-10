@@ -106,7 +106,7 @@ These helpers remain private in Gate 4.
 10. Build currency groups and currency notes.
 11. Return a complete `SearchResponseV1`.
 
-For an in-scope exact one-way request, the search plan is deterministic:
+For an in-scope exact one-way request with at least one provider call attempted, the search plan is deterministic:
 
 - `search_mode`: the request search mode
 - `planned_candidate_count`: `1`
@@ -119,7 +119,21 @@ For an in-scope exact one-way request, the search plan is deterministic:
 - `truncated_families`: `[]`
 - `candidate_families`: `[exact]`
 
-For failures before a provider call, the search plan uses the request search mode, zero counts, empty family maps, `truncated=False`, and empty candidate family lists.
+For failures before planning can create a usable exact candidate, the search plan uses the request search mode, zero counts, empty family maps, `truncated=False`, and empty candidate family lists. This applies to airport resolution failures and unsupported Gate 4 scope failures.
+
+For a resolved, in-scope exact request where no provider can be called, the exact candidate is still planned:
+
+- `planned_candidate_count`: `1`
+- `executed_candidate_count`: `0`
+- `planned_provider_call_count`: `0`
+- `executed_provider_call_count`: `0`
+- `candidate_count_by_family`: `{exact: 1}`
+- `provider_call_count_by_family`: `{exact: 0}`
+- `truncated`: `False`
+- `truncated_families`: `[]`
+- `candidate_families`: `[exact]`
+
+This applies when no enabled provider exists, no enabled provider supports `exact_one_way`, or provider registry loading fails. A candidate counts as executed only when at least one provider call is attempted for it.
 
 ## Response Status Rules
 
@@ -203,7 +217,7 @@ Gate 4 request IDs are deterministic to keep tests stable. The format is:
 exact:{origin}:{destination}:{departure_date}:{search_mode}:{adults}:{children}:{infants_on_lap}:{infants_in_seat}:{max_results}
 ```
 
-`origin` and `destination` in the request ID use the resolved IATA values, not the raw request strings.
+`origin` and `destination` in the request ID use resolved IATA values when resolution succeeds. If airport resolution fails, the request ID uses `request.origin.strip().upper()` and `request.destination.strip().upper()` so a failed response can still satisfy the `SearchResponseV1.request_id` requirement deterministically.
 
 No randomness is needed in Gate 4.
 
@@ -221,9 +235,10 @@ Expected test coverage:
 - `provider_statuses` contains one successful `manual_fixture` status
 - unsupported route/date returns `status="failed"` and preserves the provider error
 - unknown airport returns `AIRPORT_NOT_FOUND` without provider calls
+- unknown airport response has a deterministic request ID using normalized raw airport values
 - expanded search returns failed response with `NO_PROVIDER_AVAILABLE`
 - round-trip request returns failed response with `NO_PROVIDER_AVAILABLE`
-- no enabled providers returns failed response with `NO_PROVIDER_AVAILABLE`
+- no enabled providers returns failed response with `NO_PROVIDER_AVAILABLE` and a planned but unexecuted exact candidate
 - registry manifest/load errors return failed response with `NO_PROVIDER_AVAILABLE`
 - provider exception returns failed response with `PROVIDER_FAILED`
 - mixed-currency grouping uses a fake provider result
@@ -250,7 +265,8 @@ Gate 4 is complete when:
 - provider failures and warnings are preserved
 - exact search plan accounting is deterministic
 - currency groups are deterministic
-- provider requests and request IDs use resolved IATA values
+- provider requests use resolved IATA values
+- request IDs use resolved IATA values when available and normalized raw airport values when resolution fails
 - no CLI search command is added
 - MCP remains outside scope
 - no network calls are introduced
