@@ -11,10 +11,20 @@ from cheapy.models import (
     Severity,
 )
 from cheapy.providers.base import ProviderExactOneWayRequest, ProviderResult
+from cheapy.providers import registry
 from cheapy.providers.registry import (
     ProviderManifest,
+    ProviderManifestError,
     discover_provider_manifests,
 )
+
+
+def _manifest_by_name(name: str) -> ProviderManifest:
+    return next(
+        manifest
+        for manifest in discover_provider_manifests()
+        if manifest.name == name
+    )
 
 
 def test_provider_exact_one_way_request_defaults_to_one_adult() -> None:
@@ -92,8 +102,8 @@ def test_provider_result_accepts_status_string_from_parsed_dict() -> None:
 def test_manual_fixture_manifest_is_discovered_from_package_resources() -> None:
     manifests = discover_provider_manifests()
 
-    assert [manifest.name for manifest in manifests] == ["manual_fixture"]
-    manifest = manifests[0]
+    assert "manual_fixture" in [manifest.name for manifest in manifests]
+    manifest = _manifest_by_name("manual_fixture")
     assert manifest == ProviderManifest(
         manifest_schema_version="1",
         name="manual_fixture",
@@ -105,6 +115,42 @@ def test_manual_fixture_manifest_is_discovered_from_package_resources() -> None:
 
 
 def test_registry_exposes_exact_one_way_as_stable_capability() -> None:
-    manifest = discover_provider_manifests()[0]
+    manifest = _manifest_by_name("manual_fixture")
 
     assert manifest.capabilities == ["exact_one_way"]
+
+
+def test_discover_provider_manifests_wraps_malformed_toml(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeManifestResource:
+        def is_file(self) -> bool:
+            return True
+
+        def read_text(self, encoding: str) -> str:
+            return "[manifest"
+
+    class FakeProviderResource:
+        name = "broken_provider"
+
+        def is_dir(self) -> bool:
+            return True
+
+        def joinpath(self, name: str) -> FakeManifestResource:
+            assert name == "manifest.toml"
+            return FakeManifestResource()
+
+    class FakeRootResource:
+        def iterdir(self) -> list[FakeProviderResource]:
+            return [FakeProviderResource()]
+
+    monkeypatch.setattr(registry, "_provider_resource_root", FakeRootResource)
+
+    with pytest.raises(
+        ProviderManifestError,
+        match="Invalid provider manifest for 'broken_provider'",
+    ):
+        discover_provider_manifests()
+
+
+def test_registry_does_not_expose_provider_loaders_before_task_3() -> None:
+    assert not hasattr(registry, "load_provider")
+    assert not hasattr(registry, "load_enabled_providers")

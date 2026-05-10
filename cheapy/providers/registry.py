@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-from importlib import import_module
 from importlib.resources import files
-from typing import Any, Literal
+from typing import Literal
 import tomllib
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-
-from cheapy.providers.base import FlightProvider
 
 
 class ProviderRegistryError(RuntimeError):
@@ -48,7 +45,12 @@ def discover_provider_manifests() -> list[ProviderManifest]:
         manifest_resource = child.joinpath("manifest.toml")
         if not manifest_resource.is_file():
             continue
-        data = tomllib.loads(manifest_resource.read_text(encoding="utf-8"))
+        try:
+            data = tomllib.loads(manifest_resource.read_text(encoding="utf-8"))
+        except tomllib.TOMLDecodeError as exc:
+            raise ProviderManifestError(
+                f"Invalid provider manifest for {child.name!r}"
+            ) from exc
         try:
             manifest = ProviderManifest.model_validate(data)
         except ValidationError as exc:
@@ -58,20 +60,3 @@ def discover_provider_manifests() -> list[ProviderManifest]:
         manifests.append(manifest)
 
     return manifests
-
-
-def load_provider(manifest: ProviderManifest) -> FlightProvider:
-    """Load a provider object from a validated bundled manifest."""
-    module = import_module(manifest.module)
-    factory: Any = getattr(module, "create_provider")
-    provider = factory()
-    return provider
-
-
-def load_enabled_providers() -> list[FlightProvider]:
-    """Load all bundled providers enabled by default."""
-    return [
-        load_provider(manifest)
-        for manifest in discover_provider_manifests()
-        if manifest.default_enabled
-    ]
