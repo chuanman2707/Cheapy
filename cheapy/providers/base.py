@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Protocol
+import re
+from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -14,6 +15,8 @@ from cheapy.models import (
     ProviderStatusCode,
     WarningV1,
 )
+
+_YYYY_MM_DD_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 class _ProviderModel(BaseModel):
@@ -31,6 +34,9 @@ class ProviderExactOneWayRequest(_ProviderModel):
     @field_validator("departure_date")
     @classmethod
     def validate_departure_date(cls, value: str) -> str:
+        if not _YYYY_MM_DD_RE.fullmatch(value):
+            raise ValueError("Date must use YYYY-MM-DD format")
+
         try:
             datetime.strptime(value, "%Y-%m-%d")
         except ValueError as exc:
@@ -49,6 +55,18 @@ class ProviderResult(_ProviderModel):
     errors: list[ErrorV1] = Field(default_factory=list)
     duration_ms: int = Field(ge=0)
     retryable: bool = False
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def validate_status(cls, value: Any) -> Any:
+        if isinstance(value, ProviderStatusCode):
+            return value
+        if isinstance(value, str):
+            try:
+                return ProviderStatusCode(value)
+            except ValueError:
+                return value
+        return value
 
 
 class FlightProvider(Protocol):

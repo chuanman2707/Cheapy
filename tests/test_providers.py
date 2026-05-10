@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-import asyncio
+import pytest
+from pydantic import ValidationError
 
 from cheapy.models import (
     ErrorCode,
@@ -23,6 +24,15 @@ def test_provider_exact_one_way_request_defaults_to_one_adult() -> None:
     assert request.destination == "SGN"
     assert request.departure_date == "2026-07-10"
     assert request.passengers == PassengersV1()
+
+
+def test_provider_exact_one_way_request_rejects_non_iso_date_shape() -> None:
+    with pytest.raises(ValidationError):
+        ProviderExactOneWayRequest(
+            origin="CXR",
+            destination="SGN",
+            departure_date="2026-7-10",
+        )
 
 
 def test_provider_result_reuses_contract_error_models() -> None:
@@ -56,3 +66,20 @@ def test_provider_result_reuses_contract_error_models() -> None:
     assert result.status == ProviderStatusCode.FAILED
     assert result.offers == []
     assert result.errors == [error]
+
+
+def test_provider_result_accepts_status_string_from_parsed_dict() -> None:
+    result = ProviderResult.model_validate(
+        {
+            "provider_name": "manual_fixture",
+            "capability": "exact_one_way",
+            "status": "failed",
+            "offers": [],
+            "warnings": [],
+            "errors": [],
+            "duration_ms": 0,
+            "retryable": False,
+        }
+    )
+
+    assert result.status == ProviderStatusCode.FAILED
