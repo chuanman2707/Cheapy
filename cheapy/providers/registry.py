@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from importlib import import_module
 from importlib.resources import files
-from typing import Any, Literal
+from typing import Any, Literal, cast
 import tomllib
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -18,6 +18,10 @@ class ProviderRegistryError(RuntimeError):
 
 class ProviderManifestError(ProviderRegistryError):
     """Raised when a packaged provider manifest is invalid."""
+
+
+class ProviderLoadError(ProviderRegistryError):
+    """Raised when a packaged provider cannot be loaded."""
 
 
 class ProviderManifest(BaseModel):
@@ -67,10 +71,38 @@ def discover_provider_manifests() -> list[ProviderManifest]:
 
 def load_provider(manifest: ProviderManifest) -> FlightProvider:
     """Load a provider object from a validated bundled manifest."""
-    module = import_module(manifest.module)
-    factory: Any = getattr(module, "create_provider")
-    provider = factory()
-    return provider
+    try:
+        module = import_module(manifest.module)
+        factory: Any = getattr(module, "create_provider")
+        if not callable(factory):
+            raise TypeError("Provider factory is not callable")
+        provider = factory()
+    except Exception as exc:
+        raise ProviderLoadError(_provider_load_error_message(manifest)) from exc
+
+    return _validate_provider_shape(provider, manifest)
+
+
+def _validate_provider_shape(
+    provider: object,
+    manifest: ProviderManifest,
+) -> FlightProvider:
+    name = getattr(provider, "name", None)
+    capabilities = getattr(provider, "capabilities", None)
+    search_exact_one_way = getattr(provider, "search_exact_one_way", None)
+
+    if (
+        not isinstance(name, str)
+        or not isinstance(capabilities, tuple)
+        or not callable(search_exact_one_way)
+    ):
+        raise ProviderLoadError(_provider_load_error_message(manifest))
+
+    return cast(FlightProvider, provider)
+
+
+def _provider_load_error_message(manifest: ProviderManifest) -> str:
+    return f"Unable to load provider {manifest.name!r}"
 
 
 def load_enabled_providers() -> list[FlightProvider]:

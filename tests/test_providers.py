@@ -18,6 +18,7 @@ from cheapy.providers import registry
 from cheapy.providers.registry import (
     ProviderManifest,
     ProviderManifestError,
+    ProviderLoadError,
     discover_provider_manifests,
 )
 
@@ -203,6 +204,57 @@ def test_manual_fixture_returns_controlled_failure_for_unsupported_input() -> No
         "departure_date": "2026-07-10",
     }
     assert error.retryable is False
+
+
+def test_load_provider_wraps_missing_factory(monkeypatch: pytest.MonkeyPatch) -> None:
+    manifest = ProviderManifest(
+        manifest_schema_version="1",
+        name="broken_provider",
+        display_name="Broken provider",
+        default_enabled=True,
+        module="broken.provider",
+        capabilities=["exact_one_way"],
+    )
+
+    monkeypatch.setattr(
+        registry,
+        "import_module",
+        lambda module_name: object(),
+    )
+
+    with pytest.raises(
+        ProviderLoadError,
+        match="Unable to load provider 'broken_provider'",
+    ):
+        registry.load_provider(manifest)
+
+
+def test_load_provider_rejects_bad_provider_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeProviderModule:
+        @staticmethod
+        def create_provider() -> object:
+            return object()
+
+    manifest = ProviderManifest(
+        manifest_schema_version="1",
+        name="bad_shape_provider",
+        display_name="Bad shape provider",
+        default_enabled=True,
+        module="bad_shape.provider",
+        capabilities=["exact_one_way"],
+    )
+
+    monkeypatch.setattr(
+        registry,
+        "import_module",
+        lambda module_name: FakeProviderModule,
+    )
+
+    with pytest.raises(
+        ProviderLoadError,
+        match="Unable to load provider 'bad_shape_provider'",
+    ):
+        registry.load_provider(manifest)
 
 
 def test_load_enabled_providers_loads_manual_fixture_after_provider_exists() -> None:
