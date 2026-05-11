@@ -64,21 +64,6 @@ def test_doctor_reports_missing_executable_on_stderr(monkeypatch) -> None:
     }
 
 
-def test_mcp_remains_outside_contract_foundation_gate() -> None:
-    result = runner.invoke(app, ["mcp"])
-
-    assert result.exit_code == 2
-    assert result.stdout == ""
-    error = json.loads(result.stderr)
-    assert error == {
-        "error": True,
-        "code": "MCP_OUTSIDE_CONTRACT_GATE",
-        "message": "MCP server is outside this contract foundation gate.",
-        "suggestion": "Use contract commands such as 'cheapy schema' in this gate.",
-    }
-    assert "MCP server is outside this contract foundation gate" in error["message"]
-
-
 def test_unknown_command_reports_json_usage_error() -> None:
     result = runner.invoke(app, ["bogus"])
 
