@@ -41,6 +41,14 @@ def _structured_content(result: Any) -> dict[str, Any]:
     return structured
 
 
+def _is_error(result: Any) -> bool:
+    is_error = getattr(result, "is_error", None)
+    if is_error is None:
+        is_error = getattr(result, "isError", None)
+    assert isinstance(is_error, bool)
+    return is_error
+
+
 def _text_content(result: Any) -> str:
     return "\n".join(
         block.text
@@ -62,7 +70,11 @@ def test_mcp_lists_only_search_cheapest_flights_tool() -> None:
 def test_mcp_search_tool_uses_top_level_contract_fields() -> None:
     async def action(session: ClientSession) -> Any:
         response = await session.list_tools()
-        return response.tools[0]
+        return next(
+            tool
+            for tool in response.tools
+            if tool.name == "search_cheapest_flights"
+        )
 
     tool = asyncio.run(_with_mcp_session(action))
     input_schema = _input_schema(tool)
@@ -109,7 +121,7 @@ def test_mcp_search_tool_returns_structured_contract_response() -> None:
 
     result = asyncio.run(_with_mcp_session(action))
 
-    assert getattr(result, "isError", False) is False
+    assert _is_error(result) is False
     payload = _structured_content(result)
     response = SearchResponseV1.model_validate(payload)
 
@@ -135,6 +147,6 @@ def test_mcp_search_tool_rejects_invalid_contract_input() -> None:
 
     result = asyncio.run(_with_mcp_session(action))
 
-    assert getattr(result, "isError", False) is True
+    assert _is_error(result) is True
     text = _text_content(result).lower()
     assert "date" in text or "validation" in text
