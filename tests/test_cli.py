@@ -5,6 +5,7 @@ import json
 from typer.testing import CliRunner
 
 from cheapy.cli import app
+from cheapy.mcp_installer import InstallerError
 from cheapy.models import ErrorCode, ErrorV1, ProviderStatusCode, Severity
 from cheapy.providers.base import ProviderExactOneWayRequest, ProviderResult
 from cheapy.providers.registry import ProviderManifestError
@@ -73,6 +74,62 @@ def test_unknown_command_reports_json_usage_error() -> None:
     assert error["error"] is True
     assert error["code"] == "USAGE_ERROR"
     assert "No such command" in error["message"]
+    assert error["suggestion"] == "Run 'cheapy --help' for valid usage."
+
+
+def test_mcp_install_codex_prints_json(monkeypatch) -> None:
+    def fake_install(client, *, project_root):
+        assert client == "codex"
+        return {
+            "status": "ok",
+            "client": "codex",
+            "method": "official_cli",
+        }
+
+    monkeypatch.setattr("cheapy.cli.install_mcp", fake_install)
+
+    result = runner.invoke(app, ["mcp", "install", "--client", "codex"])
+
+    assert result.exit_code == 0
+    assert result.stderr == ""
+    assert json.loads(result.stdout) == {
+        "status": "ok",
+        "client": "codex",
+        "method": "official_cli",
+    }
+
+
+def test_mcp_install_reports_installer_error(monkeypatch) -> None:
+    error = InstallerError(
+        code="MISSING_EXECUTABLE",
+        message="cheapy executable was not found on PATH.",
+        suggestion=(
+            "Install the cheapy-flights package first, then ensure the cheapy "
+            "executable is on PATH."
+        ),
+    )
+
+    def fake_install(client, *, project_root):
+        raise error
+
+    monkeypatch.setattr("cheapy.cli.install_mcp", fake_install)
+
+    result = runner.invoke(app, ["mcp", "install", "--client", "codex"])
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert result.stderr == json.dumps(error.payload(), sort_keys=True) + "\n"
+
+
+def test_mcp_install_rejects_invalid_client() -> None:
+    result = runner.invoke(app, ["mcp", "install", "--client", "vscode"])
+
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    error = json.loads(result.stderr)
+    assert error["error"] is True
+    assert error["code"] == "USAGE_ERROR"
+    assert "Invalid value for '--client'" in error["message"]
     assert error["suggestion"] == "Run 'cheapy --help' for valid usage."
 
 

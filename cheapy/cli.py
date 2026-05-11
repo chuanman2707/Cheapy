@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 import shutil
 import sys
 from typing import Any
@@ -14,6 +15,7 @@ from typer.core import TyperGroup
 
 from cheapy import __version__
 from cheapy.mcp import run_stdio_server
+from cheapy.mcp_installer import InstallerClient, InstallerError, install_mcp
 from cheapy.models import ProviderStatusCode, SearchRequestV1, SearchResponseV1
 from cheapy.providers.base import ProviderExactOneWayRequest
 from cheapy.providers.registry import (
@@ -75,7 +77,13 @@ providers_app = typer.Typer(
     help="Inspect packaged Cheapy providers.",
     no_args_is_help=True,
 )
+mcp_app = typer.Typer(
+    help="Run or install the Cheapy MCP server.",
+    no_args_is_help=False,
+    invoke_without_command=True,
+)
 app.add_typer(providers_app, name="providers")
+app.add_typer(mcp_app, name="mcp")
 
 
 @app.callback()
@@ -138,10 +146,29 @@ def schema() -> None:
     typer.echo(json.dumps(schemas, indent=2, sort_keys=True))
 
 
-@app.command()
-def mcp() -> None:
+@mcp_app.callback(invoke_without_command=True)
+def mcp(ctx: typer.Context) -> None:
     """Run the stdio MCP server."""
-    run_stdio_server()
+    if ctx.invoked_subcommand is None:
+        run_stdio_server()
+
+
+@mcp_app.command("install")
+def mcp_install(
+    client: InstallerClient = typer.Option(
+        ...,
+        "--client",
+        help="MCP client to configure.",
+    ),
+) -> None:
+    """Install Cheapy MCP for a supported client."""
+    try:
+        report = install_mcp(client, project_root=Path.cwd())
+    except InstallerError as exc:
+        _json_echo(exc.payload(), err=True)
+        raise typer.Exit(code=exc.exit_code)
+
+    _json_echo(report)
 
 
 def _provider_fixture_request() -> ProviderExactOneWayRequest:

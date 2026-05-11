@@ -67,6 +67,16 @@ def test_mcp_lists_only_search_cheapest_flights_tool() -> None:
     assert [tool.name for tool in tools] == ["search_cheapest_flights"]
 
 
+def test_python_module_mcp_entrypoint_still_lists_tools_after_cli_nesting() -> None:
+    async def action(session: ClientSession) -> list[str]:
+        response = await session.list_tools()
+        return [tool.name for tool in response.tools]
+
+    tool_names = asyncio.run(_with_mcp_session(action))
+
+    assert tool_names == ["search_cheapest_flights"]
+
+
 def test_mcp_search_tool_uses_top_level_contract_fields() -> None:
     async def action(session: ClientSession) -> Any:
         response = await session.list_tools()
