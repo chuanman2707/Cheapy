@@ -30,7 +30,44 @@ def _not_applicable() -> dict[str, str]:
     return {"status": "not_applicable"}
 
 
-def _expected_success_report(client: InstallerClient, executable: Path) -> dict[str, Any]:
+def _hook_report(client: InstallerClient, project_root: Path) -> dict[str, Any]:
+    if client is InstallerClient.CODEX:
+        return {
+            "codex_skill": {
+                "status": "updated",
+                "path": str(
+                    project_root / ".codex" / "skills" / "cheapy" / "SKILL.md"
+                ),
+            },
+            "agents_hook": {
+                "status": "updated",
+                "path": str(project_root / "AGENTS.md"),
+            },
+            "claude_instructions": _not_applicable(),
+            "claude_hook": _not_applicable(),
+            "manual_steps": [],
+        }
+
+    return {
+        "codex_skill": _not_applicable(),
+        "agents_hook": _not_applicable(),
+        "claude_instructions": {
+            "status": "updated",
+            "path": str(project_root / ".cheapy" / "claude-instructions.md"),
+        },
+        "claude_hook": {
+            "status": "updated",
+            "path": str(project_root / "CLAUDE.md"),
+        },
+        "manual_steps": [],
+    }
+
+
+def _expected_success_report(
+    client: InstallerClient,
+    executable: Path,
+    project_root: Path,
+) -> dict[str, Any]:
     return {
         "status": "ok",
         "client": client.value,
@@ -40,11 +77,7 @@ def _expected_success_report(client: InstallerClient, executable: Path) -> dict[
         "config_path": None,
         "rollback_path": None,
         "mcp_entry": {"command": str(executable.resolve()), "args": ["mcp"]},
-        "codex_skill": _not_applicable(),
-        "agents_hook": _not_applicable(),
-        "claude_instructions": _not_applicable(),
-        "claude_hook": _not_applicable(),
-        "manual_steps": [],
+        **_hook_report(client, project_root),
     }
 
 
@@ -214,7 +247,11 @@ def test_install_codex_uses_official_cli_and_returns_report(
         "timeout": 30.0,
         "cwd": tmp_path,
     }
-    assert report == _expected_success_report(InstallerClient.CODEX, executable)
+    assert report == _expected_success_report(
+        InstallerClient.CODEX,
+        executable,
+        tmp_path,
+    )
 
 
 def test_install_claude_uses_official_cli_and_returns_report(
@@ -262,7 +299,11 @@ def test_install_claude_uses_official_cli_and_returns_report(
         "timeout": 30.0,
         "cwd": tmp_path,
     }
-    assert report == _expected_success_report(InstallerClient.CLAUDE, executable)
+    assert report == _expected_success_report(
+        InstallerClient.CLAUDE,
+        executable,
+        tmp_path,
+    )
 
 
 def test_install_recoverable_official_cli_failure_enters_direct_fallback(

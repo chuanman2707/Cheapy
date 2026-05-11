@@ -186,6 +186,7 @@ def install_mcp(
         ) from exc
 
     if result.returncode == 0:
+        hook_report = _install_hooks(selected_client, install_root)
         return {
             "status": "ok",
             "client": selected_client.value,
@@ -195,11 +196,7 @@ def install_mcp(
             "config_path": None,
             "rollback_path": None,
             "mcp_entry": build_mcp_entry(executable),
-            "codex_skill": _placeholder_hook_status(),
-            "agents_hook": _placeholder_hook_status(),
-            "claude_instructions": _placeholder_hook_status(),
-            "claude_hook": _placeholder_hook_status(),
-            "manual_steps": [],
+            **hook_report,
         }
 
     if is_recoverable_official_cli_failure(result):
@@ -279,6 +276,7 @@ def _install_via_direct_config(
             exit_code=exc.exit_code,
         ) from exc
 
+    hook_report = _install_hooks(client, project_root)
     return {
         "status": "ok",
         "client": client.value,
@@ -288,11 +286,7 @@ def _install_via_direct_config(
         "config_path": str(edit_result.config_path),
         "rollback_path": str(edit_result.rollback_path),
         "mcp_entry": mcp_entry,
-        "codex_skill": _placeholder_hook_status(),
-        "agents_hook": _placeholder_hook_status(),
-        "claude_instructions": _placeholder_hook_status(),
-        "claude_hook": _placeholder_hook_status(),
-        "manual_steps": [],
+        **hook_report,
     }
 
 
@@ -312,8 +306,10 @@ def _client_config_unavailable_error(
     )
 
 
-def _placeholder_hook_status() -> dict[str, str]:
-    return {"status": "not_applicable"}
+def _install_hooks(client: InstallerClient, project_root: Path) -> dict[str, Any]:
+    from cheapy.agent_hooks import install_agent_hooks
+
+    return install_agent_hooks(client, project_root)
 
 
 def _failure_output(failure: str | subprocess.CompletedProcess[str]) -> str:
