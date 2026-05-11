@@ -159,6 +159,7 @@ def install_mcp(
         return _install_via_direct_config(
             selected_client,
             executable,
+            project_root=install_root,
             home=install_home,
         )
 
@@ -205,6 +206,7 @@ def install_mcp(
         return _install_via_direct_config(
             selected_client,
             executable,
+            project_root=install_root,
             home=install_home,
         )
 
@@ -253,14 +255,43 @@ def _install_via_direct_config(
     client: InstallerClient,
     executable: Path,
     *,
+    project_root: Path,
     home: Path,
 ) -> dict[str, Any]:
-    _ = home
-    raise _client_config_unavailable_error(
-        client,
-        executable,
-        "Direct MCP config editing is not implemented yet.",
-    )
+    from cheapy.client_configs import edit_client_config
+
+    mcp_entry = build_mcp_entry(executable)
+    try:
+        edit_result = edit_client_config(
+            client,
+            mcp_entry,
+            project_root=project_root,
+            home=home,
+        )
+    except InstallerError as exc:
+        if exc.code == "CLIENT_CONFIG_UNAVAILABLE":
+            raise _client_config_unavailable_error(
+                client,
+                executable,
+                exc.message,
+            ) from exc
+        raise
+
+    return {
+        "status": "ok",
+        "client": client.value,
+        "server_name": SERVER_NAME,
+        "method": "direct_edit",
+        "executable": str(executable),
+        "config_path": str(edit_result.config_path),
+        "rollback_path": str(edit_result.rollback_path),
+        "mcp_entry": mcp_entry,
+        "codex_skill": _placeholder_hook_status(),
+        "agents_hook": _placeholder_hook_status(),
+        "claude_instructions": _placeholder_hook_status(),
+        "claude_hook": _placeholder_hook_status(),
+        "manual_steps": [],
+    }
 
 
 def _client_config_unavailable_error(

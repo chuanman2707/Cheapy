@@ -270,8 +270,6 @@ def test_install_recoverable_official_cli_failure_enters_direct_fallback(
     tmp_path: Path,
 ) -> None:
     executable = Path("/opt/bin/cheapy")
-    fallback_report = {"status": "fallback"}
-    fallback_calls: list[tuple[InstallerClient, Path, Path]] = []
 
     def fake_which(name: str) -> str | None:
         return {"cheapy": str(executable), "codex": "/usr/local/bin/codex"}.get(name)
@@ -286,26 +284,20 @@ def test_install_recoverable_official_cli_failure_enters_direct_fallback(
             stderr="error: unrecognized subcommand 'mcp'",
         )
 
-    def fake_direct_fallback(
-        client: InstallerClient,
-        fallback_executable: Path,
-        *,
-        home: Path,
-    ) -> dict[str, str]:
-        fallback_calls.append((client, fallback_executable, home))
-        return fallback_report
-
     monkeypatch.setattr("cheapy.mcp_installer.shutil.which", fake_which)
     monkeypatch.setattr("cheapy.mcp_installer.subprocess.run", fake_run)
-    monkeypatch.setattr(
-        "cheapy.mcp_installer._install_via_direct_config",
-        fake_direct_fallback,
-    )
 
     report = install_mcp(InstallerClient.CODEX, project_root=tmp_path, home=tmp_path)
 
-    assert report == fallback_report
-    assert fallback_calls == [(InstallerClient.CODEX, executable.resolve(), tmp_path)]
+    config_path = tmp_path / ".codex" / "config.toml"
+    assert report["status"] == "ok"
+    assert report["client"] == "codex"
+    assert report["method"] == "direct_edit"
+    assert report["config_path"] == str(config_path)
+    assert report["rollback_path"]
+    assert Path(str(report["rollback_path"])).exists()
+    assert config_path.exists()
+    assert 'command = "/opt/bin/cheapy"' in config_path.read_text(encoding="utf-8")
 
 
 def test_install_unknown_official_cli_failure_does_not_use_direct_fallback(
@@ -330,21 +322,15 @@ def test_install_unknown_official_cli_failure_does_not_use_direct_fallback(
             stderr="unexpected config failure",
         )
 
-    def fail_direct_fallback(*args: Any, **kwargs: Any) -> None:
-        raise AssertionError("direct config fallback should not run")
-
     monkeypatch.setattr("cheapy.mcp_installer.shutil.which", fake_which)
     monkeypatch.setattr("cheapy.mcp_installer.subprocess.run", fake_run)
-    monkeypatch.setattr(
-        "cheapy.mcp_installer._install_via_direct_config",
-        fail_direct_fallback,
-    )
 
     with pytest.raises(InstallerError) as exc_info:
         install_mcp(InstallerClient.CODEX, project_root=tmp_path, home=tmp_path)
 
     assert exc_info.value.code == "CLIENT_CONFIG_UNAVAILABLE"
     assert "codex mcp add cheapy -- /opt/bin/cheapy mcp" in exc_info.value.suggestion
+    assert not (tmp_path / ".codex" / "config.toml").exists()
 
 
 def test_install_unknown_official_cli_failure_redacts_and_bounds_output(
@@ -388,7 +374,7 @@ def test_install_unknown_official_cli_failure_redacts_and_bounds_output(
     assert len(message) <= 320
 
 
-def test_install_missing_official_cli_reports_manual_command(
+def test_install_missing_official_cli_performs_direct_fallback(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -403,8 +389,14 @@ def test_install_missing_official_cli_reports_manual_command(
     monkeypatch.setattr("cheapy.mcp_installer.shutil.which", fake_which)
     monkeypatch.setattr("cheapy.mcp_installer.subprocess.run", fake_run)
 
-    with pytest.raises(InstallerError) as exc_info:
-        install_mcp(InstallerClient.CODEX, project_root=tmp_path, home=tmp_path)
+    report = install_mcp(InstallerClient.CODEX, project_root=tmp_path, home=tmp_path)
 
-    assert exc_info.value.code == "CLIENT_CONFIG_UNAVAILABLE"
-    assert "codex mcp add cheapy -- /opt/bin/cheapy mcp" in exc_info.value.suggestion
+    config_path = tmp_path / ".codex" / "config.toml"
+    assert report["status"] == "ok"
+    assert report["client"] == "codex"
+    assert report["method"] == "direct_edit"
+    assert report["config_path"] == str(config_path)
+    assert report["rollback_path"]
+    assert Path(str(report["rollback_path"])).exists()
+    assert config_path.exists()
+    assert 'command = "/opt/bin/cheapy"' in config_path.read_text(encoding="utf-8")
