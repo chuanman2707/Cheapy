@@ -180,6 +180,10 @@ def test_resolve_cheapy_executable_reports_version_mismatch(
         "Error: No such command 'mcp'.",
         "unknown command mcp for codex",
         "error: unrecognized subcommand 'mcp'",
+        "error: unknown option '--transport'",
+        "error: unrecognized option '--transport'",
+        "error: unknown flag --transport",
+        "error: unexpected argument '--'",
         "MCP server 'cheapy' already exists",
     ],
 )
@@ -339,6 +343,39 @@ def test_install_recoverable_official_cli_failure_enters_direct_fallback(
     assert Path(str(report["rollback_path"])).exists()
     assert config_path.exists()
     assert 'command = "/opt/bin/cheapy"' in config_path.read_text(encoding="utf-8")
+
+
+def test_install_unsupported_official_cli_shape_enters_direct_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    executable = Path("/opt/bin/cheapy")
+
+    def fake_which(name: str) -> str | None:
+        return {"cheapy": str(executable), "claude": "/usr/local/bin/claude"}.get(name)
+
+    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if command == [str(executable), "--version"]:
+            return subprocess.CompletedProcess(command, 0, stdout="0.1.0\n", stderr="")
+        return subprocess.CompletedProcess(
+            command,
+            2,
+            stdout="",
+            stderr="error: unknown option '--transport'",
+        )
+
+    monkeypatch.setattr("cheapy.mcp_installer.shutil.which", fake_which)
+    monkeypatch.setattr("cheapy.mcp_installer.subprocess.run", fake_run)
+
+    report = install_mcp(InstallerClient.CLAUDE, project_root=tmp_path, home=tmp_path)
+
+    config_path = tmp_path / ".claude.json"
+    assert report["status"] == "ok"
+    assert report["client"] == "claude"
+    assert report["method"] == "direct_edit"
+    assert report["config_path"] == str(config_path)
+    assert report["rollback_path"]
+    assert config_path.exists()
 
 
 def test_install_unknown_official_cli_failure_does_not_use_direct_fallback(

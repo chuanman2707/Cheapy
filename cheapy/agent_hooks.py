@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 import re
 from typing import Any
@@ -53,6 +54,13 @@ CLAUDE_HOOK_BODY = """## Cheapy MCP Flight Search
 Before using Cheapy MCP, follow `.cheapy/claude-instructions.md`.
 """
 
+STALE_LEGACY_INSTRUCTION_PATTERNS = (
+    re.compile(
+        r"^[^\n]*\bDecide one-way or round-trip from the user's sentence\.[^\n]*\n?",
+        flags=re.IGNORECASE | re.MULTILINE,
+    ),
+)
+
 
 class UnsafeHookTargetError(Exception):
     """Hook target is outside the project root or otherwise unsafe."""
@@ -78,6 +86,7 @@ def install_agent_hooks(client: object, project_root: Path) -> dict[str, Any]:
                 INSTRUCTION_BODY,
                 manual_steps,
                 new_file_prefix=CODEX_SKILL_HEADER,
+                transform_existing=_remove_stale_legacy_instruction_text,
             ),
             "agents_hook": _safe_write_managed_block(
                 agents_path,
@@ -105,6 +114,7 @@ def install_agent_hooks(client: object, project_root: Path) -> dict[str, Any]:
                 INSTRUCTION_BODY,
                 manual_steps,
                 new_file_prefix=CLAUDE_INSTRUCTIONS_HEADER,
+                transform_existing=_remove_stale_legacy_instruction_text,
             ),
             "claude_hook": _safe_write_managed_block(
                 claude_path,
@@ -138,6 +148,7 @@ def _safe_write_managed_block(
     manual_steps: list[str],
     *,
     new_file_prefix: str = "",
+    transform_existing: Callable[[str], str] | None = None,
 ) -> dict[str, str]:
     block = _managed_block(begin, end, body)
     try:
@@ -150,6 +161,7 @@ def _safe_write_managed_block(
                 end,
                 block,
                 new_file_prefix=new_file_prefix,
+                transform_existing=transform_existing,
             ),
         )
     except (
@@ -203,8 +215,11 @@ def _managed_text(
     block: str,
     *,
     new_file_prefix: str = "",
+    transform_existing: Callable[[str], str] | None = None,
 ) -> str:
     current_text = path.read_text(encoding="utf-8") if path.exists() else ""
+    if transform_existing is not None and current_text:
+        current_text = transform_existing(current_text)
     begin_count = current_text.count(begin)
     end_count = current_text.count(end)
     if begin_count != end_count or begin_count > 1:
@@ -233,3 +248,10 @@ def _managed_text(
 
 def _managed_block(begin: str, end: str, body: str) -> str:
     return f"{begin}\n{body.strip()}\n{end}"
+
+
+def _remove_stale_legacy_instruction_text(text: str) -> str:
+    updated = text
+    for pattern in STALE_LEGACY_INSTRUCTION_PATTERNS:
+        updated = pattern.sub("", updated)
+    return updated

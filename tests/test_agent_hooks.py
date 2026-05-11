@@ -328,6 +328,7 @@ def test_existing_codex_skill_preserves_custom_text_and_adds_managed_guidance(
             "| User text | IATA |",
             "| --- | --- |",
             "| custom airport | CXR |",
+            "3. Decide one-way or round-trip from the user's sentence.",
             "",
         ]
     )
@@ -339,6 +340,7 @@ def test_existing_codex_skill_preserves_custom_text_and_adds_managed_guidance(
     assert report["codex_skill"]["status"] == "updated"  # type: ignore[index]
     assert "| custom airport | CXR |" in skill_text
     assert "custom-cheapy" in skill_text
+    assert "Decide one-way or round-trip" not in skill_text
     assert CODEX_BEGIN in skill_text
     assert CODEX_END in skill_text
     assert "search_cheapest_flights" in skill_text

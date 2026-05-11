@@ -136,10 +136,20 @@ def is_recoverable_official_cli_failure(
             "invalid choice",
         )
     )
+    unsupported_command_shape = any(
+        phrase in output
+        for phrase in (
+            "unknown option",
+            "unrecognized option",
+            "unknown flag",
+            "unrecognized flag",
+            "unexpected argument",
+        )
+    )
     server_already_exists = "already exists" in output and any(
         token in output for token in ("server", "mcp", SERVER_NAME)
     )
-    return missing_mcp_command or server_already_exists
+    return missing_mcp_command or unsupported_command_shape or server_already_exists
 
 
 def install_mcp(
