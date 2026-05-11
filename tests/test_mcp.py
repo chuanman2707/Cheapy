@@ -97,6 +97,9 @@ def test_mcp_search_tool_uses_top_level_contract_fields() -> None:
         "destination",
         "departure_date",
     }.issubset(set(input_schema["required"]))
+    assert input_schema["additionalProperties"] is False
+    assert properties["max_results"]["minimum"] == 1
+    assert properties["max_results"]["maximum"] == 20
 
 
 def test_mcp_search_tool_returns_structured_contract_response() -> None:

@@ -54,6 +54,9 @@ def create_mcp_server() -> FastMCP:
         )
         return await asyncio.to_thread(search_exact, request)
 
+    # FastMCP otherwise coerces scalar inputs and drops extra args before the
+    # strict SearchRequestV1 boundary, so the SDK minor is capped and this
+    # adapter patches the generated arg model/schema to preserve Contract V1.
     tool = server._tool_manager.get_tool("search_cheapest_flights")
     if tool is None:  # pragma: no cover
         raise RuntimeError("search_cheapest_flights tool was not registered")
