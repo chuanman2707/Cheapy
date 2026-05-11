@@ -15,6 +15,19 @@ CODEX_END = "<!-- END CHEAPY MANAGED CODEX INSTRUCTIONS -->"
 CLAUDE_BEGIN = "<!-- BEGIN CHEAPY MANAGED CLAUDE INSTRUCTIONS -->"
 CLAUDE_END = "<!-- END CHEAPY MANAGED CLAUDE INSTRUCTIONS -->"
 
+CODEX_SKILL_HEADER = """---
+name: cheapy-flight-search
+description: Use when searching one-way flights with Cheapy MCP.
+---
+
+# Cheapy Flight Search
+
+"""
+
+CLAUDE_INSTRUCTIONS_HEADER = """# Cheapy MCP Flight Search
+
+"""
+
 INSTRUCTION_BODY = """Use Cheapy only for exact one-way MVP flight searches.
 
 - Call only `search_cheapest_flights`.
@@ -30,19 +43,6 @@ INSTRUCTION_BODY = """Use Cheapy only for exact one-way MVP flight searches.
 - Explain mixed currency cautiously; preserve provider currency and do not overstate comparisons.
 """
 
-CODEX_SKILL_TEXT = """---
-name: cheapy-flight-search
-description: Use when searching one-way flights with Cheapy MCP.
----
-
-# Cheapy Flight Search
-
-""" + INSTRUCTION_BODY
-
-CLAUDE_INSTRUCTIONS_TEXT = """# Cheapy MCP Flight Search
-
-""" + INSTRUCTION_BODY
-
 CODEX_HOOK_BODY = """## Cheapy MCP Flight Search
 
 Before using Cheapy MCP, use the project skill at `.codex/skills/cheapy/SKILL.md`.
@@ -54,6 +54,14 @@ Before using Cheapy MCP, follow `.cheapy/claude-instructions.md`.
 """
 
 
+class UnsafeHookTargetError(Exception):
+    """Hook target is outside the project root or otherwise unsafe."""
+
+
+class UnsafeManagedBlockError(Exception):
+    """Managed block markers are malformed or duplicated."""
+
+
 def install_agent_hooks(client: object, project_root: Path) -> dict[str, Any]:
     """Install selected-client agent instruction hooks for Cheapy MCP."""
     selected_client = _client_value(client)
@@ -62,13 +70,18 @@ def install_agent_hooks(client: object, project_root: Path) -> dict[str, Any]:
     if selected_client == CODEX_CLIENT:
         agents_path = root / "AGENTS.md"
         return {
-            "codex_skill": _safe_write_file(
+            "codex_skill": _safe_write_managed_block(
                 root / ".codex" / "skills" / "cheapy" / "SKILL.md",
-                CODEX_SKILL_TEXT,
+                root,
+                CODEX_BEGIN,
+                CODEX_END,
+                INSTRUCTION_BODY,
                 manual_steps,
+                new_file_prefix=CODEX_SKILL_HEADER,
             ),
             "agents_hook": _safe_write_managed_block(
                 agents_path,
+                root,
                 CODEX_BEGIN,
                 CODEX_END,
                 CODEX_HOOK_BODY,
@@ -84,13 +97,18 @@ def install_agent_hooks(client: object, project_root: Path) -> dict[str, Any]:
         return {
             "codex_skill": _not_applicable(),
             "agents_hook": _not_applicable(),
-            "claude_instructions": _safe_write_file(
+            "claude_instructions": _safe_write_managed_block(
                 root / ".cheapy" / "claude-instructions.md",
-                CLAUDE_INSTRUCTIONS_TEXT,
+                root,
+                CLAUDE_BEGIN,
+                CLAUDE_END,
+                INSTRUCTION_BODY,
                 manual_steps,
+                new_file_prefix=CLAUDE_INSTRUCTIONS_HEADER,
             ),
             "claude_hook": _safe_write_managed_block(
                 claude_path,
+                root,
                 CLAUDE_BEGIN,
                 CLAUDE_END,
                 CLAUDE_HOOK_BODY,
@@ -111,29 +129,35 @@ def _not_applicable() -> dict[str, str]:
     return {"status": "not_applicable"}
 
 
-def _safe_write_file(
-    path: Path,
-    text: str,
-    manual_steps: list[str],
-) -> dict[str, str]:
-    try:
-        return _write_report(path, text)
-    except (OSError, UnicodeError):
-        manual_steps.append(_manual_file_step(path, text))
-        return _manual_required(path)
-
-
 def _safe_write_managed_block(
     path: Path,
+    project_root: Path,
     begin: str,
     end: str,
     body: str,
     manual_steps: list[str],
+    *,
+    new_file_prefix: str = "",
 ) -> dict[str, str]:
     block = _managed_block(begin, end, body)
     try:
-        return _write_report(path, _managed_text(path, begin, end, block))
-    except (OSError, UnicodeError):
+        _validate_safe_target(path, project_root)
+        return _write_report(
+            path,
+            _managed_text(
+                path,
+                begin,
+                end,
+                block,
+                new_file_prefix=new_file_prefix,
+            ),
+        )
+    except (
+        OSError,
+        UnicodeError,
+        UnsafeHookTargetError,
+        UnsafeManagedBlockError,
+    ):
         manual_steps.append(_manual_block_step(path, block))
         return _manual_required(path)
 
@@ -152,30 +176,59 @@ def _manual_required(path: Path) -> dict[str, str]:
     return {"status": "manual_required", "path": str(path)}
 
 
-def _manual_file_step(path: Path, text: str) -> str:
-    return f"Manually create or update {path} with this content:\n{text}"
-
-
 def _manual_block_step(path: Path, block: str) -> str:
     return f"Manually add or replace the Cheapy managed block in {path}:\n{block}"
 
 
-def _managed_text(path: Path, begin: str, end: str, block: str) -> str:
+def _validate_safe_target(path: Path, project_root: Path) -> None:
+    root = project_root.resolve(strict=True)
+    if path.is_symlink():
+        try:
+            target = path.resolve(strict=True)
+        except OSError as exc:
+            raise UnsafeHookTargetError(str(exc)) from exc
+    else:
+        target = path.resolve(strict=path.exists())
+
+    try:
+        target.relative_to(root)
+    except ValueError as exc:
+        raise UnsafeHookTargetError(f"{target} is outside {root}") from exc
+
+
+def _managed_text(
+    path: Path,
+    begin: str,
+    end: str,
+    block: str,
+    *,
+    new_file_prefix: str = "",
+) -> str:
     current_text = path.read_text(encoding="utf-8") if path.exists() else ""
+    begin_count = current_text.count(begin)
+    end_count = current_text.count(end)
+    if begin_count != end_count or begin_count > 1:
+        raise UnsafeManagedBlockError("Managed block markers are malformed.")
+
     pattern = re.compile(
         rf"{re.escape(begin)}.*?{re.escape(end)}",
         flags=re.DOTALL,
     )
     matches = list(pattern.finditer(current_text))
     if matches:
+        if len(matches) != 1:
+            raise UnsafeManagedBlockError("Managed block markers are duplicated.")
         first = matches[0]
         last = matches[-1]
         return f"{current_text[: first.start()]}{block}{current_text[last.end() :]}"
 
+    if begin_count or end_count:
+        raise UnsafeManagedBlockError("Managed block markers are malformed.")
+
     if current_text:
         separator = "" if current_text.endswith("\n") else "\n"
         return f"{current_text}{separator}\n{block}\n"
-    return f"{block}\n"
+    return f"{new_file_prefix}{block}\n"
 
 
 def _managed_block(begin: str, end: str, body: str) -> str:

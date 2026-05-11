@@ -146,6 +146,65 @@ def test_claude_hook_preserves_claude_md_symlink(tmp_path: Path) -> None:
     assert CLAUDE_END in target_text
 
 
+def test_codex_hook_out_of_tree_symlink_returns_manual_required(
+    tmp_path: Path,
+) -> None:
+    outside_path = tmp_path.parent / f"{tmp_path.name}-outside-agents.md"
+    outside_path.write_text("outside content\n", encoding="utf-8")
+    agents_path = tmp_path / "AGENTS.md"
+    agents_path.symlink_to(outside_path)
+
+    try:
+        report = install_agent_hooks("codex", tmp_path)
+
+        assert agents_path.is_symlink()
+        assert outside_path.read_text(encoding="utf-8") == "outside content\n"
+        assert report["agents_hook"] == {
+            "status": "manual_required",
+            "path": str(agents_path),
+        }
+        assert report["manual_steps"] == [_expected_codex_agents_manual_step(agents_path)]
+    finally:
+        outside_path.unlink(missing_ok=True)
+
+
+def test_claude_hook_broken_symlink_returns_manual_required(tmp_path: Path) -> None:
+    claude_path = tmp_path / "CLAUDE.md"
+    claude_path.symlink_to("missing-target.md")
+
+    report = install_agent_hooks("claude", tmp_path)
+
+    assert claude_path.is_symlink()
+    assert not (tmp_path / "missing-target.md").exists()
+    assert report["claude_hook"] == {
+        "status": "manual_required",
+        "path": str(claude_path),
+    }
+    assert report["manual_steps"] == [_expected_claude_hook_manual_step(claude_path)]
+
+
+def test_codex_skill_parent_symlink_outside_returns_manual_required(
+    tmp_path: Path,
+) -> None:
+    outside_dir = tmp_path.parent / f"{tmp_path.name}-outside-codex"
+    outside_dir.mkdir()
+    codex_dir = tmp_path / ".codex"
+    codex_dir.symlink_to(outside_dir, target_is_directory=True)
+
+    try:
+        report = install_agent_hooks("codex", tmp_path)
+
+        outside_files = list(outside_dir.rglob("*"))
+        assert outside_files == []
+        assert report["codex_skill"]["status"] == "manual_required"  # type: ignore[index]
+        assert report["codex_skill"]["path"] == str(  # type: ignore[index]
+            tmp_path / ".codex" / "skills" / "cheapy" / "SKILL.md"
+        )
+        assert report["manual_steps"]
+    finally:
+        outside_dir.rmdir()
+
+
 def test_managed_block_replacement_preserves_unmanaged_content(
     tmp_path: Path,
 ) -> None:
@@ -174,6 +233,36 @@ def test_managed_block_replacement_preserves_unmanaged_content(
     assert "old managed content" not in agents_text
     assert agents_text.count(CODEX_BEGIN) == 1
     assert agents_text.count(CODEX_END) == 1
+
+
+def test_duplicate_managed_blocks_return_manual_required_and_preserve_file(
+    tmp_path: Path,
+) -> None:
+    agents_path = tmp_path / "AGENTS.md"
+    original_text = "\n".join(
+        [
+            "# Existing",
+            CODEX_BEGIN,
+            "first managed content",
+            CODEX_END,
+            "user text between blocks",
+            CODEX_BEGIN,
+            "second managed content",
+            CODEX_END,
+            "after content",
+            "",
+        ]
+    )
+    agents_path.write_text(original_text, encoding="utf-8")
+
+    report = install_agent_hooks("codex", tmp_path)
+
+    assert agents_path.read_text(encoding="utf-8") == original_text
+    assert report["agents_hook"] == {
+        "status": "manual_required",
+        "path": str(agents_path),
+    }
+    assert report["manual_steps"] == [_expected_codex_agents_manual_step(agents_path)]
 
 
 def test_managed_block_replacement_preserves_outside_whitespace_exactly(
@@ -221,6 +310,38 @@ def test_codex_agents_hook_write_failure_returns_manual_required(
     _assert_not_applicable(report, "claude_instructions")
     _assert_not_applicable(report, "claude_hook")
     assert report["manual_steps"] == [_expected_codex_agents_manual_step(agents_path)]
+
+
+def test_existing_codex_skill_preserves_custom_text_and_adds_managed_guidance(
+    tmp_path: Path,
+) -> None:
+    skill_path = tmp_path / ".codex" / "skills" / "cheapy" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    custom_text = "\n".join(
+        [
+            "---",
+            "name: custom-cheapy",
+            "---",
+            "",
+            "# Custom Cheapy Notes",
+            "",
+            "| User text | IATA |",
+            "| --- | --- |",
+            "| custom airport | CXR |",
+            "",
+        ]
+    )
+    skill_path.write_text(custom_text, encoding="utf-8")
+
+    report = install_agent_hooks("codex", tmp_path)
+
+    skill_text = skill_path.read_text(encoding="utf-8")
+    assert report["codex_skill"]["status"] == "updated"  # type: ignore[index]
+    assert "| custom airport | CXR |" in skill_text
+    assert "custom-cheapy" in skill_text
+    assert CODEX_BEGIN in skill_text
+    assert CODEX_END in skill_text
+    assert "search_cheapest_flights" in skill_text
 
 
 def test_claude_hook_write_failure_returns_manual_required(tmp_path: Path) -> None:
