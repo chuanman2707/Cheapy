@@ -20,6 +20,8 @@ from cheapy.mcp_installer import InstallerClient, InstallerError, SERVER_NAME
 REDACTED = "[REDACTED]"
 CONFIG_FILE_MODE = 0o600
 PRIVATE_DIR_MODE = 0o700
+CONFIG_ROLLBACK_ARTIFACT_FAILED = "CONFIG_ROLLBACK_ARTIFACT_FAILED"
+CONFIG_WRITE_FAILED = "CONFIG_WRITE_FAILED"
 SECRET_KEY_PATTERN = re.compile(
     r"(token|secret|api(?:[_-]?key|key)|authorization|bearer|password)",
     re.IGNORECASE,
@@ -63,7 +65,12 @@ def _edit_codex_config(
     codex_dir = home / ".codex"
     config_path = codex_dir / "config.toml"
     _ensure_safe_parent(codex_dir, home)
-    _ensure_private_dir(codex_dir, chmod_existing=False)
+    _ensure_private_dir(
+        codex_dir,
+        chmod_existing=False,
+        failure_code=CONFIG_WRITE_FAILED,
+    )
+    _ensure_safe_config_file(config_path)
 
     if config_path.exists():
         original_text = config_path.read_text(encoding="utf-8")
@@ -105,7 +112,13 @@ def _edit_codex_config(
         previous_entry=previous_entry,
         new_entry=new_entry,
     )
-    _atomic_write_text(config_path, next_text, mode=CONFIG_FILE_MODE)
+    _ensure_safe_config_file(config_path)
+    _atomic_write_text(
+        config_path,
+        next_text,
+        mode=CONFIG_FILE_MODE,
+        failure_code=CONFIG_WRITE_FAILED,
+    )
     return ConfigEditResult(config_path=config_path, rollback_path=rollback_path)
 
 
@@ -117,7 +130,12 @@ def _edit_claude_config(
 ) -> ConfigEditResult:
     config_path = home / ".claude.json"
     _ensure_safe_parent(config_path.parent, home)
-    _ensure_private_dir(config_path.parent, chmod_existing=False)
+    _ensure_private_dir(
+        config_path.parent,
+        chmod_existing=False,
+        failure_code=CONFIG_WRITE_FAILED,
+    )
+    _ensure_safe_config_file(config_path)
 
     if config_path.exists():
         original_text = config_path.read_text(encoding="utf-8")
@@ -165,7 +183,13 @@ def _edit_claude_config(
         previous_entry=previous_entry,
         new_entry=new_entry,
     )
-    _atomic_write_text(config_path, next_text, mode=CONFIG_FILE_MODE)
+    _ensure_safe_config_file(config_path)
+    _atomic_write_text(
+        config_path,
+        next_text,
+        mode=CONFIG_FILE_MODE,
+        failure_code=CONFIG_WRITE_FAILED,
+    )
     return ConfigEditResult(config_path=config_path, rollback_path=rollback_path)
 
 
@@ -196,7 +220,11 @@ def _write_rollback_artifact(
 ) -> Path:
     rollback_dir = home / ".cheapy" / "client-config-rollbacks"
     _ensure_safe_parent(rollback_dir, home)
-    _ensure_private_dir(rollback_dir, chmod_existing=True)
+    _ensure_private_dir(
+        rollback_dir,
+        chmod_existing=True,
+        failure_code=CONFIG_ROLLBACK_ARTIFACT_FAILED,
+    )
 
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     rollback_path = rollback_dir / f"{client.value}-{SERVER_NAME}-{timestamp}.json"
@@ -216,6 +244,7 @@ def _write_rollback_artifact(
         rollback_path,
         json.dumps(payload, indent=2, sort_keys=True) + "\n",
         mode=CONFIG_FILE_MODE,
+        failure_code=CONFIG_ROLLBACK_ARTIFACT_FAILED,
     )
     return rollback_path
 
@@ -321,22 +350,53 @@ def _ensure_safe_parent(parent: Path, home: Path) -> None:
         )
 
 
-def _ensure_private_dir(path: Path, *, chmod_existing: bool) -> None:
-    existed = path.exists()
-    path.mkdir(mode=PRIVATE_DIR_MODE, parents=True, exist_ok=True)
-    if chmod_existing or not existed:
-        _chmod(path, PRIVATE_DIR_MODE)
-
-
-def _atomic_write_text(path: Path, text: str, *, mode: int) -> None:
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-        dir=str(path.parent),
-        text=True,
-    )
-    tmp_path = Path(tmp_name)
+def _ensure_safe_config_file(path: Path) -> None:
     try:
+        if path.is_symlink():
+            raise _client_config_unavailable_error(
+                f"Refusing to edit config because it is a symlink: {path}"
+            )
+        if path.exists() and not path.is_file():
+            raise _client_config_unavailable_error(
+                f"Refusing to edit config because it is not a regular file: {path}"
+            )
+    except OSError as exc:
+        raise _client_config_unavailable_error(
+            f"Could not inspect client config path safely: {exc}"
+        ) from exc
+
+
+def _ensure_private_dir(
+    path: Path,
+    *,
+    chmod_existing: bool,
+    failure_code: str,
+) -> None:
+    try:
+        existed = path.exists()
+        path.mkdir(mode=PRIVATE_DIR_MODE, parents=True, exist_ok=True)
+        if chmod_existing or not existed:
+            _chmod(path, PRIVATE_DIR_MODE)
+    except OSError as exc:
+        raise _write_failed_error(failure_code, path, exc) from exc
+
+
+def _atomic_write_text(
+    path: Path,
+    text: str,
+    *,
+    mode: int,
+    failure_code: str,
+) -> None:
+    tmp_path: Path | None = None
+    try:
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            dir=str(path.parent),
+            text=True,
+        )
+        tmp_path = Path(tmp_name)
         with os.fdopen(fd, "w", encoding="utf-8") as tmp_file:
             tmp_file.write(text)
             tmp_file.flush()
@@ -344,17 +404,23 @@ def _atomic_write_text(path: Path, text: str, *, mode: int) -> None:
         _chmod(tmp_path, mode)
         os.replace(tmp_path, path)
         _chmod(path, mode)
+    except OSError as exc:
+        _cleanup_tmp_file(tmp_path)
+        raise _write_failed_error(failure_code, path, exc) from exc
     except BaseException:
-        try:
-            tmp_path.unlink()
-        except FileNotFoundError:
-            pass
+        _cleanup_tmp_file(tmp_path)
         raise
 
 
 def _chmod(path: Path, mode: int) -> None:
+    os.chmod(path, mode)
+
+
+def _cleanup_tmp_file(path: Path | None) -> None:
+    if path is None:
+        return
     try:
-        os.chmod(path, mode)
+        path.unlink()
     except OSError:
         return
 
@@ -373,3 +439,17 @@ def _client_config_unavailable_error(message: str) -> InstallerError:
         message=message,
         suggestion="Run the official MCP add command manually.",
     )
+
+
+def _write_failed_error(code: str, path: Path, exc: OSError) -> InstallerError:
+    if code == CONFIG_ROLLBACK_ARTIFACT_FAILED:
+        message = f"Could not create rollback artifact at {path}: {exc}"
+        suggestion = "Fix permissions for the Cheapy rollback artifact directory."
+    elif code == CONFIG_WRITE_FAILED:
+        message = f"Could not write client config at {path}: {exc}"
+        suggestion = "Fix permissions for the client config path."
+    else:
+        message = f"Could not write {path}: {exc}"
+        suggestion = "Fix filesystem permissions and retry."
+
+    return InstallerError(code=code, message=message, suggestion=suggestion)

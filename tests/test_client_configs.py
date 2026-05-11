@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import stat
 from pathlib import Path
 
@@ -296,6 +297,117 @@ def test_invalid_toml_raises_parse_failed_and_leaves_original_file(
 
     assert exc_info.value.code == "CONFIG_PARSE_FAILED"
     assert config_path.read_text(encoding="utf-8") == original
+
+
+def test_codex_existing_config_directory_fails_closed(tmp_path: Path) -> None:
+    codex_dir = tmp_path / ".codex"
+    codex_dir.mkdir()
+    (codex_dir / "config.toml").mkdir()
+
+    with pytest.raises(InstallerError) as exc_info:
+        edit_client_config(
+            InstallerClient.CODEX,
+            ENTRY,
+            project_root=tmp_path / "project",
+            home=tmp_path,
+        )
+
+    assert exc_info.value.code == "CLIENT_CONFIG_UNAVAILABLE"
+
+
+def test_claude_existing_config_symlink_fails_closed(tmp_path: Path) -> None:
+    target = tmp_path / "target.json"
+    target.write_text("{}", encoding="utf-8")
+    config_path = tmp_path / ".claude.json"
+    try:
+        config_path.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is not supported here: {exc}")
+
+    with pytest.raises(InstallerError) as exc_info:
+        edit_client_config(
+            InstallerClient.CLAUDE,
+            ENTRY,
+            project_root=tmp_path / "project",
+            home=tmp_path,
+        )
+
+    assert exc_info.value.code == "CLIENT_CONFIG_UNAVAILABLE"
+
+
+def test_rollback_artifact_replace_failure_raises_structured_code(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    real_replace = os.replace
+
+    def fake_replace(src: str, dst: str) -> None:
+        if "client-config-rollbacks" in Path(dst).parts:
+            raise OSError("rollback replace denied")
+        real_replace(src, dst)
+
+    monkeypatch.setattr("cheapy.client_configs.os.replace", fake_replace)
+
+    with pytest.raises(InstallerError) as exc_info:
+        edit_client_config(
+            InstallerClient.CODEX,
+            ENTRY,
+            project_root=tmp_path / "project",
+            home=tmp_path,
+        )
+
+    assert exc_info.value.code == "CONFIG_ROLLBACK_ARTIFACT_FAILED"
+    assert not (tmp_path / ".codex" / "config.toml").exists()
+
+
+def test_rollback_artifact_chmod_failure_raises_structured_code(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    real_chmod = os.chmod
+
+    def fake_chmod(path: str | Path, mode: int) -> None:
+        if Path(path).name == "client-config-rollbacks":
+            raise OSError("rollback chmod denied")
+        real_chmod(path, mode)
+
+    monkeypatch.setattr("cheapy.client_configs.os.chmod", fake_chmod)
+
+    with pytest.raises(InstallerError) as exc_info:
+        edit_client_config(
+            InstallerClient.CODEX,
+            ENTRY,
+            project_root=tmp_path / "project",
+            home=tmp_path,
+        )
+
+    assert exc_info.value.code == "CONFIG_ROLLBACK_ARTIFACT_FAILED"
+    assert not (tmp_path / ".codex" / "config.toml").exists()
+
+
+def test_config_replace_failure_raises_structured_code(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    real_replace = os.replace
+
+    def fake_replace(src: str, dst: str) -> None:
+        if Path(dst).name == "config.toml":
+            raise OSError("config replace denied")
+        real_replace(src, dst)
+
+    monkeypatch.setattr("cheapy.client_configs.os.replace", fake_replace)
+
+    with pytest.raises(InstallerError) as exc_info:
+        edit_client_config(
+            InstallerClient.CODEX,
+            ENTRY,
+            project_root=tmp_path / "project",
+            home=tmp_path,
+        )
+
+    assert exc_info.value.code == "CONFIG_WRITE_FAILED"
+    assert not (tmp_path / ".codex" / "config.toml").exists()
 
 
 def test_unsafe_parent_path_raises_client_config_unavailable(tmp_path: Path) -> None:

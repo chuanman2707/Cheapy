@@ -269,13 +269,15 @@ def _install_via_direct_config(
             home=home,
         )
     except InstallerError as exc:
-        if exc.code == "CLIENT_CONFIG_UNAVAILABLE":
-            raise _client_config_unavailable_error(
-                client,
-                executable,
-                exc.message,
-            ) from exc
-        raise
+        raise InstallerError(
+            code=exc.code,
+            message=exc.message,
+            suggestion=(
+                f"{exc.suggestion} "
+                f"Run manually: {manual_install_command(client, executable)}"
+            ),
+            exit_code=exc.exit_code,
+        ) from exc
 
     return {
         "status": "ok",

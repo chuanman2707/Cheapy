@@ -400,3 +400,31 @@ def test_install_missing_official_cli_performs_direct_fallback(
     assert Path(str(report["rollback_path"])).exists()
     assert config_path.exists()
     assert 'command = "/opt/bin/cheapy"' in config_path.read_text(encoding="utf-8")
+
+
+def test_install_missing_official_cli_preserves_parse_error_with_manual_command(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    executable = Path("/opt/bin/cheapy")
+    codex_dir = tmp_path / ".codex"
+    codex_dir.mkdir()
+    (codex_dir / "config.toml").write_text("[mcp_servers\n", encoding="utf-8")
+
+    def fake_which(name: str) -> str | None:
+        return str(executable) if name == "cheapy" else None
+
+    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(command, 0, stdout="0.1.0\n", stderr="")
+
+    monkeypatch.setattr("cheapy.mcp_installer.shutil.which", fake_which)
+    monkeypatch.setattr("cheapy.mcp_installer.subprocess.run", fake_run)
+
+    with pytest.raises(InstallerError) as exc_info:
+        install_mcp(InstallerClient.CODEX, project_root=tmp_path, home=tmp_path)
+
+    assert exc_info.value.code == "CONFIG_PARSE_FAILED"
+    assert "Could not parse Codex TOML config" in exc_info.value.message
+    assert "Run manually: codex mcp add cheapy -- /opt/bin/cheapy mcp" in (
+        exc_info.value.suggestion
+    )
