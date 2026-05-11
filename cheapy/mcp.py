@@ -35,7 +35,7 @@ def create_mcp_server() -> FastMCP:
         departure_date: str,
         return_date: str | None = None,
         search_mode: SearchMode = SearchMode.EXACT,
-        passengers: PassengersV1 | None = None,
+        passengers: PassengersV1 = PassengersV1(),
         max_results: int = 5,
     ) -> SearchResponseV1:
         """Search exact one-way flights and return Contract V1 results."""
@@ -85,6 +85,6 @@ def _request_payload(
     }
     if isinstance(passengers, PassengersV1):
         payload["passengers"] = passengers.model_dump(mode="json")
-    elif passengers is not None:
+    else:
         payload["passengers"] = passengers
     return payload

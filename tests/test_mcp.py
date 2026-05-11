@@ -150,3 +150,22 @@ def test_mcp_search_tool_rejects_invalid_contract_input() -> None:
     assert _is_error(result) is True
     text = _text_content(result).lower()
     assert "date" in text or "validation" in text
+
+
+def test_mcp_search_tool_rejects_null_passengers() -> None:
+    arguments = {
+        "schema_version": "1",
+        "origin": "CXR",
+        "destination": "SGN",
+        "departure_date": "2026-07-10",
+        "passengers": None,
+    }
+
+    async def action(session: ClientSession) -> Any:
+        return await session.call_tool("search_cheapest_flights", arguments)
+
+    result = asyncio.run(_with_mcp_session(action))
+
+    assert _is_error(result) is True
+    text = _text_content(result).lower()
+    assert "passengers" in text or "validation" in text
