@@ -5,7 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+import re
 import shutil
+import shlex
 import subprocess
 from typing import Any
 
@@ -15,6 +17,17 @@ from cheapy import __version__
 SERVER_NAME = "cheapy"
 VERSION_CHECK_TIMEOUT_SECONDS = 5.0
 OFFICIAL_CLI_TIMEOUT_SECONDS = 30.0
+MAX_FAILURE_DETAIL_CHARS = 240
+REDACTED = "[REDACTED]"
+
+SECRET_PATTERNS = (
+    re.compile(r"(?i)(\bauthorization\s*:\s*)(?:bearer\s+)?[^\s]+"),
+    re.compile(r"(?i)\bbearer\s+[^\s]+"),
+    re.compile(
+        r"(?i)\b([a-z0-9_.-]*(?:token|secret|api[_-]?key|password)"
+        r"[a-z0-9_.-]*)\s*[:=]\s*[^\s]+"
+    ),
+)
 
 
 class InstallerClient(StrEnum):
@@ -53,7 +66,7 @@ def build_mcp_entry(executable: Path) -> dict[str, str | list[str]]:
 def manual_install_command(client: InstallerClient, executable: Path) -> str:
     """Return the manual official-client command for installing Cheapy MCP."""
     command = _official_cli_command(InstallerClient(client), executable)
-    return " ".join(command)
+    return shlex.join(command)
 
 
 def resolve_cheapy_executable() -> Path:
@@ -75,6 +88,7 @@ def resolve_cheapy_executable() -> Path:
             [str(executable_path), "--version"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
             text=True,
             timeout=VERSION_CHECK_TIMEOUT_SECONDS,
         )
@@ -118,6 +132,7 @@ def is_recoverable_official_cli_failure(
             "unknown command",
             "unknown subcommand",
             "unrecognized command",
+            "unrecognized subcommand",
             "invalid choice",
         )
     )
@@ -139,19 +154,25 @@ def install_mcp(
     install_root = Path.cwd() if project_root is None else project_root
     install_home = Path.home() if home is None else home
 
-    if shutil.which(selected_client.value) is None:
+    client_executable = shutil.which(selected_client.value)
+    if client_executable is None:
         return _install_via_direct_config(
             selected_client,
             executable,
             home=install_home,
         )
 
-    command = _official_cli_command(selected_client, executable)
+    command = _official_cli_command(
+        selected_client,
+        executable,
+        client_executable=client_executable,
+    )
     try:
         result = subprocess.run(
             command,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
             text=True,
             timeout=OFFICIAL_CLI_TIMEOUT_SECONDS,
             cwd=install_root,
@@ -194,10 +215,16 @@ def install_mcp(
     )
 
 
-def _official_cli_command(client: InstallerClient, executable: Path) -> list[str]:
+def _official_cli_command(
+    client: InstallerClient,
+    executable: Path,
+    *,
+    client_executable: str | None = None,
+) -> list[str]:
+    client_command = client.value if client_executable is None else client_executable
     if client is InstallerClient.CODEX:
         return [
-            "codex",
+            client_command,
             "mcp",
             "add",
             SERVER_NAME,
@@ -208,7 +235,7 @@ def _official_cli_command(client: InstallerClient, executable: Path) -> list[str
 
     if client is InstallerClient.CLAUDE:
         return [
-            "claude",
+            client_command,
             "mcp",
             "add",
             "--transport",
@@ -241,9 +268,10 @@ def _client_config_unavailable_error(
     executable: Path,
     detail: str,
 ) -> InstallerError:
+    safe_detail = _sanitize_failure_detail(detail)
     return InstallerError(
         code="CLIENT_CONFIG_UNAVAILABLE",
-        message=f"Could not configure {client.value} MCP client. {detail}",
+        message=f"Could not configure {client.value} MCP client. {safe_detail}",
         suggestion=(
             "Run the official client command manually: "
             f"{manual_install_command(client, executable)}"
@@ -259,3 +287,17 @@ def _failure_output(failure: str | subprocess.CompletedProcess[str]) -> str:
     if isinstance(failure, subprocess.CompletedProcess):
         return "\n".join(part for part in (failure.stdout, failure.stderr) if part)
     return failure
+
+
+def _sanitize_failure_detail(detail: str) -> str:
+    redacted = detail.strip() or "official CLI failed"
+    for pattern in SECRET_PATTERNS:
+        if pattern.groups:
+            redacted = pattern.sub(r"\1" + REDACTED, redacted)
+        else:
+            redacted = pattern.sub(REDACTED, redacted)
+
+    redacted = " ".join(redacted.split())
+    if len(redacted) <= MAX_FAILURE_DETAIL_CHARS:
+        return redacted
+    return redacted[: MAX_FAILURE_DETAIL_CHARS - 3].rstrip() + "..."
