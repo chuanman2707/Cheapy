@@ -11,31 +11,31 @@ cheapy mcp install --client codex
 cheapy mcp install --client claude
 ```
 
-The installer registers the existing stdio MCP server with Codex or Claude Code, creates or updates the project-local agent instruction hooks, and reports exactly what changed.
+The installer registers the existing stdio MCP server with Codex or Claude Code, creates or updates the selected client's project-local agent instruction hooks, and reports exactly what changed.
 
 The installer treats the current working directory as the project root for project-local instruction files and hooks. MCP client config remains user/local by default.
 
 The approved low-tech-debt approach is:
 
 1. Prefer the official client CLI.
-2. Fall back to direct config editing only when the official client CLI is unavailable or cannot complete the install.
-3. Create Cheapy-managed backups only for direct config edits.
+2. Fall back to direct config editing only when the official client CLI is unavailable or fails with a classified recoverable reason.
+3. Create Cheapy-managed rollback artifacts only for direct config edits.
 
 This keeps Cheapy coupled to client config internals only on the fallback path.
 
 ## Goals
 
 - Add `cheapy mcp install --client codex|claude`.
-- Resolve the installed `cheapy` executable to an absolute path before writing or passing config.
+- Resolve the installed `cheapy` executable to a canonical absolute path before writing or passing config, and verify its `--version` output matches the running package version.
 - Register the MCP server entry with server name `cheapy`, command `/absolute/path/to/cheapy`, and args `["mcp"]`.
 - Prefer official client commands:
   - Codex: `codex mcp add cheapy -- /absolute/path/to/cheapy mcp`
   - Claude: `claude mcp add --transport stdio cheapy -- /absolute/path/to/cheapy mcp`
-- Direct-edit fallback must parse before writing, preserve unrelated config, update idempotently, create timestamped backups, write atomically, and set config/backup permissions to `0600` where supported.
-- Create or update the project-local Codex skill file at `.codex/skills/cheapy/SKILL.md`.
-- Add or update a managed `AGENTS.md` hook that points Codex to `.codex/skills/cheapy/SKILL.md`.
-- Create or update Claude instructions at `.cheapy/claude-instructions.md`.
-- Add or update a managed `CLAUDE.md` hook that points Claude to `.cheapy/claude-instructions.md`.
+- Direct-edit fallback must parse before writing, preserve unrelated config, update idempotently, create timestamped redacted rollback artifacts, write atomically, and set config/rollback artifact permissions to `0600` where supported.
+- For `--client codex`, create or update the project-local Codex skill file at `.codex/skills/cheapy/SKILL.md`.
+- For `--client codex`, add or update a managed `AGENTS.md` hook that points Codex to `.codex/skills/cheapy/SKILL.md`.
+- For `--client claude`, create or update Claude instructions at `.cheapy/claude-instructions.md`.
+- For `--client claude`, add or update a managed `CLAUDE.md` hook that points Claude to `.cheapy/claude-instructions.md`.
 - Treat the current working directory as the project root for `.codex/`, `.cheapy/`, `AGENTS.md`, and `CLAUDE.md`.
 - Preserve existing `AGENTS.md`, `CLAUDE.md`, and unrelated MCP config content.
 - Return machine-readable JSON on stdout for successful installs.
@@ -53,7 +53,7 @@ This keeps Cheapy coupled to client config internals only on the fallback path.
 - No project-shared `.mcp.json` as the default install target.
 - No global Codex skill installation.
 - No storage, watchlists, scheduler, or alerts.
-- No automatic rollback command in Gate 6. Backups are created for manual recovery and failure reporting.
+- No automatic rollback command in Gate 6. Redacted rollback artifacts are created for manual recovery guidance and failure reporting.
 
 ## Approved Approach
 
@@ -61,7 +61,19 @@ Use official client CLIs first and direct config editing second.
 
 This is the lowest-tech-debt path because Codex and Claude own their preferred config mutation formats. Cheapy only needs client-specific config knowledge when the official client CLI is missing or fails in a recoverable way.
 
-Cheapy-managed backups are created only when Cheapy directly edits a config file. If an official client CLI succeeds, Cheapy reports the command path but does not create a redundant backup.
+Cheapy-managed rollback artifacts are created only when Cheapy directly edits a config file. If an official client CLI succeeds, Cheapy reports the command path but does not create a redundant rollback artifact.
+
+Rollback artifacts are not full copies of user client config files. Client configs may contain tokens, API keys, headers, or sensitive MCP server arguments for unrelated tools. To preserve the master secrets policy, the fallback editor records a timestamped redacted rollback artifact that contains:
+
+- client name
+- config path
+- server name
+- whether the `cheapy` entry existed before the edit
+- the previous `cheapy` entry with `env`, `headers`, bearer-token fields, and secret-like values redacted
+- the new `cheapy` entry
+- manual rollback instructions
+
+The original config file is protected by parse-before-write, same-filesystem temporary writes, and atomic replacement. Cheapy does not create full config snapshots that copy unrelated secret-bearing config.
 
 ## CLI Shape
 
@@ -91,7 +103,7 @@ without printing Typer help or diagnostics to stdout when the stdio server comma
 
 It parses `--client`, calls the installer orchestration layer, prints success JSON to stdout, and preserves the existing structured stderr behavior for usage and runtime failures.
 
-It must not contain config parsing, backup, or hook-update logic.
+It must not contain config parsing, rollback-artifact, or hook-update logic.
 
 ### Installer Orchestrator
 
@@ -121,13 +133,20 @@ Fallback editors must:
 - preserve unrelated keys and server entries
 - add or update only the `cheapy` server entry
 - avoid duplicate entries
-- create a timestamped backup before writing
+- create a timestamped redacted rollback artifact before writing
 - write a temporary file on the same filesystem
 - replace atomically with `os.replace`
-- chmod config and backup files to `0600` where supported
+- chmod config and rollback artifacts to `0600` where supported
 - leave the original config untouched if parsing or writing fails before replacement
 
 The direct-edit fallback should be conservative. If the installer cannot determine a safe path or parse the known format, it should fail with exact manual instructions instead of guessing.
+
+Missing config files are handled explicitly:
+
+- If the known config file is absent and the known parent directory exists or can be safely created under the user's home directory with `0700` permissions, the fallback editor may create a minimal config containing only the `cheapy` MCP entry.
+- If the parent path is unsafe, not a directory, or outside the expected user config location, the fallback editor must fail closed and print the official manual command.
+
+Codex TOML fallback should use `tomlkit` so unrelated comments, formatting, and tables can be preserved while still parsing and writing valid TOML. `tomllib` is read-only and is not sufficient for the fallback editor.
 
 ### Agent Hooks
 
@@ -135,9 +154,9 @@ Add a focused module such as `cheapy/agent_hooks.py`.
 
 Responsibilities:
 
-- write the Codex skill file at `.codex/skills/cheapy/SKILL.md`
-- write Claude instructions at `.cheapy/claude-instructions.md`
-- insert or update managed blocks in `AGENTS.md` and `CLAUDE.md`
+- write the Codex skill file at `.codex/skills/cheapy/SKILL.md` only for `--client codex`
+- write Claude instructions at `.cheapy/claude-instructions.md` only for `--client claude`
+- insert or update managed blocks for the selected client only
 - preserve all unmanaged content
 - report `updated`, `unchanged`, or `manual_required` for each hook
 
@@ -153,14 +172,18 @@ Example marker shape:
 
 If a hook file cannot be updated safely, the installer must print the exact manual text to add and mark skill activation as incomplete.
 
+The JSON report should mark non-selected client hooks as `not_applicable`, not create or update them.
+
 ## Data Flow
 
 Install flow:
 
 1. Parse `--client`.
-2. Resolve `shutil.which("cheapy")`.
-3. If unresolved, fail with `MISSING_EXECUTABLE` and instruct the user to install `cheapy-flights` first.
-4. Build the MCP server entry:
+2. Resolve `shutil.which("cheapy")` to a canonical absolute path.
+3. Verify the resolved executable by running `cheapy --version` and comparing it with `cheapy.__version__`.
+4. If unresolved, fail with `MISSING_EXECUTABLE` and instruct the user to install `cheapy-flights` first.
+5. If the executable version does not match the running package version, fail with `EXECUTABLE_MISMATCH` and instruct the user to fix `PATH` or reinstall `cheapy-flights`.
+6. Build the MCP server entry:
 
    ```json
    {
@@ -169,15 +192,15 @@ Install flow:
    }
    ```
 
-5. Attempt official client CLI install:
+7. Attempt official client CLI install:
    - Codex: `codex mcp add cheapy -- /absolute/path/to/cheapy mcp`
    - Claude: `claude mcp add --transport stdio cheapy -- /absolute/path/to/cheapy mcp`
-6. If the official CLI succeeds, record method `official_cli`.
-7. If the official CLI is unavailable or fails in a recoverable way, attempt direct config edit.
-8. During direct edit, create backup, update or insert the `cheapy` server entry, and atomically replace the config.
-9. Create or update project-local instruction files.
-10. Create or update managed hooks in `AGENTS.md` and `CLAUDE.md`.
-11. Print a JSON install report.
+8. If the official CLI succeeds, record method `official_cli`.
+9. If the official CLI is unavailable or fails with a classified recoverable reason, attempt direct config edit.
+10. During direct edit, create a redacted rollback artifact, update or insert the `cheapy` server entry, and atomically replace the config.
+11. Create or update project-local instruction files for the selected client only.
+12. Create or update managed hooks for the selected client only.
+13. Print a JSON install report.
 
 Success report should include:
 
@@ -187,7 +210,7 @@ Success report should include:
 - `method`
 - `executable`
 - `config_path` when known
-- `backup_path` when a direct-edit backup was created
+- `rollback_path` when a direct-edit rollback artifact was created
 - `mcp_entry`
 - `codex_skill`
 - `agents_hook`
@@ -217,7 +240,9 @@ Fallback direct edit target should be Codex's user config, expected at:
 ~/.codex/config.toml
 ```
 
-The fallback editor should add or update a TOML table equivalent to:
+If `~/.codex/config.toml` is absent, the fallback editor may create `~/.codex` with `0700` permissions and a minimal `config.toml` with `0600` permissions.
+
+The fallback editor should use `tomlkit` and add or update a TOML table equivalent to:
 
 ```toml
 [mcp_servers.cheapy]
@@ -225,7 +250,7 @@ command = "/absolute/path/to/cheapy"
 args = ["mcp"]
 ```
 
-The implementation plan must verify the exact Codex config shape against the installed CLI behavior before coding the fallback editor. If the observed shape differs, the plan should use the observed shape and update tests accordingly.
+The implementation plan must verify the exact Codex config shape against the installed CLI behavior before coding the fallback editor. If the observed shape differs, the plan should use the observed shape and update tests accordingly. Tests must include comments, unrelated tables, unrelated MCP servers, and existing stale `cheapy` entries.
 
 ## Claude Behavior
 
@@ -260,6 +285,25 @@ The fallback editor should update the current project entry under `projects` and
 
 If the file cannot be parsed or the project shape is incompatible, fail closed and print the manual `claude mcp add` command.
 
+If `~/.claude.json` is absent, the fallback editor may create a minimal file with `0600` permissions:
+
+```json
+{
+  "projects": {
+    "/current/project/root": {
+      "mcpServers": {
+        "cheapy": {
+          "type": "stdio",
+          "command": "/absolute/path/to/cheapy",
+          "args": ["mcp"],
+          "env": {}
+        }
+      }
+    }
+  }
+}
+```
+
 Reference: Anthropic's Claude Code MCP documentation describes local stdio installation with `claude mcp add --transport stdio <name> -- <command> [args...]`, local scope in `~/.claude.json`, and project scope through `.mcp.json`.
 
 ## Instruction Content
@@ -278,6 +322,7 @@ The project-local Codex skill must teach Codex:
 - ask for clarification when the user indicates non-default passengers but leaves the counts ambiguous
 - use exact mode for fixed one-way MVP searches
 - explain that expanded/flexible searches are deferred until Cheapy exposes them
+- explain that round-trip search is deferred in Gate 6; do not pass `return_date` until Cheapy supports round trips
 - never ask the user to choose a provider
 - explain mixed currency cautiously if it appears
 
@@ -285,7 +330,7 @@ The existing `.codex/skills/cheapy/SKILL.md` should be updated rather than repla
 
 ### AGENTS.md Hook
 
-The `AGENTS.md` managed block should point Codex to:
+For `--client codex`, the `AGENTS.md` managed block should point Codex to:
 
 ```text
 .codex/skills/cheapy/SKILL.md
@@ -295,7 +340,7 @@ It should stay concise and preserve the existing project instructions.
 
 ### Claude Instructions
 
-Claude instructions live at:
+For `--client claude`, Claude instructions live at:
 
 ```text
 .cheapy/claude-instructions.md
@@ -305,7 +350,7 @@ They should contain the same operational guidance as the Codex skill, translated
 
 ### CLAUDE.md Hook
 
-The installer should add a managed block in `CLAUDE.md` pointing to:
+For `--client claude`, the installer should add a managed block in `CLAUDE.md` pointing to:
 
 ```text
 .cheapy/claude-instructions.md
@@ -327,24 +372,27 @@ Usage errors:
 Installer runtime failures:
 
 - unresolved `cheapy` executable: `MISSING_EXECUTABLE`
+- executable version mismatch: `EXECUTABLE_MISMATCH`
 - official client unavailable and no safe fallback path: `CLIENT_CONFIG_UNAVAILABLE`
 - config parse failure: `CONFIG_PARSE_FAILED`
 - config write failure: `CONFIG_WRITE_FAILED`
-- backup failure: `CONFIG_BACKUP_FAILED`
+- rollback artifact failure: `CONFIG_ROLLBACK_ARTIFACT_FAILED`
 - unsafe hook update: not fatal to MCP config, but reported as `manual_required`
 
 Official CLI failure handling:
 
 - If the official CLI is missing, attempt fallback direct edit.
-- If the official CLI exists but returns non-zero, attempt fallback only when the target config path and format are known.
+- If the official CLI exists but lacks the required MCP command shape, attempt fallback direct edit.
+- If the official CLI reports that the `cheapy` server already exists and no official update mode is available, attempt fallback direct edit.
+- If the official CLI returns non-zero for permission, version mismatch, validation, runtime, or unknown failures, do not mask it with fallback. Fail with the exact manual command and the official CLI stderr summary.
 - If neither path is safe, fail with the exact manual command the user can run.
 
 Direct edit failure handling:
 
-- Parse failures happen before backup/write and leave the original untouched.
-- Backup failures stop the write.
+- Parse failures happen before rollback/write and leave the original untouched.
+- Rollback artifact failures stop the write.
 - Write failures leave the original untouched if replacement has not happened.
-- If replacement succeeds but validation after write fails, report backup path and manual rollback instructions.
+- If replacement succeeds but validation after write fails, report rollback artifact path and manual rollback instructions.
 
 Hook failure handling:
 
@@ -370,9 +418,10 @@ If unmanaged user text exists before or after a managed block, Gate 6 preserves 
 ## Security And Permissions
 
 - Do not print secrets.
+- Do not create full config snapshots that copy unrelated client config or secrets.
 - Do not copy global user config into project files.
 - Avoid writing project-shared MCP config by default because it would contain machine-local absolute paths.
-- Set direct-edit config and backup permissions to `0600` where supported.
+- Set direct-edit config and rollback artifact permissions to `0600` where supported.
 - Do not follow unsafe path assumptions if a config path is not a regular file or safe parent directory.
 - Do not make network calls in installer tests.
 
@@ -390,21 +439,32 @@ Required coverage:
 
 - Codex install uses official CLI when `codex` exists.
 - Claude install uses official CLI when `claude` exists.
-- Official CLI success does not create a Cheapy-managed backup.
+- Official CLI success does not create a Cheapy-managed rollback artifact.
 - Missing official CLI triggers direct-edit fallback when safe.
-- Direct-edit fallback creates timestamped backup.
-- Backup and config permissions are set to `0600` where supported.
+- Existing-server official CLI failure triggers direct-edit fallback when safe.
+- Permission or unknown official CLI failure does not trigger fallback.
+- Direct-edit fallback creates a timestamped redacted rollback artifact.
+- Missing Codex config creates a minimal safe config when the parent is safe.
+- Missing Claude config creates a minimal safe config when the parent is safe.
+- Unsafe missing config parent fails closed with manual instructions.
+- Rollback artifact and config permissions are set to `0600` where supported.
+- Rollback artifact does not include unrelated secret-bearing config.
 - Direct edit preserves unrelated config content and server entries.
+- Codex TOML direct edit preserves comments, unrelated tables, and unrelated MCP servers.
 - Direct edit updates an existing stale `cheapy` entry idempotently.
 - Repeated install does not duplicate config entries or managed blocks.
 - Parse failure leaves original config untouched.
-- Write failure leaves original config untouched and reports backup path when available.
+- Write failure leaves original config untouched and reports rollback artifact path when available.
 - Codex skill file is created or updated with current MCP guidance.
 - `AGENTS.md` hook is inserted and updated idempotently.
 - Claude instruction file is created or updated.
 - `CLAUDE.md` symlink behavior is explicit and tested.
+- `--client codex` leaves Claude instruction files and hooks `not_applicable`.
+- `--client claude` leaves Codex skill files and hooks `not_applicable`.
+- Generated instructions explicitly say Gate 6 supports exact one-way only and round trips are deferred.
 - CLI success prints JSON to stdout and no errors to stderr.
 - CLI failures print structured JSON to stderr.
+- `python -m cheapy mcp` still completes MCP initialize/list-tools after command nesting changes.
 
 Focused verification:
 
@@ -420,9 +480,10 @@ Gate 6 is complete when:
 - `cheapy mcp install --client codex` succeeds through official CLI or safe fallback.
 - `cheapy mcp install --client claude` succeeds through official CLI or safe fallback.
 - The installed MCP entry starts `/absolute/path/to/cheapy mcp`.
-- Direct config edits create backups and are idempotent.
-- Official CLI installs do not create redundant Cheapy-managed backups.
-- Project-local Codex skill and Claude instruction files are present.
-- `AGENTS.md` and `CLAUDE.md` activation hooks are present or exact manual steps are reported.
+- The resolved executable version matches the running package version before config is written.
+- Direct config edits create redacted rollback artifacts and are idempotent.
+- Official CLI installs do not create redundant Cheapy-managed rollback artifacts.
+- The selected client's project-local instruction file is present.
+- The selected client's activation hook is present or exact manual steps are reported.
 - Tests verify installer behavior without requiring real Codex or Claude installs.
 - Full test suite passes.
