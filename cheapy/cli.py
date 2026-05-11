@@ -13,6 +13,7 @@ import typer
 from typer.core import TyperGroup
 
 from cheapy import __version__
+from cheapy.mcp import run_stdio_server
 from cheapy.models import ProviderStatusCode, SearchRequestV1, SearchResponseV1
 from cheapy.providers.base import ProviderExactOneWayRequest
 from cheapy.providers.registry import (
@@ -140,15 +141,7 @@ def schema() -> None:
 @app.command()
 def mcp() -> None:
     """Run the stdio MCP server."""
-    _json_echo(
-        _error_payload(
-            "MCP_OUTSIDE_CONTRACT_GATE",
-            "MCP server is outside this contract foundation gate.",
-            "Use contract commands such as 'cheapy schema' in this gate.",
-        ),
-        err=True,
-    )
-    raise typer.Exit(code=2)
+    run_stdio_server()
 
 
 def _provider_fixture_request() -> ProviderExactOneWayRequest:
