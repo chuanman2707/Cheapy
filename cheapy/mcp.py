@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Literal
+from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from pydantic import ConfigDict, Field
 
 from cheapy.models import PassengersV1, SearchMode, SearchRequestV1, SearchResponseV1
 from cheapy.search import search_exact
@@ -29,14 +30,14 @@ def create_mcp_server() -> FastMCP:
         annotations=_TOOL_ANNOTATIONS,
     )
     async def search_cheapest_flights(
-        schema_version: Literal["1"],
-        origin: str,
-        destination: str,
-        departure_date: str,
-        return_date: str | None = None,
-        search_mode: SearchMode = SearchMode.EXACT,
-        passengers: PassengersV1 = PassengersV1(),
-        max_results: int = 5,
+        schema_version: Any,
+        origin: Any,
+        destination: Any,
+        departure_date: Any,
+        return_date: Any = None,
+        search_mode: Any = SearchMode.EXACT,
+        passengers: Any = Field(default_factory=PassengersV1),
+        max_results: Any = 5,
     ) -> SearchResponseV1:
         """Search exact one-way flights and return Contract V1 results."""
         request = SearchRequestV1.model_validate(
@@ -53,6 +54,16 @@ def create_mcp_server() -> FastMCP:
         )
         return await asyncio.to_thread(search_exact, request)
 
+    tool = server._tool_manager.get_tool("search_cheapest_flights")
+    if tool is None:  # pragma: no cover
+        raise RuntimeError("search_cheapest_flights tool was not registered")
+    tool.fn_metadata.arg_model.model_config = ConfigDict(
+        **tool.fn_metadata.arg_model.model_config,
+        extra="forbid",
+    )
+    tool.fn_metadata.arg_model.model_rebuild(force=True)
+    tool.parameters = SearchRequestV1.model_json_schema()
+
     return server
 
 
@@ -63,14 +74,14 @@ def run_stdio_server() -> None:
 
 def _request_payload(
     *,
-    schema_version: Literal["1"],
-    origin: str,
-    destination: str,
-    departure_date: str,
-    return_date: str | None,
-    search_mode: SearchMode | str,
+    schema_version: object,
+    origin: object,
+    destination: object,
+    departure_date: object,
+    return_date: object,
+    search_mode: object,
     passengers: object,
-    max_results: int,
+    max_results: object,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "schema_version": schema_version,

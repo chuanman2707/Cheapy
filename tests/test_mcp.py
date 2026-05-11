@@ -169,3 +169,41 @@ def test_mcp_search_tool_rejects_null_passengers() -> None:
     assert _is_error(result) is True
     text = _text_content(result).lower()
     assert "passengers" in text or "validation" in text
+
+
+def test_mcp_search_tool_rejects_string_max_results() -> None:
+    arguments = {
+        "schema_version": "1",
+        "origin": "CXR",
+        "destination": "SGN",
+        "departure_date": "2026-07-10",
+        "max_results": "5",
+    }
+
+    async def action(session: ClientSession) -> Any:
+        return await session.call_tool("search_cheapest_flights", arguments)
+
+    result = asyncio.run(_with_mcp_session(action))
+
+    assert _is_error(result) is True
+    text = _text_content(result).lower()
+    assert "max_results" in text or "validation" in text
+
+
+def test_mcp_search_tool_rejects_unknown_top_level_field() -> None:
+    arguments = {
+        "schema_version": "1",
+        "origin": "CXR",
+        "destination": "SGN",
+        "departure_date": "2026-07-10",
+        "foo": "bar",
+    }
+
+    async def action(session: ClientSession) -> Any:
+        return await session.call_tool("search_cheapest_flights", arguments)
+
+    result = asyncio.run(_with_mcp_session(action))
+
+    assert _is_error(result) is True
+    text = _text_content(result).lower()
+    assert "foo" in text or "extra" in text or "validation" in text
