@@ -17,6 +17,42 @@ def _assert_not_applicable(report: dict[str, object], key: str) -> None:
     assert report[key] == {"status": "not_applicable"}
 
 
+def _assert_gate_6_instruction_text(text: str) -> None:
+    for phrase in (
+        "clarify ambiguous airports",
+        "origin, destination, and departure date",
+        "Contract V1 passenger defaults",
+        "ambiguous non-default passenger counts",
+        "exact one-way MVP",
+        "expanded, flexible, nearby-airport, split-ticket, and round-trip search is deferred",
+        "do not pass return_date",
+        "Do not ask the user to choose providers",
+        "mixed currency",
+    ):
+        assert phrase in text
+
+
+def _expected_codex_agents_manual_step(path: Path) -> str:
+    return (
+        f"Manually add or replace the Cheapy managed block in {path}:\n"
+        f"{CODEX_BEGIN}\n"
+        "## Cheapy MCP Flight Search\n\n"
+        "Before using Cheapy MCP, use the project skill at "
+        "`.codex/skills/cheapy/SKILL.md`.\n"
+        f"{CODEX_END}"
+    )
+
+
+def _expected_claude_hook_manual_step(path: Path) -> str:
+    return (
+        f"Manually add or replace the Cheapy managed block in {path}:\n"
+        f"{CLAUDE_BEGIN}\n"
+        "## Cheapy MCP Flight Search\n\n"
+        "Before using Cheapy MCP, follow `.cheapy/claude-instructions.md`.\n"
+        f"{CLAUDE_END}"
+    )
+
+
 def test_codex_hooks_create_skill_and_agents_hook_only(tmp_path: Path) -> None:
     report = install_agent_hooks("codex", tmp_path)
 
@@ -40,6 +76,7 @@ def test_codex_hooks_create_skill_and_agents_hook_only(tmp_path: Path) -> None:
     assert "search_cheapest_flights" in skill_text
     assert "round-trip search is deferred" in skill_text
     assert "do not pass return_date" in skill_text
+    _assert_gate_6_instruction_text(skill_text)
 
     agents_text = agents_path.read_text(encoding="utf-8")
     assert CODEX_BEGIN in agents_text
@@ -85,6 +122,7 @@ def test_claude_hooks_create_instructions_and_claude_hook_only(
     assert "search_cheapest_flights" in instruction_text
     assert "round-trip search is deferred" in instruction_text
     assert "do not pass return_date" in instruction_text
+    _assert_gate_6_instruction_text(instruction_text)
 
     claude_text = claude_path.read_text(encoding="utf-8")
     assert CLAUDE_BEGIN in claude_text
@@ -138,6 +176,26 @@ def test_managed_block_replacement_preserves_unmanaged_content(
     assert agents_text.count(CODEX_END) == 1
 
 
+def test_managed_block_replacement_preserves_outside_whitespace_exactly(
+    tmp_path: Path,
+) -> None:
+    agents_path = tmp_path / "AGENTS.md"
+    before = "# Existing\n  before content  \n\n"
+    after = "\n\n\t after content  \n"
+    agents_path.write_text(
+        f"{before}{CODEX_BEGIN}\nold managed content\n{CODEX_END}{after}",
+        encoding="utf-8",
+    )
+
+    install_agent_hooks("codex", tmp_path)
+
+    agents_text = agents_path.read_text(encoding="utf-8")
+    block_start = agents_text.index(CODEX_BEGIN)
+    block_end = agents_text.index(CODEX_END) + len(CODEX_END)
+    assert agents_text[:block_start] == before
+    assert agents_text[block_end:] == after
+
+
 def test_missing_agent_file_is_created_with_managed_block(tmp_path: Path) -> None:
     report = install_agent_hooks("claude", tmp_path)
 
@@ -145,3 +203,37 @@ def test_missing_agent_file_is_created_with_managed_block(tmp_path: Path) -> Non
     assert report["claude_hook"]["status"] == "updated"  # type: ignore[index]
     assert claude_path.exists()
     assert CLAUDE_BEGIN in claude_path.read_text(encoding="utf-8")
+
+
+def test_codex_agents_hook_write_failure_returns_manual_required(
+    tmp_path: Path,
+) -> None:
+    agents_path = tmp_path / "AGENTS.md"
+    agents_path.mkdir()
+
+    report = install_agent_hooks("codex", tmp_path)
+
+    assert report["codex_skill"]["status"] == "updated"  # type: ignore[index]
+    assert report["agents_hook"] == {
+        "status": "manual_required",
+        "path": str(agents_path),
+    }
+    _assert_not_applicable(report, "claude_instructions")
+    _assert_not_applicable(report, "claude_hook")
+    assert report["manual_steps"] == [_expected_codex_agents_manual_step(agents_path)]
+
+
+def test_claude_hook_write_failure_returns_manual_required(tmp_path: Path) -> None:
+    claude_path = tmp_path / "CLAUDE.md"
+    claude_path.mkdir()
+
+    report = install_agent_hooks("claude", tmp_path)
+
+    _assert_not_applicable(report, "codex_skill")
+    _assert_not_applicable(report, "agents_hook")
+    assert report["claude_instructions"]["status"] == "updated"  # type: ignore[index]
+    assert report["claude_hook"] == {
+        "status": "manual_required",
+        "path": str(claude_path),
+    }
+    assert report["manual_steps"] == [_expected_claude_hook_manual_step(claude_path)]

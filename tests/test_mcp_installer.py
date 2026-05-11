@@ -443,6 +443,44 @@ def test_install_missing_official_cli_performs_direct_fallback(
     assert 'command = "/opt/bin/cheapy"' in config_path.read_text(encoding="utf-8")
 
 
+def test_install_mcp_keeps_config_success_when_agent_hook_needs_manual_step(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    executable = Path("/opt/bin/cheapy")
+    agents_path = tmp_path / "AGENTS.md"
+    agents_path.mkdir()
+
+    def fake_which(name: str) -> str | None:
+        return str(executable) if name == "cheapy" else None
+
+    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(command, 0, stdout="0.1.0\n", stderr="")
+
+    monkeypatch.setattr("cheapy.mcp_installer.shutil.which", fake_which)
+    monkeypatch.setattr("cheapy.mcp_installer.subprocess.run", fake_run)
+
+    report = install_mcp(InstallerClient.CODEX, project_root=tmp_path, home=tmp_path)
+
+    config_path = tmp_path / ".codex" / "config.toml"
+    expected_manual_step = (
+        f"Manually add or replace the Cheapy managed block in {agents_path}:\n"
+        "<!-- BEGIN CHEAPY MANAGED CODEX INSTRUCTIONS -->\n"
+        "## Cheapy MCP Flight Search\n\n"
+        "Before using Cheapy MCP, use the project skill at "
+        "`.codex/skills/cheapy/SKILL.md`.\n"
+        "<!-- END CHEAPY MANAGED CODEX INSTRUCTIONS -->"
+    )
+    assert report["status"] == "ok"
+    assert report["method"] == "direct_edit"
+    assert config_path.exists()
+    assert report["agents_hook"] == {
+        "status": "manual_required",
+        "path": str(agents_path),
+    }
+    assert report["manual_steps"] == [expected_manual_step]
+
+
 def test_install_missing_official_cli_preserves_parse_error_with_manual_command(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
