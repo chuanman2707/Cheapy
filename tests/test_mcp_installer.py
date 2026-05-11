@@ -27,6 +27,28 @@ class RunCall:
     timeout: float | None
 
 
+def _not_applicable() -> dict[str, str]:
+    return {"status": "not_applicable"}
+
+
+def _expected_success_report(client: InstallerClient, executable: Path) -> dict[str, Any]:
+    return {
+        "status": "ok",
+        "client": client.value,
+        "server_name": "cheapy",
+        "method": "official_cli",
+        "executable": str(executable.resolve()),
+        "config_path": None,
+        "rollback_path": None,
+        "mcp_entry": {"command": str(executable.resolve()), "args": ["mcp"]},
+        "codex_skill": _not_applicable(),
+        "agents_hook": _not_applicable(),
+        "claude_instructions": _not_applicable(),
+        "claude_hook": _not_applicable(),
+        "manual_steps": [],
+    }
+
+
 def test_build_mcp_entry_uses_cheapy_stdio_command() -> None:
     assert build_mcp_entry(Path("/opt/bin/cheapy")) == {
         "command": "/opt/bin/cheapy",
@@ -79,7 +101,10 @@ def test_resolve_cheapy_executable_reports_missing_binary(
     error = exc_info.value
     assert error.code == "MISSING_EXECUTABLE"
     assert error.exit_code == 1
-    assert "Install Cheapy" in error.suggestion
+    assert error.suggestion == (
+        "Install the cheapy-flights package first, then ensure the cheapy "
+        "executable is on PATH."
+    )
     assert error.payload() == {
         "error": True,
         "code": "MISSING_EXECUTABLE",
@@ -168,17 +193,7 @@ def test_install_codex_uses_official_cli_and_returns_report(
         "mcp",
     ]
     assert calls[1].cwd == tmp_path
-    assert report == {
-        "status": "ok",
-        "client": "codex",
-        "method": "official_cli",
-        "rollback_path": None,
-        "mcp_entry": {"command": str(executable.resolve()), "args": ["mcp"]},
-        "hooks": {
-            "codex": {"status": "not_applicable"},
-            "claude": {"status": "not_applicable"},
-        },
-    }
+    assert report == _expected_success_report(InstallerClient.CODEX, executable)
 
 
 def test_install_claude_uses_official_cli_and_returns_report(
@@ -222,12 +237,7 @@ def test_install_claude_uses_official_cli_and_returns_report(
         "mcp",
     ]
     assert calls[1].cwd == tmp_path
-    assert report["status"] == "ok"
-    assert report["client"] == "claude"
-    assert report["method"] == "official_cli"
-    assert report["rollback_path"] is None
-    assert report["mcp_entry"] == {"command": str(executable.resolve()), "args": ["mcp"]}
-    assert report["hooks"]["codex"]["status"] == "not_applicable"
+    assert report == _expected_success_report(InstallerClient.CLAUDE, executable)
 
 
 def test_install_unknown_official_cli_failure_does_not_use_direct_fallback(

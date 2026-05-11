@@ -63,7 +63,10 @@ def resolve_cheapy_executable() -> Path:
         raise InstallerError(
             code="MISSING_EXECUTABLE",
             message="cheapy executable was not found on PATH.",
-            suggestion="Install Cheapy or add the cheapy executable to PATH.",
+            suggestion=(
+                "Install the cheapy-flights package first, then ensure the cheapy "
+                "executable is on PATH."
+            ),
         )
 
     executable_path = Path(executable).expanduser().resolve()
@@ -164,10 +167,17 @@ def install_mcp(
         return {
             "status": "ok",
             "client": selected_client.value,
+            "server_name": SERVER_NAME,
             "method": "official_cli",
+            "executable": str(executable),
+            "config_path": None,
             "rollback_path": None,
             "mcp_entry": build_mcp_entry(executable),
-            "hooks": _placeholder_hook_results(),
+            "codex_skill": _placeholder_hook_status(),
+            "agents_hook": _placeholder_hook_status(),
+            "claude_instructions": _placeholder_hook_status(),
+            "claude_hook": _placeholder_hook_status(),
+            "manual_steps": [],
         }
 
     if is_recoverable_official_cli_failure(result):
@@ -241,11 +251,8 @@ def _client_config_unavailable_error(
     )
 
 
-def _placeholder_hook_results() -> dict[str, dict[str, str]]:
-    return {
-        InstallerClient.CODEX.value: {"status": "not_applicable"},
-        InstallerClient.CLAUDE.value: {"status": "not_applicable"},
-    }
+def _placeholder_hook_status() -> dict[str, str]:
+    return {"status": "not_applicable"}
 
 
 def _failure_output(failure: str | subprocess.CompletedProcess[str]) -> str:
