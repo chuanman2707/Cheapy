@@ -22,3 +22,15 @@ Before changing MCP, CLI, contracts, packaging, or tests, read the matching proj
 
 ## Commit Attribution
 AI commits SHOULD include the model identity in the commit body when creating shared commits.
+
+<!-- BEGIN CHEAPY MANAGED CODEX INSTRUCTIONS -->
+## Cheapy MCP Flight Search
+
+Before using Cheapy MCP, use the project skill at `.codex/skills/cheapy/SKILL.md`.
+<!-- END CHEAPY MANAGED CODEX INSTRUCTIONS -->
+
+<!-- BEGIN CHEAPY MANAGED CLAUDE INSTRUCTIONS -->
+## Cheapy MCP Flight Search
+
+Before using Cheapy MCP, follow `.cheapy/claude-instructions.md`.
+<!-- END CHEAPY MANAGED CLAUDE INSTRUCTIONS -->

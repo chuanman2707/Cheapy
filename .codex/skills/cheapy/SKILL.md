@@ -52,6 +52,21 @@ Long haul: LAX, SFO, JFK, LHR, CDG, FRA, SYD, MEL.
 
 1. Convert clear human airport names to IATA.
 2. Convert dates into ISO `YYYY-MM-DD`.
-3. Decide one-way or round-trip from the user's sentence.
 4. Call the Cheapy MCP search tool with IATA values only.
 5. If an airport is ambiguous or outside the supported list, ask the user to clarify instead of guessing.
+
+<!-- BEGIN CHEAPY MANAGED CODEX INSTRUCTIONS -->
+Use Cheapy only for exact one-way MVP flight searches.
+
+- Call only `search_cheapest_flights`.
+- Pass `schema_version="1"`.
+- Before calls, require origin, destination, and departure date; ask a follow-up if any are missing.
+- Normalize clear origin and destination airports to 3-letter IATA codes.
+- If airport meaning is unclear, clarify ambiguous airports instead of guessing.
+- Normalize dates to ISO `YYYY-MM-DD`.
+- Use Contract V1 passenger defaults when unspecified: `adults=1`, `children=0`, `infants_on_lap=0`, `infants_in_seat=0`.
+- Ask a follow-up for ambiguous non-default passenger counts.
+- expanded, flexible, nearby-airport, split-ticket, and round-trip search is deferred; do not pass return_date.
+- Do not ask the user to choose providers.
+- Explain mixed currency cautiously; preserve provider currency and do not overstate comparisons.
+<!-- END CHEAPY MANAGED CODEX INSTRUCTIONS -->
