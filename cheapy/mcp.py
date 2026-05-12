@@ -17,7 +17,7 @@ _TOOL_ANNOTATIONS: dict[str, object] = {
     "readOnlyHint": True,
     "destructiveHint": False,
     "idempotentHint": True,
-    "openWorldHint": False,
+    "openWorldHint": True,
 }
 
 

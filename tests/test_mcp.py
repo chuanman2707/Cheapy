@@ -8,6 +8,7 @@ from typing import Any, TypeVar
 from mcp import ClientSession, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
 
+from cheapy.mcp import create_mcp_server
 from cheapy.models import SearchResponseV1, SearchStatus
 
 
@@ -33,7 +34,18 @@ def _input_schema(tool: Any) -> dict[str, Any]:
     return schema
 
 
+def _mcp_tool() -> Any:
+    server = create_mcp_server()
+    tool = server._tool_manager.get_tool("search_cheapest_flights")
+    assert tool is not None
+    return tool
+
+
 def _structured_content(result: Any) -> dict[str, Any]:
+    if isinstance(result, tuple) and len(result) == 2:
+        structured = result[1]
+        assert isinstance(structured, dict)
+        return structured
     structured = getattr(result, "structured_content", None)
     if structured is None:
         structured = getattr(result, "structuredContent", None)
@@ -112,7 +124,49 @@ def test_mcp_search_tool_uses_top_level_contract_fields() -> None:
     assert properties["max_results"]["maximum"] == 20
 
 
-def test_mcp_search_tool_returns_structured_contract_response() -> None:
+def test_mcp_search_tool_annotation_marks_open_world() -> None:
+    tool = _mcp_tool()
+
+    assert tool.annotations.openWorldHint is True
+
+
+def test_mcp_search_tool_returns_structured_contract_response(
+    monkeypatch: Any,
+) -> None:
+    def fake_search_exact(request: Any) -> SearchResponseV1:
+        assert request.origin == "CXR"
+        assert request.destination == "SGN"
+        assert request.departure_date == "2026-07-10"
+        return SearchResponseV1.model_validate(
+            {
+                "schema_version": "1",
+                "status": "success",
+                "request_id": "exact:CXR:SGN:2026-07-10:exact:1:0:0:0:5",
+                "offers": [],
+                "warnings": [],
+                "errors": [],
+                "provider_statuses": [],
+                "search_plan": {
+                    "search_mode": "exact",
+                    "planned_candidate_count": 1,
+                    "executed_candidate_count": 1,
+                    "planned_provider_call_count": 1,
+                    "executed_provider_call_count": 1,
+                    "candidate_count_by_family": {"exact": 1},
+                    "provider_call_count_by_family": {"exact": 1},
+                    "truncated": False,
+                    "truncated_families": [],
+                    "candidate_families": ["exact"],
+                },
+                "mixed_currency": False,
+                "currency_groups": [],
+                "currency_notes": [],
+                "candidates": None,
+            }
+        )
+
+    monkeypatch.setattr("cheapy.mcp.search_exact", fake_search_exact)
+    tool = _mcp_tool()
     arguments = {
         "schema_version": "1",
         "origin": "CXR",
@@ -129,21 +183,13 @@ def test_mcp_search_tool_returns_structured_contract_response() -> None:
         "max_results": 5,
     }
 
-    async def action(session: ClientSession) -> Any:
-        return await session.call_tool("search_cheapest_flights", arguments)
+    result = asyncio.run(tool.run(arguments, convert_result=True))
 
-    result = asyncio.run(_with_mcp_session(action))
-
-    assert _is_error(result) is False
     payload = _structured_content(result)
     response = SearchResponseV1.model_validate(payload)
-
     assert response.schema_version == "1"
     assert response.status == SearchStatus.SUCCESS
-    assert [offer.offer_id for offer in response.offers] == [
-        "manual_fixture:cxr-sgn-20260710-1",
-        "manual_fixture:cxr-sgn-20260710-2",
-    ]
+    assert response.offers == []
     assert response.errors == []
 
 
