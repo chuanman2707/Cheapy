@@ -37,6 +37,7 @@ def test_built_wheel_can_load_packaged_airport_and_provider_data(tmp_path: Path)
     assert "cheapy/data/hubs.v1.json" in names
     assert "cheapy/data/README.md" in names
     assert "cheapy/providers/manual_fixture/manifest.toml" in names
+    assert "cheapy/providers/google_fli/manifest.toml" in names
 
     venv_dir = tmp_path / "venv"
     subprocess.run([sys.executable, "-m", "venv", str(venv_dir)], check=True)
@@ -57,12 +58,17 @@ base = files("cheapy").joinpath("data")
 airports = json.loads(base.joinpath("airports.v1.json").read_text(encoding="utf-8"))
 hubs = json.loads(base.joinpath("hubs.v1.json").read_text(encoding="utf-8"))
 readme = base.joinpath("README.md").read_text(encoding="utf-8")
-manifest = files("cheapy.providers").joinpath("manual_fixture", "manifest.toml").read_text(encoding="utf-8")
+manual_manifest = files("cheapy.providers").joinpath("manual_fixture", "manifest.toml").read_text(encoding="utf-8")
+google_manifest = files("cheapy.providers").joinpath("google_fli", "manifest.toml").read_text(encoding="utf-8")
 
 assert airports["version"] == 1
 assert hubs["version"] == 1
 assert "OurAirports" in readme
-assert 'name = "manual_fixture"' in manifest
+assert 'name = "manual_fixture"' in manual_manifest
+assert 'provider_kind = "fixture"' in manual_manifest
+assert 'name = "google_fli"' in google_manifest
+assert 'provider_kind = "live"' in google_manifest
+assert "default_enabled = false" in google_manifest
 """
     subprocess.run([str(python), "-c", resource_script], check=True, cwd=tmp_path)
 
@@ -85,7 +91,13 @@ assert not installed_package.is_relative_to(repo_package), installed_package
         cwd=tmp_path,
     )
     assert list_result.stderr == ""
-    assert json.loads(list_result.stdout)["providers"][0]["name"] == "manual_fixture"
+    providers = {
+        provider["name"]: provider
+        for provider in json.loads(list_result.stdout)["providers"]
+    }
+    assert providers["manual_fixture"]["provider_kind"] == "fixture"
+    assert providers["google_fli"]["provider_kind"] == "live"
+    assert providers["google_fli"]["default_enabled"] is False
 
     test_result = subprocess.run(
         [str(python), "-m", "cheapy", "providers", "test"],

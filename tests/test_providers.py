@@ -369,3 +369,50 @@ def test_load_search_providers_excludes_fixture_providers() -> None:
 
     assert providers == []
     assert all(provider.name != "manual_fixture" for provider in providers)
+
+
+def test_load_search_providers_loads_enabled_live_providers_and_excludes_fixtures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    live_manifest = ProviderManifest(
+        manifest_schema_version="1",
+        name="live_provider",
+        display_name="Live provider",
+        default_enabled=True,
+        provider_kind="live",
+        module="live.provider",
+        capabilities=["exact_one_way"],
+    )
+    fixture_manifest = ProviderManifest(
+        manifest_schema_version="1",
+        name="fixture_provider",
+        display_name="Fixture provider",
+        default_enabled=True,
+        provider_kind="fixture",
+        module="fixture.provider",
+        capabilities=["exact_one_way"],
+    )
+
+    class FakeProvider:
+        def __init__(self, manifest: ProviderManifest) -> None:
+            self.name = manifest.name
+            self.capabilities = tuple(manifest.capabilities)
+
+    loaded_provider_names: list[str] = []
+
+    def fake_load_provider(manifest: ProviderManifest) -> FakeProvider:
+        loaded_provider_names.append(manifest.name)
+        return FakeProvider(manifest)
+
+    monkeypatch.setattr(
+        registry,
+        "discover_provider_manifests",
+        lambda: [live_manifest, fixture_manifest],
+    )
+    monkeypatch.setattr(registry, "load_provider", fake_load_provider)
+
+    providers = registry.load_search_providers()
+
+    assert [provider.name for provider in providers] == ["live_provider"]
+    assert providers[0].capabilities == ("exact_one_way",)
+    assert loaded_provider_names == ["live_provider"]
