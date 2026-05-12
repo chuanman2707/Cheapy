@@ -13,5 +13,7 @@ Use Cheapy only for exact one-way MVP flight searches.
 - Ask a follow-up for ambiguous non-default passenger counts.
 - expanded, flexible, nearby-airport, split-ticket, and round-trip search is deferred; do not pass return_date.
 - Do not ask the user to choose providers.
+- Use each offer's `provider` field when explaining where a fare came from.
+- Choose the cheapest result from the returned `offers` list when currencies are comparable.
 - Explain mixed currency cautiously; preserve provider currency and do not overstate comparisons.
 <!-- END CHEAPY MANAGED CLAUDE INSTRUCTIONS -->

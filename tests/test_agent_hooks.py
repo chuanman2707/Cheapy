@@ -27,6 +27,8 @@ def _assert_gate_6_instruction_text(text: str) -> None:
         "expanded, flexible, nearby-airport, split-ticket, and round-trip search is deferred",
         "do not pass return_date",
         "Do not ask the user to choose providers",
+        "Use each offer's `provider` field when explaining where a fare came from.",
+        "Choose the cheapest result from the returned `offers` list when currencies are comparable.",
         "mixed currency",
     ):
         assert phrase in text
