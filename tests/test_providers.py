@@ -114,7 +114,30 @@ def test_manual_fixture_manifest_is_discovered_from_package_resources() -> None:
         name="manual_fixture",
         display_name="Manual fixture provider",
         default_enabled=True,
+        provider_kind="fixture",
         module="cheapy.providers.manual_fixture.provider",
+        capabilities=["exact_one_way"],
+    )
+
+
+def test_provider_manifests_include_provider_kind() -> None:
+    manifests = discover_provider_manifests()
+    kinds_by_name = {manifest.name: manifest.provider_kind for manifest in manifests}
+
+    assert kinds_by_name["manual_fixture"] == "fixture"
+    assert kinds_by_name["google_fli"] == "live"
+
+
+def test_google_fli_manifest_is_discovered_from_package_resources() -> None:
+    manifest = _manifest_by_name("google_fli")
+
+    assert manifest == ProviderManifest(
+        manifest_schema_version="1",
+        name="google_fli",
+        display_name="Google Fli live provider",
+        default_enabled=True,
+        provider_kind="live",
+        module="cheapy.providers.google_fli.provider",
         capabilities=["exact_one_way"],
     )
 
@@ -132,6 +155,46 @@ def test_discover_provider_manifests_wraps_malformed_toml(monkeypatch: pytest.Mo
 
         def read_text(self, encoding: str) -> str:
             return "[manifest"
+
+    class FakeProviderResource:
+        name = "broken_provider"
+
+        def is_dir(self) -> bool:
+            return True
+
+        def joinpath(self, name: str) -> FakeManifestResource:
+            assert name == "manifest.toml"
+            return FakeManifestResource()
+
+    class FakeRootResource:
+        def iterdir(self) -> list[FakeProviderResource]:
+            return [FakeProviderResource()]
+
+    monkeypatch.setattr(registry, "_provider_resource_root", FakeRootResource)
+
+    with pytest.raises(
+        ProviderManifestError,
+        match="Invalid provider manifest for 'broken_provider'",
+    ):
+        discover_provider_manifests()
+
+
+def test_discover_provider_manifests_requires_provider_kind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeManifestResource:
+        def is_file(self) -> bool:
+            return True
+
+        def read_text(self, encoding: str) -> str:
+            return (
+                'manifest_schema_version = "1"\n'
+                'name = "broken_provider"\n'
+                'display_name = "Broken provider"\n'
+                "default_enabled = true\n"
+                'module = "broken.provider"\n'
+                'capabilities = ["exact_one_way"]\n'
+            )
 
     class FakeProviderResource:
         name = "broken_provider"
@@ -245,6 +308,7 @@ def test_load_provider_wraps_missing_factory(monkeypatch: pytest.MonkeyPatch) ->
         name="broken_provider",
         display_name="Broken provider",
         default_enabled=True,
+        provider_kind="live",
         module="broken.provider",
         capabilities=["exact_one_way"],
     )
@@ -273,6 +337,7 @@ def test_load_provider_rejects_bad_provider_shape(monkeypatch: pytest.MonkeyPatc
         name="bad_shape_provider",
         display_name="Bad shape provider",
         default_enabled=True,
+        provider_kind="live",
         module="bad_shape.provider",
         capabilities=["exact_one_way"],
     )
@@ -290,10 +355,21 @@ def test_load_provider_rejects_bad_provider_shape(monkeypatch: pytest.MonkeyPatc
         registry.load_provider(manifest)
 
 
-def test_load_enabled_providers_loads_manual_fixture_after_provider_exists() -> None:
+def test_load_enabled_providers_loads_all_default_enabled_providers() -> None:
     from cheapy.providers.registry import load_enabled_providers
 
     providers = load_enabled_providers()
 
-    assert [provider.name for provider in providers] == ["manual_fixture"]
+    assert [provider.name for provider in providers] == [
+        "google_fli",
+        "manual_fixture",
+    ]
     assert providers[0].capabilities == ("exact_one_way",)
+    assert providers[1].capabilities == ("exact_one_way",)
+
+
+def test_load_search_providers_excludes_fixture_providers() -> None:
+    providers = registry.load_search_providers()
+
+    assert [provider.name for provider in providers] == ["google_fli"]
+    assert all(provider.name != "manual_fixture" for provider in providers)

@@ -33,6 +33,7 @@ class ProviderManifest(BaseModel):
     name: str = Field(min_length=1)
     display_name: str = Field(min_length=1)
     default_enabled: bool
+    provider_kind: Literal["live", "fixture"]
     module: str = Field(min_length=1)
     capabilities: list[str] = Field(min_length=1)
 
@@ -111,4 +112,13 @@ def load_enabled_providers() -> list[FlightProvider]:
         load_provider(manifest)
         for manifest in discover_provider_manifests()
         if manifest.default_enabled
+    ]
+
+
+def load_search_providers() -> list[FlightProvider]:
+    """Load bundled providers enabled for normal user-facing search."""
+    return [
+        load_provider(manifest)
+        for manifest in discover_provider_manifests()
+        if manifest.default_enabled and manifest.provider_kind != "fixture"
     ]
