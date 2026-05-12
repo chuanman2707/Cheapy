@@ -197,7 +197,7 @@ def test_google_fli_manifest_is_discovered_from_package_resources() -> None:
         manifest_schema_version="1",
         name="google_fli",
         display_name="Google Fli live provider",
-        default_enabled=True,
+        default_enabled=False,
         provider_kind="live",
         module="cheapy.providers.google_fli.provider",
         capabilities=["exact_one_way"],
@@ -247,7 +247,7 @@ def test_discover_provider_manifests_requires_provider_kind(
 def test_load_search_providers_excludes_fixture_providers() -> None:
     providers = registry.load_search_providers()
 
-    assert [provider.name for provider in providers] == ["google_fli"]
+    assert providers == []
     assert all(provider.name != "manual_fixture" for provider in providers)
 ```
 
@@ -275,12 +275,8 @@ def test_load_enabled_providers_loads_all_default_enabled_providers() -> None:
 
     providers = load_enabled_providers()
 
-    assert [provider.name for provider in providers] == [
-        "google_fli",
-        "manual_fixture",
-    ]
+    assert [provider.name for provider in providers] == ["manual_fixture"]
     assert providers[0].capabilities == ("exact_one_way",)
-    assert providers[1].capabilities == ("exact_one_way",)
 ```
 
 - [ ] **Step 2: Run registry tests and verify failure**
@@ -321,7 +317,7 @@ Create `cheapy/providers/google_fli/manifest.toml`:
 manifest_schema_version = "1"
 name = "google_fli"
 display_name = "Google Fli live provider"
-default_enabled = true
+default_enabled = false
 provider_kind = "live"
 module = "cheapy.providers.google_fli.provider"
 capabilities = ["exact_one_way"]
@@ -387,7 +383,7 @@ def create_provider() -> GoogleFliProvider:
     return GoogleFliProvider()
 ```
 
-This stub is replaced in Task 4 before any provider call path uses it.
+This stub remains disabled until Task 4 replaces it with the real provider and enables the manifest.
 
 - [ ] **Step 6: Run registry tests**
 
@@ -781,6 +777,8 @@ Expected: commit succeeds.
 
 - Create: `cheapy/providers/google_fli/adapter.py`
 - Modify: `cheapy/providers/google_fli/provider.py`
+- Modify: `cheapy/providers/google_fli/manifest.toml`
+- Modify: `tests/test_providers.py`
 - Create: `tests/test_google_fli_provider.py`
 
 - [ ] **Step 1: Write failing adapter/provider tests**
@@ -1243,7 +1241,23 @@ def _duration_ms(started: float) -> int:
     return max(0, round((perf_counter() - started) * 1000))
 ```
 
-- [ ] **Step 5: Run provider tests**
+- [ ] **Step 5: Enable the live provider after replacing the stub**
+
+Modify `cheapy/providers/google_fli/manifest.toml`:
+
+```toml
+manifest_schema_version = "1"
+name = "google_fli"
+display_name = "Google Fli live provider"
+default_enabled = true
+provider_kind = "live"
+module = "cheapy.providers.google_fli.provider"
+capabilities = ["exact_one_way"]
+```
+
+Update `tests/test_providers.py` so `test_google_fli_manifest_is_discovered_from_package_resources` expects `default_enabled=True`, `test_load_enabled_providers_loads_all_default_enabled_providers` expects `["google_fli", "manual_fixture"]`, and `test_load_search_providers_excludes_fixture_providers` verifies `load_search_providers()` returns `["google_fli"]`.
+
+- [ ] **Step 6: Run provider tests**
 
 Run:
 
@@ -1253,7 +1267,17 @@ uv run pytest tests/test_google_fli_provider.py -v
 
 Expected: PASS.
 
-- [ ] **Step 6: Run provider package tests**
+- [ ] **Step 7: Verify search provider loading**
+
+Run:
+
+```bash
+uv run pytest tests/test_providers.py::test_google_fli_manifest_is_discovered_from_package_resources tests/test_providers.py::test_load_enabled_providers_loads_all_default_enabled_providers tests/test_providers.py::test_load_search_providers_excludes_fixture_providers -v
+```
+
+Expected: PASS, and `load_search_providers()` returns `google_fli` because the real provider has replaced the temporary stub.
+
+- [ ] **Step 8: Run provider package tests**
 
 Run:
 
@@ -1263,12 +1287,12 @@ uv run pytest tests/test_providers.py tests/test_google_fli_normalizer.py tests/
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit google_fli provider**
+- [ ] **Step 9: Commit google_fli provider**
 
 Run:
 
 ```bash
-git add cheapy/providers/google_fli tests/test_google_fli_normalizer.py tests/test_google_fli_provider.py
+git add cheapy/providers/google_fli tests/test_providers.py tests/test_google_fli_normalizer.py tests/test_google_fli_provider.py
 git commit -m "feat: add google fli provider" -m "AI-Model: GPT-5 Codex"
 ```
 

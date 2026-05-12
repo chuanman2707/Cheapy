@@ -142,6 +142,13 @@ def test_providers_list_prints_json() -> None:
         "providers": [
             {
                 "capabilities": ["exact_one_way"],
+                "default_enabled": False,
+                "display_name": "Google Fli live provider",
+                "enabled": False,
+                "name": "google_fli",
+            },
+            {
+                "capabilities": ["exact_one_way"],
                 "default_enabled": True,
                 "display_name": "Manual fixture provider",
                 "enabled": True,
