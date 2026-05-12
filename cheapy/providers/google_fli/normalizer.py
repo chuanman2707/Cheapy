@@ -29,19 +29,51 @@ def normalize_flights(
     """Convert upstream fli flight result objects into Contract V1 offers."""
     offers: list[FlightOfferV1] = []
     errors: list[ErrorV1] = []
-    for index, flight in enumerate(flights, start=1):
+    for item_index, flight in enumerate(flights, start=1):
         try:
             offers.append(
                 _normalize_flight(
                     flight,
                     request,
-                    index=index,
+                    item_index=item_index,
+                    rank=len(offers) + 1,
                     configured_currency=configured_currency,
                 )
             )
         except _ItemNormalizationError as exc:
             errors.append(exc.error)
-    return offers, errors
+    return _rank_offers(offers), errors
+
+
+def _rank_offers(offers: list[FlightOfferV1]) -> list[FlightOfferV1]:
+    currencies = {offer.currency for offer in offers}
+    if len(currencies) <= 1:
+        return [
+            offer.model_copy(
+                update={
+                    "comparable": True,
+                    "rank_within_currency": rank,
+                    "global_rank": rank,
+                }
+            )
+            for rank, offer in enumerate(offers, start=1)
+        ]
+
+    currency_ranks: dict[str, int] = {}
+    ranked: list[FlightOfferV1] = []
+    for offer in offers:
+        rank = currency_ranks.get(offer.currency, 0) + 1
+        currency_ranks[offer.currency] = rank
+        ranked.append(
+            offer.model_copy(
+                update={
+                    "comparable": False,
+                    "rank_within_currency": rank,
+                    "global_rank": None,
+                }
+            )
+        )
+    return ranked
 
 
 class _ItemNormalizationError(Exception):
@@ -56,12 +88,13 @@ def _normalize_flight(
     flight: object,
     request: ProviderExactOneWayRequest,
     *,
-    index: int,
+    item_index: int,
+    rank: int,
     configured_currency: str | None,
 ) -> FlightOfferV1:
     currency = _currency(flight, configured_currency=configured_currency)
     if currency is None:
-        raise _ItemNormalizationError(_currency_unavailable_error(index))
+        raise _ItemNormalizationError(_currency_unavailable_error(item_index))
 
     try:
         legs = [_normalize_leg(leg) for leg in _attr(flight, "legs")]
@@ -72,38 +105,37 @@ def _normalize_flight(
         price_amount = float(_attr(flight, "price"))
         duration = int(_attr(flight, "duration"))
         stops = int(_attr(flight, "stops"))
+        return FlightOfferV1(
+            offer_id=(
+                f"{PROVIDER_NAME}:{request.origin}-{request.destination}:"
+                f"{request.departure_date}:{item_index}"
+            ),
+            price_amount=price_amount,
+            currency=currency,
+            comparable=True,
+            rank_within_currency=rank,
+            global_rank=rank,
+            provider=PROVIDER_NAME,
+            requested_origin=request.origin,
+            requested_destination=request.destination,
+            actual_origin=first_leg.origin,
+            actual_destination=last_leg.destination,
+            nearby_origin_distance_km=None,
+            nearby_destination_distance_km=None,
+            requested_departure_date=request.departure_date,
+            actual_departure_date=first_leg.departure_time[:10],
+            departure_offset_days=0,
+            requested_return_date=None,
+            actual_return_date=None,
+            return_offset_days=None,
+            legs=legs,
+            total_duration_minutes=duration,
+            stops=stops,
+            flags=OfferFlagsV1(),
+            fare_details_status="not_collected",
+        )
     except Exception as exc:
-        raise _ItemNormalizationError(_parse_error(index, exc)) from exc
-
-    return FlightOfferV1(
-        offer_id=(
-            f"{PROVIDER_NAME}:{request.origin}-{request.destination}:"
-            f"{request.departure_date}:{index}"
-        ),
-        price_amount=price_amount,
-        currency=currency,
-        comparable=True,
-        rank_within_currency=index,
-        global_rank=index,
-        provider=PROVIDER_NAME,
-        requested_origin=request.origin,
-        requested_destination=request.destination,
-        actual_origin=first_leg.origin,
-        actual_destination=last_leg.destination,
-        nearby_origin_distance_km=None,
-        nearby_destination_distance_km=None,
-        requested_departure_date=request.departure_date,
-        actual_departure_date=first_leg.departure_time[:10],
-        departure_offset_days=0,
-        requested_return_date=None,
-        actual_return_date=None,
-        return_offset_days=None,
-        legs=legs,
-        total_duration_minutes=duration,
-        stops=stops,
-        flags=OfferFlagsV1(),
-        fare_details_status="not_collected",
-    )
+        raise _ItemNormalizationError(_parse_error(item_index, exc)) from exc
 
 
 def _normalize_leg(leg: object) -> FlightLegV1:
@@ -121,11 +153,17 @@ def _normalize_leg(leg: object) -> FlightLegV1:
 
 
 def _currency(flight: object, *, configured_currency: str | None) -> str | None:
-    raw_currency = getattr(flight, "currency", None)
-    if isinstance(raw_currency, str) and len(raw_currency.strip()) == 3:
-        return raw_currency.strip().upper()
-    if configured_currency is not None and len(configured_currency.strip()) == 3:
-        return configured_currency.strip().upper()
+    return _currency_code(getattr(flight, "currency", None)) or _currency_code(
+        configured_currency
+    )
+
+
+def _currency_code(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    currency = value.strip().upper()
+    if len(currency) == 3 and currency.isalpha():
+        return currency
     return None
 
 

@@ -87,6 +87,17 @@ def test_normalize_flights_uses_configured_currency_when_result_currency_is_miss
     assert offers[0].currency == "VND"
 
 
+def test_normalize_flights_uses_configured_currency_when_result_currency_is_malformed() -> None:
+    offers, errors = normalize_flights(
+        [_flight(currency="US$")],
+        _request(),
+        configured_currency="VND",
+    )
+
+    assert errors == []
+    assert offers[0].currency == "VND"
+
+
 def test_normalize_flights_fails_item_when_currency_is_unavailable() -> None:
     offers, errors = normalize_flights([_flight(currency=None)], _request())
 
@@ -101,6 +112,14 @@ def test_normalize_flights_fails_item_when_currency_is_unavailable() -> None:
         "item_index": 1,
     }
     assert error.retryable is False
+
+
+def test_normalize_flights_fails_item_when_currency_is_malformed_and_unconfigured() -> None:
+    offers, errors = normalize_flights([_flight(currency="US$")], _request())
+
+    assert offers == []
+    assert len(errors) == 1
+    assert errors[0].details["failure_type"] == "currency_unavailable"
 
 
 def test_normalize_flights_skips_malformed_item_without_leaking_payload() -> None:
@@ -121,3 +140,41 @@ def test_normalize_flights_skips_malformed_item_without_leaking_payload() -> Non
     assert errors[0].details["failure_type"] == "parse_error"
     assert "secret raw payload" not in payload
     assert "secret-price" not in payload
+
+
+def test_normalize_flights_converts_contract_validation_errors_to_sanitized_parse_errors() -> None:
+    offers, errors = normalize_flights([_flight(price=-1)], _request())
+
+    assert offers == []
+    assert len(errors) == 1
+    payload = errors[0].model_dump_json()
+    assert errors[0].details["failure_type"] == "parse_error"
+    assert "-1" not in payload
+
+
+def test_normalize_flights_ranks_successful_offers_contiguously_after_skipped_item() -> None:
+    bad_flight = _flight(legs=[])
+
+    offers, errors = normalize_flights([bad_flight, _flight()], _request())
+
+    assert len(errors) == 1
+    assert errors[0].details["item_index"] == 1
+    assert [offer.offer_id for offer in offers] == ["google_fli:SGN-BKK:2026-06-11:2"]
+    assert [offer.rank_within_currency for offer in offers] == [1]
+    assert [offer.global_rank for offer in offers] == [1]
+
+
+def test_normalize_flights_marks_mixed_currency_offers_not_globally_comparable() -> None:
+    offers, errors = normalize_flights(
+        [
+            _flight(currency="USD"),
+            _flight(currency="VND"),
+        ],
+        _request(),
+    )
+
+    assert errors == []
+    assert [offer.currency for offer in offers] == ["USD", "VND"]
+    assert [offer.comparable for offer in offers] == [False, False]
+    assert [offer.rank_within_currency for offer in offers] == [1, 1]
+    assert [offer.global_rank for offer in offers] == [None, None]
