@@ -425,7 +425,7 @@ def create_provider() -> GoogleFliProvider:
     return GoogleFliProvider()
 ```
 
-This stub remains disabled until Task 4 replaces it with the real provider and enables the manifest.
+This stub remains disabled until Task 6 adds live-safe provider checks and enables the manifest after the real provider exists.
 
 - [ ] **Step 7: Run registry and CLI tests**
 
@@ -820,8 +820,6 @@ Expected: commit succeeds.
 
 - Create: `cheapy/providers/google_fli/adapter.py`
 - Modify: `cheapy/providers/google_fli/provider.py`
-- Modify: `cheapy/providers/google_fli/manifest.toml`
-- Modify: `tests/test_providers.py`
 - Create: `tests/test_google_fli_provider.py`
 
 - [ ] **Step 1: Write failing adapter/provider tests**
@@ -1284,23 +1282,7 @@ def _duration_ms(started: float) -> int:
     return max(0, round((perf_counter() - started) * 1000))
 ```
 
-- [ ] **Step 5: Enable the live provider after replacing the stub**
-
-Modify `cheapy/providers/google_fli/manifest.toml`:
-
-```toml
-manifest_schema_version = "1"
-name = "google_fli"
-display_name = "Google Fli live provider"
-default_enabled = true
-provider_kind = "live"
-module = "cheapy.providers.google_fli.provider"
-capabilities = ["exact_one_way"]
-```
-
-Update `tests/test_providers.py` so `test_google_fli_manifest_is_discovered_from_package_resources` expects `default_enabled=True`, `test_load_enabled_providers_loads_all_default_enabled_providers` expects `["google_fli", "manual_fixture"]`, and `test_load_search_providers_excludes_fixture_providers` verifies `load_search_providers()` returns `["google_fli"]`.
-
-- [ ] **Step 6: Run provider tests**
+- [ ] **Step 5: Run provider tests**
 
 Run:
 
@@ -1310,7 +1292,7 @@ uv run pytest tests/test_google_fli_provider.py -v
 
 Expected: PASS.
 
-- [ ] **Step 7: Verify search provider loading**
+- [ ] **Step 6: Verify live provider stays disabled until CLI is live-safe**
 
 Run:
 
@@ -1318,9 +1300,9 @@ Run:
 uv run pytest tests/test_providers.py::test_google_fli_manifest_is_discovered_from_package_resources tests/test_providers.py::test_load_enabled_providers_loads_all_default_enabled_providers tests/test_providers.py::test_load_search_providers_excludes_fixture_providers -v
 ```
 
-Expected: PASS, and `load_search_providers()` returns `google_fli` because the real provider has replaced the temporary stub.
+Expected: PASS, and `load_search_providers()` still returns `[]` because Task 6 has not yet added live-safe provider checks and enabled the manifest.
 
-- [ ] **Step 8: Run provider package tests**
+- [ ] **Step 7: Run provider package tests**
 
 Run:
 
@@ -1330,12 +1312,12 @@ uv run pytest tests/test_providers.py tests/test_google_fli_normalizer.py tests/
 
 Expected: PASS.
 
-- [ ] **Step 9: Commit google_fli provider**
+- [ ] **Step 8: Commit google_fli provider**
 
 Run:
 
 ```bash
-git add cheapy/providers/google_fli tests/test_providers.py tests/test_google_fli_normalizer.py tests/test_google_fli_provider.py
+git add cheapy/providers/google_fli/adapter.py cheapy/providers/google_fli/provider.py tests/test_google_fli_provider.py
 git commit -m "feat: add google fli provider" -m "AI-Model: GPT-5 Codex"
 ```
 
@@ -1595,7 +1577,9 @@ Expected: commit succeeds.
 **Files:**
 
 - Modify: `cheapy/cli.py`
+- Modify: `cheapy/providers/google_fli/manifest.toml`
 - Modify: `tests/test_cli.py`
+- Modify: `tests/test_providers.py`
 
 - [ ] **Step 1: Write failing CLI tests**
 
@@ -1694,15 +1678,21 @@ def test_providers_test_human_prints_success_report() -> None:
     assert result.stdout.endswith("status: ok\n")
 ```
 
+Update provider-loading expectations in `tests/test_providers.py`:
+
+- `test_google_fli_manifest_is_discovered_from_package_resources` expects `default_enabled=True`.
+- `test_load_enabled_providers_loads_all_default_enabled_providers` expects `["google_fli", "manual_fixture"]`.
+- `test_load_search_providers_excludes_fixture_providers` verifies `load_search_providers()` returns `["google_fli"]`.
+
 - [ ] **Step 2: Run CLI tests and verify failure**
 
 Run:
 
 ```bash
-uv run pytest tests/test_cli.py::test_providers_test_default_does_not_run_live_provider tests/test_cli.py::test_providers_test_live_requires_environment_gate tests/test_cli.py::test_providers_test_live_reports_provider_failure -v
+uv run pytest tests/test_cli.py::test_providers_test_default_does_not_run_live_provider tests/test_cli.py::test_providers_test_live_requires_environment_gate tests/test_cli.py::test_providers_test_live_reports_provider_failure tests/test_providers.py::test_google_fli_manifest_is_discovered_from_package_resources tests/test_providers.py::test_load_enabled_providers_loads_all_default_enabled_providers tests/test_providers.py::test_load_search_providers_excludes_fixture_providers -v
 ```
 
-Expected: FAIL because live-safe provider checks and `--live` do not exist.
+Expected: FAIL because live-safe provider checks and `--live` do not exist, and `google_fli` is still disabled until the CLI safeguards in this task are implemented.
 
 - [ ] **Step 3: Add live option and environment guard**
 
@@ -1884,22 +1874,36 @@ def _echo_provider_human_report(reports: list[dict[str, Any]], *, status: str) -
     typer.echo(f"status: {status}")
 ```
 
-- [ ] **Step 7: Run CLI tests**
+- [ ] **Step 7: Enable the live provider after CLI checks are live-safe**
+
+Modify `cheapy/providers/google_fli/manifest.toml`:
+
+```toml
+manifest_schema_version = "1"
+name = "google_fli"
+display_name = "Google Fli live provider"
+default_enabled = true
+provider_kind = "live"
+module = "cheapy.providers.google_fli.provider"
+capabilities = ["exact_one_way"]
+```
+
+- [ ] **Step 8: Run CLI and provider registry tests**
 
 Run:
 
 ```bash
-uv run pytest tests/test_cli.py -v
+uv run pytest tests/test_cli.py tests/test_providers.py::test_google_fli_manifest_is_discovered_from_package_resources tests/test_providers.py::test_load_enabled_providers_loads_all_default_enabled_providers tests/test_providers.py::test_load_search_providers_excludes_fixture_providers -v
 ```
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit CLI updates**
+- [ ] **Step 9: Commit CLI updates**
 
 Run:
 
 ```bash
-git add cheapy/cli.py tests/test_cli.py
+git add cheapy/cli.py cheapy/providers/google_fli/manifest.toml tests/test_cli.py tests/test_providers.py
 git commit -m "feat: add live-safe provider checks" -m "AI-Model: GPT-5 Codex"
 ```
 
@@ -2346,7 +2350,7 @@ Expected: working tree is clean, with Gate 7 commits on top of the design commit
   - no silent currency invention: Tasks 3-4.
   - structured provider errors with existing Contract V1 enums: Task 4.
   - `openWorldHint=True`: Task 7.
-  - provider CLI live-safe behavior: Task 6.
+  - provider CLI live-safe behavior and enabling `google_fli`: Task 6.
   - subprocess MCP tests avoiding live network: Task 7.
   - packaging and opt-in live smoke: Task 9.
   - agent provider attribution instructions: Task 8.
