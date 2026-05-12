@@ -18,6 +18,7 @@ from cheapy.models import (
     Severity,
 )
 from cheapy.providers.base import ProviderExactOneWayRequest, ProviderResult
+from cheapy.providers.manual_fixture.provider import create_provider as create_manual_fixture
 from cheapy.providers.registry import ProviderLoadError, ProviderManifestError
 from cheapy.search import search_exact
 
@@ -96,7 +97,18 @@ class _ProviderFromResult:
         return self._result
 
 
-def test_search_exact_returns_manual_fixture_success_response() -> None:
+def _manual_fixture_providers() -> list[object]:
+    return [create_manual_fixture()]
+
+
+def test_search_exact_returns_manual_fixture_success_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "cheapy.search.load_search_providers",
+        _manual_fixture_providers,
+    )
+
     response = search_exact(_request())
 
     assert response.schema_version == "1"
@@ -146,7 +158,14 @@ def test_search_exact_returns_manual_fixture_success_response() -> None:
     assert provider_status.failed_call_count == 0
 
 
-def test_search_exact_respects_max_results_and_uses_resolved_iata() -> None:
+def test_search_exact_respects_max_results_and_uses_resolved_iata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "cheapy.search.load_search_providers",
+        _manual_fixture_providers,
+    )
+
     response = search_exact(
         _request(
             origin=" cxr ",
@@ -165,7 +184,14 @@ def test_search_exact_respects_max_results_and_uses_resolved_iata() -> None:
     ]
 
 
-def test_search_exact_preserves_provider_failure_for_unsupported_fixture() -> None:
+def test_search_exact_preserves_provider_failure_for_unsupported_fixture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "cheapy.search.load_search_providers",
+        _manual_fixture_providers,
+    )
+
     response = search_exact(_request(origin="HAN"))
 
     assert response.status == SearchStatus.FAILED
@@ -184,7 +210,7 @@ def test_search_exact_unknown_airport_returns_failed_response_without_provider_c
     def fail_if_called() -> list[object]:
         raise AssertionError("airport failures must not load providers")
 
-    monkeypatch.setattr("cheapy.search.load_enabled_providers", fail_if_called)
+    monkeypatch.setattr("cheapy.search.load_search_providers", fail_if_called)
 
     response = search_exact(_request(origin="ZZZ"))
 
@@ -230,7 +256,7 @@ def test_search_exact_unsupported_scope_returns_failed_response(
 def test_search_exact_no_enabled_providers_reports_planned_unexecuted_candidate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("cheapy.search.load_enabled_providers", lambda: [])
+    monkeypatch.setattr("cheapy.search.load_search_providers", lambda: [])
 
     response = search_exact(_request())
 
@@ -256,7 +282,7 @@ def test_search_exact_no_exact_capable_provider_returns_no_provider(
         capabilities = ("flexible_dates",)
 
     monkeypatch.setattr(
-        "cheapy.search.load_enabled_providers",
+        "cheapy.search.load_search_providers",
         lambda: [FlexibleOnlyProvider()],
     )
 
@@ -284,7 +310,7 @@ def test_search_exact_registry_errors_return_failed_response(
     def raise_registry_error() -> list[object]:
         raise error
 
-    monkeypatch.setattr("cheapy.search.load_enabled_providers", raise_registry_error)
+    monkeypatch.setattr("cheapy.search.load_search_providers", raise_registry_error)
 
     response = search_exact(_request())
 
@@ -309,7 +335,7 @@ def test_search_exact_provider_exception_becomes_provider_failed(
             raise RuntimeError("secret token must not leak")
 
     monkeypatch.setattr(
-        "cheapy.search.load_enabled_providers",
+        "cheapy.search.load_search_providers",
         lambda: [RaisingProvider()],
     )
 
@@ -340,7 +366,7 @@ def test_search_exact_malformed_provider_return_becomes_provider_failed(
             return {"raw_provider_payload": "secret payload must not leak"}
 
     monkeypatch.setattr(
-        "cheapy.search.load_enabled_providers",
+        "cheapy.search.load_search_providers",
         lambda: [MalformedProvider()],
     )
 
@@ -399,7 +425,7 @@ def test_search_exact_returns_partial_when_offers_and_provider_errors_exist(
     )
 
     monkeypatch.setattr(
-        "cheapy.search.load_enabled_providers",
+        "cheapy.search.load_search_providers",
         lambda: [_ProviderFromResult(success), _ProviderFromResult(failure)],
     )
 
@@ -448,7 +474,7 @@ def test_search_exact_synthesizes_error_for_failed_provider_without_errors(
     )
 
     monkeypatch.setattr(
-        "cheapy.search.load_enabled_providers",
+        "cheapy.search.load_search_providers",
         lambda: [_ProviderFromResult(success), _ProviderFromResult(silent_failure)],
     )
 
@@ -488,7 +514,7 @@ def test_search_exact_normalizes_provider_status_capability(
     )
 
     monkeypatch.setattr(
-        "cheapy.search.load_enabled_providers",
+        "cheapy.search.load_search_providers",
         lambda: [_ProviderFromResult(result)],
     )
 
@@ -525,7 +551,7 @@ def test_search_exact_groups_mixed_currency_offers(
         retryable=False,
     )
     monkeypatch.setattr(
-        "cheapy.search.load_enabled_providers",
+        "cheapy.search.load_search_providers",
         lambda: [_ProviderFromResult(result)],
     )
 
@@ -541,3 +567,121 @@ def test_search_exact_groups_mixed_currency_offers(
     assert response.currency_notes == [
         "Currency conversion was not applied; compare mixed-currency offers separately."
     ]
+
+
+def test_search_exact_uses_search_providers_not_fixture_loader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    live_result = ProviderResult(
+        provider_name="google_fli",
+        capability="exact_one_way",
+        status=ProviderStatusCode.SUCCESS,
+        offers=[
+            _offer(
+                offer_id="google_fli:expensive",
+                provider="google_fli",
+                currency="USD",
+                price_amount=120.0,
+            )
+        ],
+        warnings=[],
+        errors=[],
+        duration_ms=1,
+        retryable=False,
+    )
+
+    monkeypatch.setattr(
+        "cheapy.search.load_search_providers",
+        lambda: [_ProviderFromResult(live_result)],
+    )
+    monkeypatch.setattr(
+        "cheapy.search.load_enabled_providers",
+        lambda: (_ for _ in ()).throw(AssertionError("fixture loader must not be used")),
+        raising=False,
+    )
+
+    response = search_exact(_request(origin="CXR", destination="SGN"))
+
+    assert response.status == SearchStatus.SUCCESS
+    assert [offer.provider for offer in response.offers] == ["google_fli"]
+    assert all(offer.provider != "manual_fixture" for offer in response.offers)
+
+
+def test_search_exact_reassigns_global_ranks_after_sorting_and_truncation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = ProviderResult(
+        provider_name="google_fli",
+        capability="exact_one_way",
+        status=ProviderStatusCode.SUCCESS,
+        offers=[
+            _offer(
+                offer_id="google_fli:second",
+                provider="google_fli",
+                currency="USD",
+                price_amount=200.0,
+            ).model_copy(update={"rank_within_currency": 99, "global_rank": 99}),
+            _offer(
+                offer_id="google_fli:first",
+                provider="google_fli",
+                currency="USD",
+                price_amount=100.0,
+            ).model_copy(update={"rank_within_currency": 88, "global_rank": 88}),
+        ],
+        warnings=[],
+        errors=[],
+        duration_ms=1,
+        retryable=False,
+    )
+
+    monkeypatch.setattr(
+        "cheapy.search.load_search_providers",
+        lambda: [_ProviderFromResult(result)],
+    )
+
+    response = search_exact(_request(max_results=1))
+
+    assert [offer.offer_id for offer in response.offers] == ["google_fli:first"]
+    assert response.offers[0].comparable is True
+    assert response.offers[0].rank_within_currency == 1
+    assert response.offers[0].global_rank == 1
+
+
+def test_search_exact_mixed_currency_ranks_within_currency_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = ProviderResult(
+        provider_name="google_fli",
+        capability="exact_one_way",
+        status=ProviderStatusCode.SUCCESS,
+        offers=[
+            _offer(
+                offer_id="google_fli:usd",
+                provider="google_fli",
+                currency="USD",
+                price_amount=100.0,
+            ),
+            _offer(
+                offer_id="google_fli:vnd",
+                provider="google_fli",
+                currency="VND",
+                price_amount=1000000.0,
+            ),
+        ],
+        warnings=[],
+        errors=[],
+        duration_ms=1,
+        retryable=False,
+    )
+
+    monkeypatch.setattr(
+        "cheapy.search.load_search_providers",
+        lambda: [_ProviderFromResult(result)],
+    )
+
+    response = search_exact(_request())
+
+    assert response.mixed_currency is True
+    assert all(offer.comparable is False for offer in response.offers)
+    assert all(offer.global_rank is None for offer in response.offers)
+    assert [offer.rank_within_currency for offer in response.offers] == [1, 1]

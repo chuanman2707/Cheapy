@@ -28,7 +28,7 @@ from cheapy.providers.base import (
 from cheapy.providers.registry import (
     ProviderLoadError,
     ProviderManifestError,
-    load_enabled_providers,
+    load_search_providers,
 )
 
 
@@ -87,7 +87,7 @@ def search_exact(request: SearchRequestV1) -> SearchResponseV1:
         )
 
     try:
-        providers = load_enabled_providers()
+        providers = load_search_providers()
     except (ProviderManifestError, ProviderLoadError) as exc:
         return _failed_response(
             request_id=request_id,
@@ -274,7 +274,7 @@ def _response_from_provider_results(
     provider_results: list[ProviderResult],
 ) -> SearchResponseV1:
     offers = [offer for result in provider_results for offer in result.offers]
-    returned_offers = _sort_offers(offers)[: request.max_results]
+    returned_offers = _rank_offers(_sort_offers(offers)[: request.max_results])
     warnings = [warning for result in provider_results for warning in result.warnings]
     errors = [error for result in provider_results for error in result.errors]
     mixed_currency = len({offer.currency for offer in returned_offers}) > 1
@@ -366,6 +366,37 @@ def _sort_offers(offers: list[FlightOfferV1]) -> list[FlightOfferV1]:
         offers,
         key=lambda offer: (offer.currency, offer.price_amount, offer.offer_id),
     )
+
+
+def _rank_offers(offers: list[FlightOfferV1]) -> list[FlightOfferV1]:
+    currencies = {offer.currency for offer in offers}
+    if len(currencies) <= 1:
+        return [
+            offer.model_copy(
+                update={
+                    "comparable": True,
+                    "rank_within_currency": index,
+                    "global_rank": index,
+                }
+            )
+            for index, offer in enumerate(offers, start=1)
+        ]
+
+    currency_rank_counts: dict[str, int] = {}
+    ranked: list[FlightOfferV1] = []
+    for offer in offers:
+        rank = currency_rank_counts.get(offer.currency, 0) + 1
+        currency_rank_counts[offer.currency] = rank
+        ranked.append(
+            offer.model_copy(
+                update={
+                    "comparable": False,
+                    "rank_within_currency": rank,
+                    "global_rank": None,
+                }
+            )
+        )
+    return ranked
 
 
 def _currency_groups(offers: list[FlightOfferV1]) -> list[CurrencyGroupV1]:
