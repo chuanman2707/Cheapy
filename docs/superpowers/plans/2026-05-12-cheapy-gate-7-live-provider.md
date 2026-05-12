@@ -59,7 +59,7 @@ Modify:
 - `cheapy/providers/manual_fixture/manifest.toml`: add `provider_kind="fixture"`.
 - `cheapy/search.py`: use `load_search_providers()` for normal search and re-rank returned offers after global sorting/truncation.
 - `cheapy/mcp.py`: change MCP annotation `openWorldHint` to `True`.
-- `cheapy/cli.py`: show `provider_kind`, keep default provider checks offline, add `cheapy providers test --live`.
+- `cheapy/cli.py`: in Task 2 show `provider_kind`; in Task 6 keep default provider checks offline and add `cheapy providers test --live`.
 - `cheapy/agent_hooks.py`: update managed agent instructions to mention provider attribution in returned offers.
 - `.codex/skills/cheapy/SKILL.md`: update project-local skill text consistently with installer-managed instructions.
 - `tests/test_providers.py`: registry and manifest tests.
@@ -175,9 +175,11 @@ Expected: commit contains only `pyproject.toml` and `uv.lock`.
 - Modify: `cheapy/providers/manual_fixture/manifest.toml`
 - Create: `cheapy/providers/google_fli/__init__.py`
 - Create: `cheapy/providers/google_fli/manifest.toml`
+- Modify: `cheapy/cli.py`
 - Modify: `tests/test_providers.py`
+- Modify: `tests/test_cli.py`
 
-- [ ] **Step 1: Write failing registry tests**
+- [ ] **Step 1: Write failing registry and CLI tests**
 
 Append to `tests/test_providers.py`:
 
@@ -251,6 +253,25 @@ def test_load_search_providers_excludes_fixture_providers() -> None:
     assert all(provider.name != "manual_fixture" for provider in providers)
 ```
 
+Update `tests/test_cli.py::test_providers_list_prints_json` to build providers by name so discovery order does not matter, and assert the current Task 2 provider metadata:
+
+```python
+def test_providers_list_prints_json() -> None:
+    result = runner.invoke(app, ["providers", "list"])
+
+    assert result.exit_code == 0
+    assert result.stderr == ""
+    payload = json.loads(result.stdout)
+    providers = {provider["name"]: provider for provider in payload["providers"]}
+    assert payload["status"] == "ok"
+    assert providers["manual_fixture"]["provider_kind"] == "fixture"
+    assert providers["manual_fixture"]["default_enabled"] is True
+    assert providers["manual_fixture"]["enabled"] is True
+    assert providers["google_fli"]["provider_kind"] == "live"
+    assert providers["google_fli"]["default_enabled"] is False
+    assert providers["google_fli"]["enabled"] is False
+```
+
 Update existing assertions in `tests/test_providers.py`:
 
 ```python
@@ -287,7 +308,13 @@ Run:
 uv run pytest tests/test_providers.py::test_provider_manifests_include_provider_kind tests/test_providers.py::test_google_fli_manifest_is_discovered_from_package_resources tests/test_providers.py::test_discover_provider_manifests_requires_provider_kind tests/test_providers.py::test_load_search_providers_excludes_fixture_providers -v
 ```
 
-Expected: FAIL because `provider_kind`, `google_fli`, and `load_search_providers()` do not exist.
+Also run the CLI provider list test:
+
+```bash
+uv run pytest tests/test_cli.py::test_providers_list_prints_json -v
+```
+
+Expected: FAIL because `provider_kind`, `google_fli`, `load_search_providers()`, and the provider list `provider_kind` output do not exist.
 
 - [ ] **Step 3: Update provider manifests**
 
@@ -354,7 +381,22 @@ def load_search_providers() -> list[FlightProvider]:
     ]
 ```
 
-- [ ] **Step 5: Add a minimal temporary google provider stub**
+- [ ] **Step 5: Update provider list output**
+
+In `cheapy/cli.py`, add `provider_kind` to each provider dict in `providers_list()`:
+
+```python
+{
+    "name": manifest.name,
+    "display_name": manifest.display_name,
+    "capabilities": manifest.capabilities,
+    "default_enabled": manifest.default_enabled,
+    "enabled": manifest.default_enabled,
+    "provider_kind": manifest.provider_kind,
+}
+```
+
+- [ ] **Step 6: Add a minimal temporary google provider stub**
 
 Create `cheapy/providers/google_fli/provider.py`:
 
@@ -385,17 +427,18 @@ def create_provider() -> GoogleFliProvider:
 
 This stub remains disabled until Task 4 replaces it with the real provider and enables the manifest.
 
-- [ ] **Step 6: Run registry tests**
+- [ ] **Step 7: Run registry and CLI tests**
 
 Run:
 
 ```bash
 uv run pytest tests/test_providers.py::test_provider_manifests_include_provider_kind tests/test_providers.py::test_google_fli_manifest_is_discovered_from_package_resources tests/test_providers.py::test_discover_provider_manifests_requires_provider_kind tests/test_providers.py::test_load_search_providers_excludes_fixture_providers -v
+uv run pytest tests/test_cli.py::test_providers_list_prints_json -v
 ```
 
 Expected: PASS.
 
-- [ ] **Step 7: Run existing provider tests**
+- [ ] **Step 8: Run existing provider tests**
 
 Run:
 
@@ -405,12 +448,12 @@ uv run pytest tests/test_providers.py -v
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit registry and manifest changes**
+- [ ] **Step 9: Commit registry, manifest, and provider list changes**
 
 Run:
 
 ```bash
-git add cheapy/providers/registry.py cheapy/providers/manual_fixture/manifest.toml cheapy/providers/google_fli tests/test_providers.py
+git add cheapy/providers/registry.py cheapy/providers/manual_fixture/manifest.toml cheapy/providers/google_fli cheapy/cli.py tests/test_providers.py tests/test_cli.py
 git commit -m "feat: classify bundled providers" -m "AI-Model: GPT-5 Codex"
 ```
 
@@ -1559,16 +1602,6 @@ Expected: commit succeeds.
 Append to `tests/test_cli.py`:
 
 ```python
-def test_providers_list_includes_provider_kind() -> None:
-    result = runner.invoke(app, ["providers", "list"])
-
-    assert result.exit_code == 0
-    payload = json.loads(result.stdout)
-    providers = {provider["name"]: provider for provider in payload["providers"]}
-    assert providers["manual_fixture"]["provider_kind"] == "fixture"
-    assert providers["google_fli"]["provider_kind"] == "live"
-
-
 def test_providers_test_default_does_not_run_live_provider(monkeypatch) -> None:
     result = runner.invoke(app, ["providers", "test"])
 
@@ -1634,22 +1667,9 @@ def test_providers_test_live_reports_provider_failure(monkeypatch) -> None:
     assert error["code"] == "PROVIDER_LIVE_TEST_FAILED"
 ```
 
-Update existing exact-output tests in `tests/test_cli.py`:
+Update existing provider check output tests in `tests/test_cli.py`:
 
 ```python
-def test_providers_list_prints_json() -> None:
-    result = runner.invoke(app, ["providers", "list"])
-
-    assert result.exit_code == 0
-    assert result.stderr == ""
-    payload = json.loads(result.stdout)
-    providers = {provider["name"]: provider for provider in payload["providers"]}
-    assert payload["status"] == "ok"
-    assert providers["manual_fixture"]["provider_kind"] == "fixture"
-    assert providers["google_fli"]["provider_kind"] == "live"
-    assert providers["google_fli"]["default_enabled"] is True
-
-
 def test_providers_test_prints_json() -> None:
     result = runner.invoke(app, ["providers", "test"])
 
@@ -1679,27 +1699,12 @@ def test_providers_test_human_prints_success_report() -> None:
 Run:
 
 ```bash
-uv run pytest tests/test_cli.py::test_providers_list_includes_provider_kind tests/test_cli.py::test_providers_test_default_does_not_run_live_provider tests/test_cli.py::test_providers_test_live_requires_environment_gate tests/test_cli.py::test_providers_test_live_reports_provider_failure -v
+uv run pytest tests/test_cli.py::test_providers_test_default_does_not_run_live_provider tests/test_cli.py::test_providers_test_live_requires_environment_gate tests/test_cli.py::test_providers_test_live_reports_provider_failure -v
 ```
 
-Expected: FAIL because provider kind and `--live` do not exist.
+Expected: FAIL because live-safe provider checks and `--live` do not exist.
 
-- [ ] **Step 3: Update provider list output**
-
-In `cheapy/cli.py`, add `provider_kind` to each provider dict in `providers_list()`:
-
-```python
-{
-    "name": manifest.name,
-    "display_name": manifest.display_name,
-    "capabilities": manifest.capabilities,
-    "default_enabled": manifest.default_enabled,
-    "enabled": manifest.default_enabled,
-    "provider_kind": manifest.provider_kind,
-}
-```
-
-- [ ] **Step 4: Add live option and environment guard**
+- [ ] **Step 3: Add live option and environment guard**
 
 In imports:
 
@@ -1745,7 +1750,7 @@ if live and os.environ.get(LIVE_TEST_ENV) != "1":
     raise typer.Exit(code=2)
 ```
 
-- [ ] **Step 5: Add provider check helpers**
+- [ ] **Step 4: Add provider check helpers**
 
 Replace `_run_provider_checks` with:
 
@@ -1827,7 +1832,7 @@ When `live` is true, load providers through `load_live_test_providers()` so test
 providers = load_live_test_providers() if live else load_enabled_providers()
 ```
 
-- [ ] **Step 6: Update failure classification**
+- [ ] **Step 5: Update failure classification**
 
 Replace:
 
@@ -1863,7 +1868,7 @@ if failed_reports:
 
 In the unexpected exception handler, use `PROVIDER_LIVE_TEST_ERROR` when `live` is true.
 
-- [ ] **Step 7: Update human report output**
+- [ ] **Step 6: Update human report output**
 
 Modify `_echo_provider_human_report` to include provider kind and live state:
 
@@ -1879,7 +1884,7 @@ def _echo_provider_human_report(reports: list[dict[str, Any]], *, status: str) -
     typer.echo(f"status: {status}")
 ```
 
-- [ ] **Step 8: Run CLI tests**
+- [ ] **Step 7: Run CLI tests**
 
 Run:
 
@@ -1889,7 +1894,7 @@ uv run pytest tests/test_cli.py -v
 
 Expected: PASS.
 
-- [ ] **Step 9: Commit CLI updates**
+- [ ] **Step 8: Commit CLI updates**
 
 Run:
 

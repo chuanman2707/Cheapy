@@ -138,24 +138,26 @@ def test_providers_list_prints_json() -> None:
 
     assert result.exit_code == 0
     assert result.stderr == ""
-    assert json.loads(result.stdout) == {
-        "providers": [
-            {
-                "capabilities": ["exact_one_way"],
-                "default_enabled": False,
-                "display_name": "Google Fli live provider",
-                "enabled": False,
-                "name": "google_fli",
-            },
-            {
-                "capabilities": ["exact_one_way"],
-                "default_enabled": True,
-                "display_name": "Manual fixture provider",
-                "enabled": True,
-                "name": "manual_fixture",
-            }
-        ],
-        "status": "ok",
+    payload = json.loads(result.stdout)
+    providers = {provider["name"]: provider for provider in payload["providers"]}
+    assert payload["status"] == "ok"
+    assert providers == {
+        "google_fli": {
+            "capabilities": ["exact_one_way"],
+            "default_enabled": False,
+            "display_name": "Google Fli live provider",
+            "enabled": False,
+            "name": "google_fli",
+            "provider_kind": "live",
+        },
+        "manual_fixture": {
+            "capabilities": ["exact_one_way"],
+            "default_enabled": True,
+            "display_name": "Manual fixture provider",
+            "enabled": True,
+            "name": "manual_fixture",
+            "provider_kind": "fixture",
+        },
     }
 
 

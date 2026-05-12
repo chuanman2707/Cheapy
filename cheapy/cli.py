@@ -216,6 +216,7 @@ def providers_list() -> None:
                     "capabilities": manifest.capabilities,
                     "default_enabled": manifest.default_enabled,
                     "enabled": manifest.default_enabled,
+                    "provider_kind": manifest.provider_kind,
                 }
                 for manifest in manifests
             ],
