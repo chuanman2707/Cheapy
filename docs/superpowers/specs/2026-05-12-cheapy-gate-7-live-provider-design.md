@@ -122,7 +122,7 @@ Core Cheapy must not depend directly on upstream `fli` result internals.
 
 ## Provider Manifest Policy
 
-Provider manifests gain a required provider kind:
+Provider manifests gain a required provider kind as a V1 manifest amendment:
 
 ```toml
 provider_kind = "live" | "fixture"
@@ -149,6 +149,8 @@ provider_kind = "fixture"
 Registry behavior:
 
 - `discover_provider_manifests()` validates `provider_kind`.
+- `manifest_schema_version` stays `"1"` because provider manifests are internal bundled package data, not a public third-party plugin contract.
+- Gate 7 updates every bundled provider manifest in the repo; there is no backward-compatible default for missing `provider_kind`.
 - normal search uses `load_search_providers()`, which loads `default_enabled=true` and `provider_kind!="fixture"`.
 - fixture tests and local fixture checks can use an explicit fixture-capable loader.
 - no user-controlled provider paths are introduced.
@@ -215,7 +217,14 @@ For mixed-currency responses:
 
 Contract V1 requires every offer to include `currency`.
 
-The normalizer uses upstream currency when it is available on the result object. If the exact `SearchFlights` result shape does not expose a currency field, `google_fli` uses `USD` as the provider currency because upstream examples document dollar prices and date-price examples document `USD`. This behavior must be documented in provider code comments or provider docs, and tests must assert it explicitly.
+The normalizer uses upstream currency when it is available on the result object. If upstream exposes a supported request setting for currency or locale, the adapter must set it explicitly and record that configured currency as the currency source for normalized offers.
+
+`google_fli` must not silently invent `USD` or any other currency. If neither the upstream result nor an explicit adapter-controlled query setting can provide a reliable currency, the provider returns a structured failure instead of offers:
+
+- `ProviderResult.status = ProviderStatusCode.FAILED`
+- `ErrorV1.code = ErrorCode.PROVIDER_FAILED`
+- `details.failure_type = "currency_unavailable"`
+- `retryable = false`
 
 Cheapy must not convert currencies in Gate 7.
 
@@ -223,17 +232,24 @@ Cheapy must not convert currencies in Gate 7.
 
 `google_fli` must fail with structured provider results.
 
+Provider execution status and error codes are separate:
+
+- `ProviderResult.status` uses only `ProviderStatusCode`: `success`, `partial`, `failed`, or `skipped`.
+- timeout, rate limit, block, dependency, parser, and transport classifications are represented as `ErrorV1.code` plus `details.failure_type`.
+- Gate 7 does not add new Contract V1 enum values.
+
 Expected mappings:
 
-- upstream dependency unavailable: `PROVIDER_FAILED`, `retryable=false`, `details.failure_type="dependency_unavailable"`
-- unsupported airport by upstream enum/model: `PROVIDER_FAILED`, `retryable=false`, `details.failure_type="unsupported_airport_by_upstream"`
-- network or transport error: `PROVIDER_FAILED`, `retryable=true`, `details.failure_type="transport_error"`
-- timeout: `PROVIDER_TIMEOUT`, `retryable=true`, `details.failure_type="timeout"`
-- detected rate limit: `PROVIDER_RATE_LIMITED`, `retryable=true`
-- detected block: `PROVIDER_BLOCKED`, `retryable=false`
-- upstream shape or parser failure for the whole response: `PROVIDER_FAILED`, `retryable=false`, `details.failure_type="parse_error"`
-- successful upstream call with no flights: `ProviderStatusCode.SUCCESS` with `offers=[]`
-- partial parse failure: `ProviderStatusCode.PARTIAL`, parsed offers preserved, structured error details include skipped item count
+- upstream dependency unavailable: `ProviderResult.status=failed`, `ErrorV1.code=PROVIDER_FAILED`, `retryable=false`, `details.failure_type="dependency_unavailable"`
+- unsupported airport by upstream enum/model: `ProviderResult.status=failed`, `ErrorV1.code=PROVIDER_FAILED`, `retryable=false`, `details.failure_type="unsupported_airport_by_upstream"`
+- currency unavailable: `ProviderResult.status=failed`, `ErrorV1.code=PROVIDER_FAILED`, `retryable=false`, `details.failure_type="currency_unavailable"`
+- network or transport error: `ProviderResult.status=failed`, `ErrorV1.code=PROVIDER_FAILED`, `retryable=true`, `details.failure_type="transport_error"`
+- timeout: `ProviderResult.status=failed`, `ErrorV1.code=PROVIDER_TIMEOUT`, `retryable=true`, `details.failure_type="timeout"`
+- detected rate limit: `ProviderResult.status=failed`, `ErrorV1.code=PROVIDER_RATE_LIMITED`, `retryable=true`, `details.failure_type="rate_limited"`
+- detected block: `ProviderResult.status=failed`, `ErrorV1.code=PROVIDER_BLOCKED`, `retryable=false`, `details.failure_type="blocked"`
+- upstream shape or parser failure for the whole response: `ProviderResult.status=failed`, `ErrorV1.code=PROVIDER_FAILED`, `retryable=false`, `details.failure_type="parse_error"`
+- successful upstream call with no flights: `ProviderResult.status=success` with `offers=[]`
+- partial parse failure: `ProviderResult.status=partial`, parsed offers preserved, `ErrorV1.code=PROVIDER_FAILED`, and structured error details include skipped item count
 
 Provider errors must not include:
 
@@ -320,6 +336,14 @@ Live smoke execution must also require an environment gate:
 CHEAPY_RUN_LIVE_TESTS=1
 ```
 
+CLI output and exit behavior:
+
+- `cheapy providers test` without `--live` exits `0` when fixture checks and live-provider import checks pass. It prints JSON on stdout with `status="ok"`, `providers_tested`, and per-provider entries. Live providers are reported with `live_smoke="not_run"`.
+- `cheapy providers test --live` without `CHEAPY_RUN_LIVE_TESTS=1` does not make network calls. It prints structured JSON to stderr with code `LIVE_TESTS_NOT_ENABLED` and exits `2`.
+- `cheapy providers test --live` with `CHEAPY_RUN_LIVE_TESTS=1` runs the live smoke route. If the provider returns `success` or `partial` with valid structured output, the command exits `0` and prints JSON on stdout. If the provider returns `failed`, the command prints structured JSON to stderr with code `PROVIDER_LIVE_TEST_FAILED` and exits `1`.
+- Unexpected live smoke exceptions are reported as `PROVIDER_LIVE_TEST_ERROR` on stderr and exit `1`.
+- `--human` keeps the same exit codes and prints only a concise sanitized report; it must not print raw upstream payloads.
+
 ## Testing
 
 Default tests must not call live network.
@@ -355,7 +379,7 @@ Provider tests mock upstream `SearchFlights().search(...)` and cover:
 
 ### Search And MCP Tests
 
-Search/MCP tests mock provider loading and cover:
+Search tests mock provider loading and cover:
 
 - normal search excludes `manual_fixture`
 - normal search includes live provider output
@@ -363,6 +387,12 @@ Search/MCP tests mock provider loading and cover:
 - `offers[].provider` is preserved
 - `provider_statuses[]` includes the provider name and status
 - final ranking is assigned after global sorting
+
+MCP tests are split so default subprocess tests cannot accidentally call live network:
+
+- subprocess MCP default tests initialize the server, list tools, inspect tool schema, and verify protocol cleanliness only
+- default subprocess MCP tests must not call `search_cheapest_flights`
+- MCP tool behavior tests run in-process through the server factory or adapter boundary with mocked provider loading
 - MCP tool still returns structured `SearchResponseV1`
 - MCP annotation `openWorldHint=True`
 
@@ -403,12 +433,18 @@ Gate 7 is complete when:
 - `flights` is a runtime dependency of `cheapy-flights`.
 - `google_fli` appears in `cheapy providers list` as `provider_kind="live"` and `default_enabled=true`.
 - `manual_fixture` appears as `provider_kind="fixture"`.
+- all bundled provider manifests include `provider_kind` under `manifest_schema_version="1"`.
 - `search_cheapest_flights` normal user-facing path does not return `manual_fixture` offers.
 - A mocked `google_fli` search returns valid `SearchResponseV1`.
 - Every live offer includes `provider="google_fli"`.
+- `google_fli` never emits offers with an invented currency; missing reliable currency becomes a structured provider failure.
 - Provider failures are structured and do not leak raw upstream data.
+- timeout, rate-limit, and block cases use `ProviderResult.status=failed` plus the matching `ErrorV1.code`; no Contract V1 enum expansion is required.
 - `max_results` is applied globally after all provider results are combined.
 - MCP annotation `openWorldHint=True`.
+- default subprocess MCP tests do not call the live search tool.
+- MCP tool behavior tests use mocked provider loading outside the live network lane.
+- `cheapy providers test --live` has structured JSON behavior and exit codes for env-missing, provider-failed, and unexpected-error cases.
 - `uv run pytest -v` passes without live network calls.
 - Opt-in live smoke tests run only with the live marker and environment gate.
 
