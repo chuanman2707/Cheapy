@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 import shutil
 import sys
@@ -24,6 +25,9 @@ from cheapy.providers.registry import (
     discover_provider_manifests,
     load_enabled_providers,
 )
+
+
+LIVE_TEST_ENV = "CHEAPY_RUN_LIVE_TESTS"
 
 
 def _json_echo(payload: dict[str, Any], *, err: bool = False) -> None:
@@ -231,10 +235,26 @@ def providers_test(
         "--human",
         help="Print a concise human-readable provider report.",
     ),
+    live: bool = typer.Option(
+        False,
+        "--live",
+        help="Run opt-in live provider smoke checks.",
+    ),
 ) -> None:
     """Run packaged provider smoke checks."""
+    if live and os.environ.get(LIVE_TEST_ENV) != "1":
+        _json_echo(
+            _error_payload(
+                "LIVE_TESTS_NOT_ENABLED",
+                "Live provider tests require CHEAPY_RUN_LIVE_TESTS=1.",
+                "Set CHEAPY_RUN_LIVE_TESTS=1 and rerun 'cheapy providers test --live'.",
+            ),
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
     try:
-        providers = load_enabled_providers()
+        providers = load_live_test_providers() if live else load_enabled_providers()
     except ProviderManifestError as exc:
         _json_echo(
             _error_payload(
@@ -268,23 +288,40 @@ def providers_test(
         raise typer.Exit(code=1)
 
     try:
-        reports = asyncio.run(_run_provider_checks(providers))
+        reports = asyncio.run(_run_provider_checks(providers, live=live))
     except Exception:
+        code = "PROVIDER_LIVE_TEST_ERROR" if live else "PROVIDER_TEST_ERROR"
+        message = (
+            "A live provider check raised an unexpected exception."
+            if live
+            else "A provider check raised an unexpected exception."
+        )
         _json_echo(
             _error_payload(
-                "PROVIDER_TEST_ERROR",
-                "A provider check raised an unexpected exception.",
+                code,
+                message,
                 "Run 'cheapy providers test --human' for a concise provider report.",
             ),
             err=True,
         )
         raise typer.Exit(code=1)
 
-    if any(report["status"] != ProviderStatusCode.SUCCESS.value for report in reports):
+    failed_reports = [
+        report
+        for report in reports
+        if report["status"] == ProviderStatusCode.FAILED.value
+    ]
+    if failed_reports:
+        code = "PROVIDER_LIVE_TEST_FAILED" if live else "PROVIDER_TEST_FAILED"
+        message = (
+            "One or more live provider checks failed."
+            if live
+            else "One or more provider checks failed."
+        )
         _json_echo(
             _error_payload(
-                "PROVIDER_TEST_FAILED",
-                "One or more provider checks failed.",
+                code,
+                message,
                 "Run 'cheapy providers test --human' for a concise provider report.",
             ),
             err=True,
@@ -308,24 +345,68 @@ def _echo_provider_human_report(reports: list[dict[str, Any]], *, status: str) -
     typer.echo("Cheapy providers test")
     for report in reports:
         typer.echo(
-            f"{report['name']} {report['capability']}: {report['status']} "
-            f"(offers: {report['offer_count']}, errors: {report['error_count']})"
+            f"{report['name']} {report['provider_kind']} {report['capability']}: "
+            f"{report['status']} (offers: {report['offer_count']}, "
+            f"errors: {report['error_count']}, live: {report['live_smoke']})"
         )
     typer.echo(f"status: {status}")
 
 
-async def _run_provider_checks(providers: list[Any]) -> list[dict[str, Any]]:
+async def _run_provider_checks(
+    providers: list[Any],
+    *,
+    live: bool,
+) -> list[dict[str, Any]]:
     request = _provider_fixture_request()
     reports: list[dict[str, Any]] = []
     for provider in providers:
-        result = await provider.search_exact_one_way(request)
+        provider_kind = _provider_kind(provider.name)
+        if provider_kind == "live" and not live:
+            reports.append(
+                {
+                    "name": provider.name,
+                    "provider_kind": provider_kind,
+                    "capability": "exact_one_way",
+                    "status": ProviderStatusCode.SKIPPED.value,
+                    "offer_count": 0,
+                    "error_count": 0,
+                    "live_smoke": "not_run",
+                }
+            )
+            continue
+
+        check_request = _live_smoke_request() if provider_kind == "live" else request
+        result = await provider.search_exact_one_way(check_request)
         reports.append(
             {
                 "name": result.provider_name,
+                "provider_kind": provider_kind,
                 "capability": result.capability,
                 "status": result.status.value,
                 "offer_count": len(result.offers),
                 "error_count": len(result.errors),
+                "live_smoke": "run" if provider_kind == "live" else "not_applicable",
             }
         )
     return reports
+
+
+def _provider_kind(provider_name: str) -> str:
+    for manifest in discover_provider_manifests():
+        if manifest.name == provider_name:
+            return manifest.provider_kind
+    return "fixture"
+
+
+def _live_smoke_request() -> ProviderExactOneWayRequest:
+    from datetime import date, timedelta
+
+    return ProviderExactOneWayRequest(
+        origin="SGN",
+        destination="BKK",
+        departure_date=(date.today() + timedelta(days=30)).isoformat(),
+    )
+
+
+def load_live_test_providers() -> list[Any]:
+    return load_enabled_providers()

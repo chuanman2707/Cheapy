@@ -144,9 +144,9 @@ def test_providers_list_prints_json() -> None:
     assert providers == {
         "google_fli": {
             "capabilities": ["exact_one_way"],
-            "default_enabled": False,
+            "default_enabled": True,
             "display_name": "Google Fli live provider",
-            "enabled": False,
+            "enabled": True,
             "name": "google_fli",
             "provider_kind": "live",
         },
@@ -166,19 +166,29 @@ def test_providers_test_prints_json() -> None:
 
     assert result.exit_code == 0
     assert result.stderr == ""
-    assert json.loads(result.stdout) == {
-        "providers": [
-            {
-                "capability": "exact_one_way",
-                "error_count": 0,
-                "name": "manual_fixture",
-                "offer_count": 2,
-                "status": "success",
-            }
-        ],
-        "providers_tested": 1,
-        "status": "ok",
-    }
+    payload = json.loads(result.stdout)
+    providers = {provider["name"]: provider for provider in payload["providers"]}
+    assert payload["status"] == "ok"
+    assert payload["providers_tested"] == 2
+    assert providers["manual_fixture"]["status"] == "success"
+    assert providers["manual_fixture"]["provider_kind"] == "fixture"
+    assert providers["manual_fixture"]["live_smoke"] == "not_applicable"
+    assert providers["google_fli"]["status"] == "skipped"
+    assert providers["google_fli"]["provider_kind"] == "live"
+    assert providers["google_fli"]["live_smoke"] == "not_run"
+
+
+def test_providers_test_default_does_not_run_live_provider(monkeypatch) -> None:
+    result = runner.invoke(app, ["providers", "test"])
+
+    assert result.exit_code == 0
+    assert result.stderr == ""
+    payload = json.loads(result.stdout)
+    providers = {provider["name"]: provider for provider in payload["providers"]}
+    assert providers["manual_fixture"]["status"] == "success"
+    assert providers["manual_fixture"]["live_smoke"] == "not_applicable"
+    assert providers["google_fli"]["status"] == "skipped"
+    assert providers["google_fli"]["live_smoke"] == "not_run"
 
 
 def test_providers_test_human_prints_success_report() -> None:
@@ -186,11 +196,87 @@ def test_providers_test_human_prints_success_report() -> None:
 
     assert result.exit_code == 0
     assert result.stderr == ""
-    assert result.stdout == (
-        "Cheapy providers test\n"
-        "manual_fixture exact_one_way: success (offers: 2, errors: 0)\n"
-        "status: ok\n"
-    )
+    assert "manual_fixture fixture exact_one_way: success" in result.stdout
+    assert "google_fli live exact_one_way: skipped" in result.stdout
+    assert result.stdout.endswith("status: ok\n")
+
+
+def test_providers_test_live_requires_environment_gate(monkeypatch) -> None:
+    monkeypatch.delenv("CHEAPY_RUN_LIVE_TESTS", raising=False)
+
+    result = runner.invoke(app, ["providers", "test", "--live"])
+
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    assert json.loads(result.stderr) == {
+        "error": True,
+        "code": "LIVE_TESTS_NOT_ENABLED",
+        "message": "Live provider tests require CHEAPY_RUN_LIVE_TESTS=1.",
+        "suggestion": "Set CHEAPY_RUN_LIVE_TESTS=1 and rerun 'cheapy providers test --live'.",
+    }
+
+
+def test_providers_test_live_reports_provider_failure(monkeypatch) -> None:
+    class FailingLiveProvider:
+        name = "google_fli"
+        capabilities = ("exact_one_way",)
+
+        async def search_exact_one_way(
+            self,
+            request: ProviderExactOneWayRequest,
+        ) -> ProviderResult:
+            return ProviderResult(
+                provider_name=self.name,
+                capability="exact_one_way",
+                status=ProviderStatusCode.FAILED,
+                offers=[],
+                warnings=[],
+                errors=[
+                    ErrorV1(
+                        code=ErrorCode.PROVIDER_FAILED,
+                        severity=Severity.ERROR,
+                        message_en="Live provider failed.",
+                    )
+                ],
+                duration_ms=1,
+                retryable=False,
+            )
+
+    monkeypatch.setenv("CHEAPY_RUN_LIVE_TESTS", "1")
+    monkeypatch.setattr("cheapy.cli.load_live_test_providers", lambda: [FailingLiveProvider()])
+
+    result = runner.invoke(app, ["providers", "test", "--live"])
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    error = json.loads(result.stderr)
+    assert error["code"] == "PROVIDER_LIVE_TEST_FAILED"
+
+
+def test_providers_test_live_reports_unexpected_provider_exception(monkeypatch) -> None:
+    class RaisingLiveProvider:
+        name = "google_fli"
+        capabilities = ("exact_one_way",)
+
+        async def search_exact_one_way(
+            self,
+            request: ProviderExactOneWayRequest,
+        ) -> ProviderResult:
+            raise RuntimeError("live provider exploded")
+
+    monkeypatch.setenv("CHEAPY_RUN_LIVE_TESTS", "1")
+    monkeypatch.setattr("cheapy.cli.load_live_test_providers", lambda: [RaisingLiveProvider()])
+
+    result = runner.invoke(app, ["providers", "test", "--live"])
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert json.loads(result.stderr) == {
+        "error": True,
+        "code": "PROVIDER_LIVE_TEST_ERROR",
+        "message": "A live provider check raised an unexpected exception.",
+        "suggestion": "Run 'cheapy providers test --human' for a concise provider report.",
+    }
 
 
 def test_providers_test_human_prints_failure_report(monkeypatch) -> None:

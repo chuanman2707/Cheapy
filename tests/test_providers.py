@@ -135,7 +135,7 @@ def test_google_fli_manifest_is_discovered_from_package_resources() -> None:
         manifest_schema_version="1",
         name="google_fli",
         display_name="Google Fli live provider",
-        default_enabled=False,
+        default_enabled=True,
         provider_kind="live",
         module="cheapy.providers.google_fli.provider",
         capabilities=["exact_one_way"],
@@ -360,14 +360,18 @@ def test_load_enabled_providers_loads_all_default_enabled_providers() -> None:
 
     providers = load_enabled_providers()
 
-    assert [provider.name for provider in providers] == ["manual_fixture"]
-    assert providers[0].capabilities == ("exact_one_way",)
+    assert [provider.name for provider in providers] == ["google_fli", "manual_fixture"]
+    assert [provider.capabilities for provider in providers] == [
+        ("exact_one_way",),
+        ("exact_one_way",),
+    ]
 
 
 def test_load_search_providers_excludes_fixture_providers() -> None:
     providers = registry.load_search_providers()
 
-    assert providers == []
+    assert [provider.name for provider in providers] == ["google_fli"]
+    assert providers[0].capabilities == ("exact_one_way",)
     assert all(provider.name != "manual_fixture" for provider in providers)
 
 
