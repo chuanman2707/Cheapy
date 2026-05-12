@@ -1,0 +1,185 @@
+"""Normalize upstream fli results into Cheapy Contract V1 offers."""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any
+
+from cheapy.models import (
+    ErrorCode,
+    ErrorV1,
+    FlightLegV1,
+    FlightOfferV1,
+    OfferFlagsV1,
+    Severity,
+)
+from cheapy.providers.base import ProviderExactOneWayRequest
+
+
+PROVIDER_NAME = "google_fli"
+CAPABILITY = "exact_one_way"
+
+
+def normalize_flights(
+    flights: list[object],
+    request: ProviderExactOneWayRequest,
+    *,
+    configured_currency: str | None = None,
+) -> tuple[list[FlightOfferV1], list[ErrorV1]]:
+    """Convert upstream fli flight result objects into Contract V1 offers."""
+    offers: list[FlightOfferV1] = []
+    errors: list[ErrorV1] = []
+    for index, flight in enumerate(flights, start=1):
+        try:
+            offers.append(
+                _normalize_flight(
+                    flight,
+                    request,
+                    index=index,
+                    configured_currency=configured_currency,
+                )
+            )
+        except _ItemNormalizationError as exc:
+            errors.append(exc.error)
+    return offers, errors
+
+
+class _ItemNormalizationError(Exception):
+    """Internal wrapper for a structured item-level normalization error."""
+
+    def __init__(self, error: ErrorV1) -> None:
+        super().__init__(error.message_en)
+        self.error = error
+
+
+def _normalize_flight(
+    flight: object,
+    request: ProviderExactOneWayRequest,
+    *,
+    index: int,
+    configured_currency: str | None,
+) -> FlightOfferV1:
+    currency = _currency(flight, configured_currency=configured_currency)
+    if currency is None:
+        raise _ItemNormalizationError(_currency_unavailable_error(index))
+
+    try:
+        legs = [_normalize_leg(leg) for leg in _attr(flight, "legs")]
+        if not legs:
+            raise ValueError("flight has no legs")
+        first_leg = legs[0]
+        last_leg = legs[-1]
+        price_amount = float(_attr(flight, "price"))
+        duration = int(_attr(flight, "duration"))
+        stops = int(_attr(flight, "stops"))
+    except Exception as exc:
+        raise _ItemNormalizationError(_parse_error(index, exc)) from exc
+
+    return FlightOfferV1(
+        offer_id=(
+            f"{PROVIDER_NAME}:{request.origin}-{request.destination}:"
+            f"{request.departure_date}:{index}"
+        ),
+        price_amount=price_amount,
+        currency=currency,
+        comparable=True,
+        rank_within_currency=index,
+        global_rank=index,
+        provider=PROVIDER_NAME,
+        requested_origin=request.origin,
+        requested_destination=request.destination,
+        actual_origin=first_leg.origin,
+        actual_destination=last_leg.destination,
+        nearby_origin_distance_km=None,
+        nearby_destination_distance_km=None,
+        requested_departure_date=request.departure_date,
+        actual_departure_date=first_leg.departure_time[:10],
+        departure_offset_days=0,
+        requested_return_date=None,
+        actual_return_date=None,
+        return_offset_days=None,
+        legs=legs,
+        total_duration_minutes=duration,
+        stops=stops,
+        flags=OfferFlagsV1(),
+        fare_details_status="not_collected",
+    )
+
+
+def _normalize_leg(leg: object) -> FlightLegV1:
+    departure_time = _iso_datetime(_attr(leg, "departure_datetime"))
+    arrival_time = _iso_datetime(_attr(leg, "arrival_datetime"))
+    return FlightLegV1(
+        origin=_enum_value(_attr(leg, "departure_airport")),
+        destination=_enum_value(_attr(leg, "arrival_airport")),
+        departure_time=departure_time,
+        arrival_time=arrival_time,
+        airline_code=_enum_value(_attr(leg, "airline")),
+        flight_number=str(_attr(leg, "flight_number")),
+        duration_minutes=int(_attr(leg, "duration")),
+    )
+
+
+def _currency(flight: object, *, configured_currency: str | None) -> str | None:
+    raw_currency = getattr(flight, "currency", None)
+    if isinstance(raw_currency, str) and len(raw_currency.strip()) == 3:
+        return raw_currency.strip().upper()
+    if configured_currency is not None and len(configured_currency.strip()) == 3:
+        return configured_currency.strip().upper()
+    return None
+
+
+def _attr(value: object, name: str) -> Any:
+    return getattr(value, name)
+
+
+def _enum_value(value: object) -> str:
+    enum_value = getattr(value, "value", value)
+    return str(enum_value)
+
+
+def _iso_datetime(value: object) -> str:
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None).isoformat(timespec="seconds")
+    return str(value)
+
+
+def _currency_unavailable_error(index: int) -> ErrorV1:
+    return _error(
+        message_en="Provider result did not include a reliable currency.",
+        failure_type="currency_unavailable",
+        item_index=index,
+    )
+
+
+def _parse_error(index: int, exc: Exception) -> ErrorV1:
+    return _error(
+        message_en="Provider result could not be normalized.",
+        failure_type="parse_error",
+        item_index=index,
+        exception_type=type(exc).__name__,
+    )
+
+
+def _error(
+    *,
+    message_en: str,
+    failure_type: str,
+    item_index: int,
+    exception_type: str | None = None,
+) -> ErrorV1:
+    details: dict[str, object] = {
+        "provider": PROVIDER_NAME,
+        "capability": CAPABILITY,
+        "failure_type": failure_type,
+        "item_index": item_index,
+    }
+    if exception_type is not None:
+        details["exception_type"] = exception_type
+    return ErrorV1(
+        code=ErrorCode.PROVIDER_FAILED,
+        severity=Severity.ERROR,
+        message_en=message_en,
+        details=details,
+        retryable=False,
+    )
