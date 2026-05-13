@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from cheapy.agent_hooks import install_agent_hooks
+from cheapy.agent_hooks import INSTRUCTION_BODY, install_agent_hooks
 
 
 CODEX_BEGIN = "<!-- BEGIN CHEAPY MANAGED CODEX INSTRUCTIONS -->"
@@ -35,6 +35,26 @@ def _assert_gate_8_instruction_text(text: str) -> None:
         assert phrase in text
     assert "round-trip search is deferred" not in text
     assert "do not pass return_date" not in text
+
+
+def test_tracked_instruction_files_use_gate_8_guidance() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    stale_phrases = (
+        "Use Cheapy only for exact one-way MVP flight searches.",
+        "expanded, flexible, nearby-airport, split-ticket, and round-trip search is deferred",
+        "do not pass return_date",
+    )
+
+    for instruction_path in (
+        repo_root / ".codex" / "skills" / "cheapy" / "SKILL.md",
+        repo_root / ".cheapy" / "claude-instructions.md",
+    ):
+        text = instruction_path.read_text(encoding="utf-8")
+
+        assert INSTRUCTION_BODY.strip() in text
+        _assert_gate_8_instruction_text(text)
+        for phrase in stale_phrases:
+            assert phrase not in text
 
 
 def _expected_codex_agents_manual_step(path: Path) -> str:
