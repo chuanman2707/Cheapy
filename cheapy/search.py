@@ -11,6 +11,7 @@ from cheapy.models import (
     ErrorCode,
     ErrorV1,
     FlightOfferV1,
+    PassengersV1,
     ProviderStatusCode,
     ProviderStatusV1,
     SearchMode,
@@ -23,6 +24,7 @@ from cheapy.models import (
 from cheapy.providers.base import (
     FlightProvider,
     ProviderExactOneWayRequest,
+    ProviderExactRoundTripRequest,
     ProviderResult,
 )
 from cheapy.providers.registry import (
@@ -30,9 +32,15 @@ from cheapy.providers.registry import (
     ProviderManifestError,
     load_search_providers,
 )
+from cheapy.search_planner import (
+    EXACT_ONE_WAY_CAPABILITY,
+    EXACT_ROUND_TRIP_CAPABILITY,
+    PlannedProviderCall,
+    SearchCandidate,
+    plan_search,
+)
 
 
-_EXACT_CAPABILITY = "exact_one_way"
 _MIXED_CURRENCY_NOTE = (
     "Currency conversion was not applied; compare mixed-currency offers separately."
 )
@@ -69,23 +77,6 @@ def search_exact(request: SearchRequestV1) -> SearchResponseV1:
 
     request_id = _request_id(request, origin.iata, destination.iata)
 
-    unsupported_reason = _unsupported_reason(request)
-    if unsupported_reason is not None:
-        return _failed_response(
-            request_id=request_id,
-            errors=[
-                _error(
-                    code=ErrorCode.NO_PROVIDER_AVAILABLE,
-                    message_en=(
-                        "No provider is available for the requested Gate 4 "
-                        "search scope."
-                    ),
-                    details={"unsupported_reason": unsupported_reason},
-                )
-            ],
-            search_plan=_empty_plan(request.search_mode),
-        )
-
     try:
         providers = load_search_providers()
     except (ProviderManifestError, ProviderLoadError) as exc:
@@ -101,50 +92,41 @@ def search_exact(request: SearchRequestV1) -> SearchResponseV1:
             search_plan=_planned_unexecuted_exact_plan(request.search_mode),
         )
 
-    if not providers:
-        return _failed_response(
-            request_id=request_id,
-            errors=[
-                _error(
-                    code=ErrorCode.NO_PROVIDER_AVAILABLE,
-                    message_en=(
-                        "No enabled provider is available for exact one-way "
-                        "search."
-                    ),
-                    details={"reason": "no_enabled_provider"},
-                )
-            ],
-            search_plan=_planned_unexecuted_exact_plan(request.search_mode),
-        )
-
-    exact_providers = [
-        provider for provider in providers if _EXACT_CAPABILITY in provider.capabilities
+    required_capability = _required_capability(request)
+    capable_providers = [
+        provider
+        for provider in providers
+        if required_capability in provider.capabilities
     ]
-    if not exact_providers:
+    planned = plan_search(request, origin.iata, destination.iata, providers)
+
+    if not capable_providers:
+        reason = (
+            "no_exact_one_way_provider"
+            if required_capability == EXACT_ONE_WAY_CAPABILITY
+            else "no_exact_round_trip_provider"
+        )
         return _failed_response(
             request_id=request_id,
             errors=[
                 _error(
                     code=ErrorCode.NO_PROVIDER_AVAILABLE,
-                    message_en="No enabled provider supports exact one-way search.",
-                    details={"reason": "no_exact_one_way_provider"},
+                    message_en="No enabled provider supports the requested search.",
+                    details={"reason": reason},
                 )
             ],
-            search_plan=_planned_unexecuted_exact_plan(request.search_mode),
+            search_plan=planned.search_plan,
         )
 
-    provider_request = ProviderExactOneWayRequest(
-        origin=origin.iata,
-        destination=destination.iata,
-        departure_date=request.departure_date,
-        passengers=request.passengers,
+    provider_results = asyncio.run(
+        _call_planned_providers(planned.selected_calls, request.passengers)
     )
-    provider_results = asyncio.run(_call_providers(exact_providers, provider_request))
 
     return _response_from_provider_results(
         request=request,
         request_id=request_id,
         provider_results=provider_results,
+        search_plan=planned.search_plan,
     )
 
 
@@ -154,46 +136,95 @@ def _normalize_airport_value(value: str) -> str:
 
 def _request_id(request: SearchRequestV1, origin: str, destination: str) -> str:
     passengers = request.passengers
+    trip_shape = "one_way" if request.return_date is None else "round_trip"
+    return_date = request.return_date if request.return_date is not None else "none"
     return (
-        f"exact:{origin}:{destination}:{request.departure_date}:"
-        f"{request.search_mode.value}:{passengers.adults}:{passengers.children}:"
+        f"search:{trip_shape}:{origin}:{destination}:{request.departure_date}:"
+        f"{return_date}:{request.search_mode.value}:{passengers.adults}:"
+        f"{passengers.children}:"
         f"{passengers.infants_on_lap}:{passengers.infants_in_seat}:"
         f"{request.max_results}"
     )
 
 
-def _unsupported_reason(request: SearchRequestV1) -> str | None:
-    if request.search_mode != SearchMode.EXACT:
-        return "Gate 4 does not support expanded search."
-    if request.return_date is not None:
-        return "Gate 4 does not support round-trip search."
-    return None
+def _required_capability(request: SearchRequestV1) -> str:
+    if request.return_date is None:
+        return EXACT_ONE_WAY_CAPABILITY
+    return EXACT_ROUND_TRIP_CAPABILITY
 
 
-async def _call_providers(
-    providers: list[FlightProvider],
-    request: ProviderExactOneWayRequest,
+async def _call_planned_providers(
+    planned_calls: tuple[PlannedProviderCall, ...],
+    passengers: PassengersV1,
 ) -> list[ProviderResult]:
     results: list[ProviderResult] = []
-    for provider in providers:
+    for planned_call in planned_calls:
+        provider = planned_call.provider
+        candidate = planned_call.candidate
         try:
-            raw_result = await provider.search_exact_one_way(request)
-            results.append(_normalize_provider_result(provider, raw_result))
+            if candidate.capability == EXACT_ONE_WAY_CAPABILITY:
+                raw_result = await provider.search_exact_one_way(
+                    _one_way_provider_request(candidate, passengers)
+                )
+            else:
+                raw_result = await provider.search_exact_round_trip(
+                    _round_trip_provider_request(candidate, passengers)
+                )
+            results.append(
+                _normalize_provider_result(provider, candidate.capability, raw_result)
+            )
         except Exception as exc:
-            results.append(_provider_exception_result(provider, exc))
+            results.append(
+                _provider_exception_result(provider, candidate.capability, exc)
+            )
     return results
+
+
+def _one_way_provider_request(
+    candidate: SearchCandidate,
+    passengers: PassengersV1,
+) -> ProviderExactOneWayRequest:
+    return ProviderExactOneWayRequest(
+        origin=candidate.origin,
+        destination=candidate.destination,
+        departure_date=candidate.departure_date,
+        requested_origin=candidate.origin,
+        requested_destination=candidate.destination,
+        requested_departure_date=candidate.requested_departure_date,
+        passengers=passengers,
+    )
+
+
+def _round_trip_provider_request(
+    candidate: SearchCandidate,
+    passengers: PassengersV1,
+) -> ProviderExactRoundTripRequest:
+    assert candidate.return_date is not None
+    assert candidate.requested_return_date is not None
+    return ProviderExactRoundTripRequest(
+        origin=candidate.origin,
+        destination=candidate.destination,
+        departure_date=candidate.departure_date,
+        return_date=candidate.return_date,
+        requested_origin=candidate.origin,
+        requested_destination=candidate.destination,
+        requested_departure_date=candidate.requested_departure_date,
+        requested_return_date=candidate.requested_return_date,
+        passengers=passengers,
+    )
 
 
 def _normalize_provider_result(
     provider: FlightProvider,
+    capability: str,
     raw_result: object,
 ) -> ProviderResult:
     try:
         result = ProviderResult.model_validate(raw_result)
     except Exception as exc:
-        return _provider_malformed_result(provider, exc)
+        return _provider_malformed_result(provider, capability, exc)
 
-    result = result.model_copy(update={"capability": _EXACT_CAPABILITY})
+    result = result.model_copy(update={"capability": capability})
     if result.status != ProviderStatusCode.SUCCESS and not result.errors:
         error = _provider_status_error(result)
         return result.model_copy(update={"errors": [error]})
@@ -203,14 +234,16 @@ def _normalize_provider_result(
 
 def _provider_malformed_result(
     provider: FlightProvider,
+    capability: str,
     exc: Exception,
 ) -> ProviderResult:
     return _provider_failed_result(
         provider_name=provider.name,
-        message_en="Provider returned an invalid exact one-way result.",
+        capability=capability,
+        message_en="Provider returned an invalid result.",
         details={
             "provider": provider.name,
-            "capability": _EXACT_CAPABILITY,
+            "capability": capability,
             "exception_type": type(exc).__name__,
         },
     )
@@ -218,14 +251,16 @@ def _provider_malformed_result(
 
 def _provider_exception_result(
     provider: FlightProvider,
+    capability: str,
     exc: Exception,
 ) -> ProviderResult:
     return _provider_failed_result(
         provider_name=provider.name,
+        capability=capability,
         message_en="Provider raised an unexpected exception.",
         details={
             "provider": provider.name,
-            "capability": _EXACT_CAPABILITY,
+            "capability": capability,
             "exception_type": type(exc).__name__,
         },
     )
@@ -234,12 +269,13 @@ def _provider_exception_result(
 def _provider_failed_result(
     *,
     provider_name: str,
+    capability: str,
     message_en: str,
     details: dict[str, object],
 ) -> ProviderResult:
     return ProviderResult(
         provider_name=provider_name,
-        capability=_EXACT_CAPABILITY,
+        capability=capability,
         status=ProviderStatusCode.FAILED,
         offers=[],
         warnings=[],
@@ -272,6 +308,7 @@ def _response_from_provider_results(
     request: SearchRequestV1,
     request_id: str,
     provider_results: list[ProviderResult],
+    search_plan: SearchPlanV1,
 ) -> SearchResponseV1:
     offers = [offer for result in provider_results for offer in result.offers]
     returned_offers = _rank_offers(_sort_offers(offers)[: request.max_results])
@@ -289,10 +326,7 @@ def _response_from_provider_results(
         provider_statuses=[
             _provider_status_from_result(result) for result in provider_results
         ],
-        search_plan=_executed_exact_plan(
-            request.search_mode,
-            provider_call_count=len(provider_results),
-        ),
+        search_plan=search_plan,
         mixed_currency=mixed_currency,
         currency_groups=_currency_groups(returned_offers),
         currency_notes=[_MIXED_CURRENCY_NOTE] if mixed_currency else [],

@@ -16,8 +16,13 @@ from cheapy.models import (
     SearchRequestV1,
     SearchStatus,
     Severity,
+    WarningCode,
 )
-from cheapy.providers.base import ProviderExactOneWayRequest, ProviderResult
+from cheapy.providers.base import (
+    ProviderExactOneWayRequest,
+    ProviderExactRoundTripRequest,
+    ProviderResult,
+)
 from cheapy.providers.manual_fixture.provider import create_provider as create_manual_fixture
 from cheapy.providers.registry import ProviderLoadError, ProviderManifestError
 from cheapy.search import search_exact
@@ -41,6 +46,12 @@ def _offer(
     provider: str,
     currency: str,
     price_amount: float,
+    requested_departure_date: str = "2026-07-10",
+    actual_departure_date: str = "2026-07-10",
+    departure_offset_days: int = 0,
+    requested_return_date: str | None = None,
+    actual_return_date: str | None = None,
+    return_offset_days: int | None = None,
     departure_time: str = "2026-07-10T08:15:00",
     arrival_time: str = "2026-07-10T09:25:00",
 ) -> FlightOfferV1:
@@ -56,12 +67,14 @@ def _offer(
         requested_destination="SGN",
         actual_origin="CXR",
         actual_destination="SGN",
-        requested_departure_date="2026-07-10",
-        actual_departure_date="2026-07-10",
-        departure_offset_days=0,
-        requested_return_date=None,
-        actual_return_date=None,
-        return_offset_days=None,
+        nearby_origin_distance_km=None,
+        nearby_destination_distance_km=None,
+        requested_departure_date=requested_departure_date,
+        actual_departure_date=actual_departure_date,
+        departure_offset_days=departure_offset_days,
+        requested_return_date=requested_return_date,
+        actual_return_date=actual_return_date,
+        return_offset_days=return_offset_days,
         legs=[
             FlightLegV1(
                 origin="CXR",
@@ -75,7 +88,10 @@ def _offer(
         ],
         total_duration_minutes=70,
         stops=0,
-        flags=OfferFlagsV1(),
+        flags=OfferFlagsV1(
+            uses_flexible_departure_date=departure_offset_days != 0,
+            uses_flexible_return_date=return_offset_days not in (None, 0),
+        ),
         fare_details_status="not_collected",
     )
 
@@ -97,6 +113,46 @@ class _ProviderFromResult:
         return self._result
 
 
+class _RoundTripProvider:
+    name = "round_provider"
+    capabilities = ("exact_round_trip",)
+
+    def __init__(self) -> None:
+        self.seen_requests: list[ProviderExactRoundTripRequest] = []
+
+    async def search_exact_one_way(
+        self,
+        request: ProviderExactOneWayRequest,
+    ) -> ProviderResult:
+        raise AssertionError("round-trip provider must not receive one-way calls")
+
+    async def search_exact_round_trip(
+        self,
+        request: ProviderExactRoundTripRequest,
+    ) -> ProviderResult:
+        self.seen_requests.append(request)
+        return ProviderResult(
+            provider_name=self.name,
+            capability="exact_round_trip",
+            status=ProviderStatusCode.SUCCESS,
+            offers=[
+                _offer(
+                    offer_id=f"round:{request.departure_date}:{request.return_date}",
+                    provider=self.name,
+                    currency="USD",
+                    price_amount=100.0,
+                    requested_return_date=request.requested_return_date,
+                    actual_return_date=request.return_date,
+                    return_offset_days=0,
+                )
+            ],
+            warnings=[],
+            errors=[],
+            duration_ms=1,
+            retryable=False,
+        )
+
+
 def _manual_fixture_providers() -> list[object]:
     return [create_manual_fixture()]
 
@@ -113,7 +169,9 @@ def test_search_exact_returns_manual_fixture_success_response(
 
     assert response.schema_version == "1"
     assert response.status == SearchStatus.SUCCESS
-    assert response.request_id == "exact:CXR:SGN:2026-07-10:exact:1:0:0:0:5"
+    assert response.request_id == (
+        "search:one_way:CXR:SGN:2026-07-10:none:exact:1:0:0:0:5"
+    )
     assert response.errors == []
     assert response.warnings == []
     assert [offer.offer_id for offer in response.offers] == [
@@ -158,6 +216,45 @@ def test_search_exact_returns_manual_fixture_success_response(
     assert provider_status.failed_call_count == 0
 
 
+def test_search_exact_round_trip_routes_to_round_trip_capability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _RoundTripProvider()
+    monkeypatch.setattr("cheapy.search.load_search_providers", lambda: [provider])
+
+    response = search_exact(_request(return_date="2026-07-15"))
+
+    assert response.status == SearchStatus.SUCCESS
+    assert response.request_id == (
+        "search:round_trip:CXR:SGN:2026-07-10:2026-07-15:exact:1:0:0:0:5"
+    )
+    assert len(provider.seen_requests) == 1
+    assert provider.seen_requests[0].return_date == "2026-07-15"
+    assert all(
+        warning.code != WarningCode.SEARCH_TRUNCATED
+        for warning in response.warnings
+    )
+    assert response.provider_statuses[0].capability == "exact_round_trip"
+    assert response.search_plan.candidate_count_by_family == {CandidateFamily.EXACT: 1}
+
+
+def test_search_exact_round_trip_requires_round_trip_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "cheapy.search.load_search_providers",
+        lambda: [create_manual_fixture()],
+    )
+
+    response = search_exact(_request(return_date="2026-07-15"))
+
+    assert response.status == SearchStatus.FAILED
+    assert response.errors[0].code == ErrorCode.NO_PROVIDER_AVAILABLE
+    assert response.errors[0].details["reason"] == "no_exact_round_trip_provider"
+    assert response.search_plan.planned_candidate_count == 1
+    assert response.search_plan.executed_provider_call_count == 0
+
+
 def test_search_exact_respects_max_results_and_uses_resolved_iata(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -175,7 +272,9 @@ def test_search_exact_respects_max_results_and_uses_resolved_iata(
     )
 
     assert response.status == SearchStatus.SUCCESS
-    assert response.request_id == "exact:CXR:SGN:2026-07-10:exact:1:0:0:0:1"
+    assert response.request_id == (
+        "search:one_way:CXR:SGN:2026-07-10:none:exact:1:0:0:0:1"
+    )
     assert [offer.offer_id for offer in response.offers] == [
         "manual_fixture:cxr-sgn-20260710-1"
     ]
@@ -215,7 +314,9 @@ def test_search_exact_unknown_airport_returns_failed_response_without_provider_c
     response = search_exact(_request(origin="ZZZ"))
 
     assert response.status == SearchStatus.FAILED
-    assert response.request_id == "exact:ZZZ:SGN:2026-07-10:exact:1:0:0:0:5"
+    assert response.request_id == (
+        "search:one_way:ZZZ:SGN:2026-07-10:none:exact:1:0:0:0:5"
+    )
     assert response.offers == []
     assert response.provider_statuses == []
     assert len(response.errors) == 1
@@ -223,34 +324,6 @@ def test_search_exact_unknown_airport_returns_failed_response_without_provider_c
     assert response.errors[0].details == {"field": "origin", "value": "ZZZ"}
     assert response.search_plan.planned_candidate_count == 0
     assert response.search_plan.executed_provider_call_count == 0
-
-
-@pytest.mark.parametrize(
-    ("overrides", "unsupported_reason"),
-    [
-        (
-            {"search_mode": SearchMode.EXPANDED},
-            "Gate 4 does not support expanded search.",
-        ),
-        (
-            {"return_date": "2026-07-15"},
-            "Gate 4 does not support round-trip search.",
-        ),
-    ],
-)
-def test_search_exact_unsupported_scope_returns_failed_response(
-    overrides: dict[str, Any],
-    unsupported_reason: str,
-) -> None:
-    response = search_exact(_request(**overrides))
-
-    assert response.status == SearchStatus.FAILED
-    assert response.offers == []
-    assert response.provider_statuses == []
-    assert response.errors[0].code == ErrorCode.NO_PROVIDER_AVAILABLE
-    assert response.errors[0].details["unsupported_reason"] == unsupported_reason
-    assert response.search_plan.planned_candidate_count == 0
-    assert response.search_plan.executed_candidate_count == 0
 
 
 def test_search_exact_no_enabled_providers_reports_planned_unexecuted_candidate(
@@ -262,15 +335,13 @@ def test_search_exact_no_enabled_providers_reports_planned_unexecuted_candidate(
 
     assert response.status == SearchStatus.FAILED
     assert response.errors[0].code == ErrorCode.NO_PROVIDER_AVAILABLE
-    assert response.errors[0].details["reason"] == "no_enabled_provider"
+    assert response.errors[0].details["reason"] == "no_exact_one_way_provider"
     assert response.search_plan.planned_candidate_count == 1
     assert response.search_plan.executed_candidate_count == 0
     assert response.search_plan.planned_provider_call_count == 0
     assert response.search_plan.executed_provider_call_count == 0
     assert response.search_plan.candidate_count_by_family == {CandidateFamily.EXACT: 1}
-    assert response.search_plan.provider_call_count_by_family == {
-        CandidateFamily.EXACT: 0
-    }
+    assert response.search_plan.provider_call_count_by_family == {}
     assert response.search_plan.candidate_families == [CandidateFamily.EXACT]
 
 
