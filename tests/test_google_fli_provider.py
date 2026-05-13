@@ -258,6 +258,26 @@ def test_google_fli_provider_returns_partial_for_offers_with_errors() -> None:
     assert result.errors[0].details["failure_type"] == "parse_error"
 
 
+def test_google_fli_provider_round_trip_normalizer_errors_use_round_trip_capability() -> None:
+    malformed_flight = SimpleNamespace(
+        price=88.5,
+        currency="USD",
+        duration=90,
+        stops=0,
+        legs=[],
+    )
+    provider = GoogleFliProvider(
+        adapter=FakeAdapter([malformed_flight]),
+        timeout_seconds=1,
+    )
+
+    result = asyncio.run(provider.search_exact_round_trip(_round_trip_request()))
+
+    assert result.status == ProviderStatusCode.FAILED
+    assert result.errors[0].details["failure_type"] == "parse_error"
+    assert result.errors[0].details["capability"] == "exact_round_trip"
+
+
 def test_google_fli_provider_maps_timeout() -> None:
     provider = GoogleFliProvider(
         adapter=FakeAdapter(TimeoutError("secret timeout details")),

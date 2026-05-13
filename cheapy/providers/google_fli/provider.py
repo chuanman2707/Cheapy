@@ -79,6 +79,7 @@ class GoogleFliProvider:
                 request,
                 configured_currency=getattr(self._adapter, "configured_currency", None),
             )
+            errors = _errors_with_capability(errors, capability)
         except TimeoutError:
             return self._failed_result(
                 started,
@@ -181,6 +182,15 @@ def _provider_error(
         details=details,
         retryable=retryable,
     )
+
+
+def _errors_with_capability(errors: list[ErrorV1], capability: str) -> list[ErrorV1]:
+    remapped_errors = []
+    for error in errors:
+        details = dict(error.details)
+        details["capability"] = capability
+        remapped_errors.append(error.model_copy(update={"details": details}))
+    return remapped_errors
 
 
 def _duration_ms(started: float) -> int:

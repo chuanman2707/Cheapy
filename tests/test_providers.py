@@ -584,7 +584,7 @@ def test_load_provider_rejects_round_trip_capability_without_method(
         registry.load_provider(manifest)
 
 
-def test_google_fli_round_trip_placeholder_returns_controlled_failure() -> None:
+def test_google_fli_round_trip_missing_adapter_method_returns_controlled_failure() -> None:
     from cheapy.providers.google_fli.provider import GoogleFliProvider
 
     provider = GoogleFliProvider(adapter=object())
@@ -602,14 +602,10 @@ def test_google_fli_round_trip_placeholder_returns_controlled_failure() -> None:
     assert result.status == ProviderStatusCode.FAILED
     assert result.offers == []
     assert len(result.errors) == 1
-    assert result.errors[0].details == {
-        "provider": "google_fli",
-        "capability": "exact_round_trip",
-        "origin": "SGN",
-        "destination": "BKK",
-        "departure_date": "2026-07-10",
-        "return_date": "2026-07-17",
-    }
+    assert result.errors[0].code == ErrorCode.PROVIDER_FAILED
+    assert result.errors[0].details["provider"] == "google_fli"
+    assert result.errors[0].details["capability"] == "exact_round_trip"
+    assert result.errors[0].details["failure_type"] == "unexpected_error"
 
 
 def test_load_enabled_providers_loads_all_default_enabled_providers() -> None:
