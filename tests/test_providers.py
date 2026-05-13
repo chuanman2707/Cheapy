@@ -104,6 +104,18 @@ def test_provider_exact_round_trip_request_rejects_return_before_departure() -> 
         )
 
 
+def test_provider_exact_round_trip_request_rejects_requested_return_before_requested_departure() -> None:
+    with pytest.raises(ValidationError, match="requested_return_date must not be earlier"):
+        ProviderExactRoundTripRequest(
+            origin="SGN",
+            destination="BKK",
+            departure_date="2026-07-10",
+            return_date="2026-07-17",
+            requested_departure_date="2026-07-10",
+            requested_return_date="2026-07-09",
+        )
+
+
 def test_provider_exact_one_way_request_rejects_non_iso_date_shape() -> None:
     with pytest.raises(ValidationError):
         ProviderExactOneWayRequest(
@@ -329,6 +341,35 @@ def test_manual_fixture_returns_controlled_failure_for_unsupported_input() -> No
     assert error.retryable is False
 
 
+def test_manual_fixture_returns_controlled_failure_for_round_trip_request() -> None:
+    provider = create_provider()
+    request = ProviderExactRoundTripRequest(
+        origin="CXR",
+        destination="SGN",
+        departure_date="2026-07-10",
+        return_date="2026-07-17",
+    )
+
+    result = asyncio.run(provider.search_exact_round_trip(request))
+
+    assert result.status == ProviderStatusCode.FAILED
+    assert result.offers == []
+    assert len(result.errors) == 1
+    error = result.errors[0]
+    assert error.code == ErrorCode.PROVIDER_FAILED
+    assert error.severity == Severity.ERROR
+    assert error.message_en == "No manual fixture exists for round-trip requests."
+    assert error.details == {
+        "provider": "manual_fixture",
+        "capability": "exact_round_trip",
+        "origin": "CXR",
+        "destination": "SGN",
+        "departure_date": "2026-07-10",
+        "return_date": "2026-07-17",
+    }
+    assert error.retryable is False
+
+
 def test_manual_fixture_does_not_open_network_socket(monkeypatch: pytest.MonkeyPatch) -> None:
     def raise_on_socket(*args: object, **kwargs: object) -> None:
         raise AssertionError("manual_fixture provider must not open network sockets")
@@ -412,6 +453,122 @@ def test_load_provider_rejects_bad_provider_shape(monkeypatch: pytest.MonkeyPatc
         match="Unable to load provider 'bad_shape_provider'",
     ):
         registry.load_provider(manifest)
+
+
+def test_load_provider_rejects_provider_capability_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeProvider:
+        name = "mismatch_provider"
+        capabilities = ("exact_one_way", "exact_round_trip")
+
+        async def search_exact_one_way(
+            self,
+            request: ProviderExactOneWayRequest,
+        ) -> ProviderResult:
+            raise NotImplementedError
+
+        async def search_exact_round_trip(
+            self,
+            request: ProviderExactRoundTripRequest,
+        ) -> ProviderResult:
+            raise NotImplementedError
+
+    class FakeProviderModule:
+        @staticmethod
+        def create_provider() -> FakeProvider:
+            return FakeProvider()
+
+    manifest = ProviderManifest(
+        manifest_schema_version="1",
+        name="mismatch_provider",
+        display_name="Mismatch provider",
+        default_enabled=True,
+        provider_kind="live",
+        module="mismatch.provider",
+        capabilities=["exact_one_way"],
+    )
+
+    monkeypatch.setattr(
+        registry,
+        "import_module",
+        lambda module_name: FakeProviderModule,
+    )
+
+    with pytest.raises(
+        ProviderLoadError,
+        match="Unable to load provider 'mismatch_provider'",
+    ):
+        registry.load_provider(manifest)
+
+
+def test_load_provider_rejects_round_trip_capability_without_method(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeProvider:
+        name = "missing_round_trip_method"
+        capabilities = ("exact_one_way", "exact_round_trip")
+
+        async def search_exact_one_way(
+            self,
+            request: ProviderExactOneWayRequest,
+        ) -> ProviderResult:
+            raise NotImplementedError
+
+    class FakeProviderModule:
+        @staticmethod
+        def create_provider() -> FakeProvider:
+            return FakeProvider()
+
+    manifest = ProviderManifest(
+        manifest_schema_version="1",
+        name="missing_round_trip_method",
+        display_name="Missing round-trip method",
+        default_enabled=True,
+        provider_kind="live",
+        module="missing.method",
+        capabilities=["exact_one_way", "exact_round_trip"],
+    )
+
+    monkeypatch.setattr(
+        registry,
+        "import_module",
+        lambda module_name: FakeProviderModule,
+    )
+
+    with pytest.raises(
+        ProviderLoadError,
+        match="Unable to load provider 'missing_round_trip_method'",
+    ):
+        registry.load_provider(manifest)
+
+
+def test_google_fli_round_trip_placeholder_returns_controlled_failure() -> None:
+    from cheapy.providers.google_fli.provider import GoogleFliProvider
+
+    provider = GoogleFliProvider(adapter=object())
+    request = ProviderExactRoundTripRequest(
+        origin="SGN",
+        destination="BKK",
+        departure_date="2026-07-10",
+        return_date="2026-07-17",
+    )
+
+    result = asyncio.run(provider.search_exact_round_trip(request))
+
+    assert result.provider_name == "google_fli"
+    assert result.capability == "exact_round_trip"
+    assert result.status == ProviderStatusCode.FAILED
+    assert result.offers == []
+    assert len(result.errors) == 1
+    assert result.errors[0].details == {
+        "provider": "google_fli",
+        "capability": "exact_round_trip",
+        "origin": "SGN",
+        "destination": "BKK",
+        "departure_date": "2026-07-10",
+        "return_date": "2026-07-17",
+    }
 
 
 def test_load_enabled_providers_loads_all_default_enabled_providers() -> None:

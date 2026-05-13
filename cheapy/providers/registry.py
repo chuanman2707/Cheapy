@@ -94,6 +94,9 @@ def _validate_provider_shape(
     if not isinstance(name, str) or not isinstance(capabilities, tuple):
         raise ProviderLoadError(_provider_load_error_message(manifest))
 
+    if capabilities != tuple(manifest.capabilities):
+        raise ProviderLoadError(_provider_load_error_message(manifest))
+
     required_methods = {
         "exact_one_way": "search_exact_one_way",
         "exact_round_trip": "search_exact_round_trip",

@@ -12,7 +12,11 @@ from cheapy.models import (
     ProviderStatusCode,
     Severity,
 )
-from cheapy.providers.base import ProviderExactOneWayRequest, ProviderResult
+from cheapy.providers.base import (
+    ProviderExactOneWayRequest,
+    ProviderExactRoundTripRequest,
+    ProviderResult,
+)
 
 
 class ManualFixtureProvider:
@@ -78,6 +82,36 @@ class ManualFixtureProvider:
                         "origin": request.origin,
                         "destination": request.destination,
                         "departure_date": request.departure_date,
+                    },
+                    retryable=False,
+                )
+            ],
+            duration_ms=0,
+            retryable=False,
+        )
+
+    async def search_exact_round_trip(
+        self,
+        request: ProviderExactRoundTripRequest,
+    ) -> ProviderResult:
+        return ProviderResult(
+            provider_name=self.name,
+            capability="exact_round_trip",
+            status=ProviderStatusCode.FAILED,
+            offers=[],
+            warnings=[],
+            errors=[
+                ErrorV1(
+                    code=ErrorCode.PROVIDER_FAILED,
+                    severity=Severity.ERROR,
+                    message_en="No manual fixture exists for round-trip requests.",
+                    details={
+                        "provider": self.name,
+                        "capability": "exact_round_trip",
+                        "origin": request.origin,
+                        "destination": request.destination,
+                        "departure_date": request.departure_date,
+                        "return_date": request.return_date,
                     },
                     retryable=False,
                 )

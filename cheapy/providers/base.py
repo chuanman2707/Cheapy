@@ -103,6 +103,15 @@ class ProviderExactRoundTripRequest(_ProviderModel):
         return_date = datetime.strptime(self.return_date, "%Y-%m-%d")
         if return_date < departure:
             raise ValueError("return_date must not be earlier than departure_date")
+        requested_departure = datetime.strptime(
+            self.requested_departure_date,
+            "%Y-%m-%d",
+        )
+        requested_return = datetime.strptime(self.requested_return_date, "%Y-%m-%d")
+        if requested_return < requested_departure:
+            raise ValueError(
+                "requested_return_date must not be earlier than requested_departure_date"
+            )
         return self
 
 
