@@ -5,9 +5,9 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Protocol
 
 from cheapy.models import CandidateFamily, SearchMode, SearchPlanV1, SearchRequestV1
+from cheapy.providers.base import FlightProvider
 
 
 EXACT_ONE_WAY_CAPABILITY = "exact_one_way"
@@ -25,20 +25,15 @@ _FAMILY_ORDER = (
 )
 
 
-class SearchProvider(Protocol):
-    """Provider shape required for search planning."""
-
-    name: str
-    capabilities: Sequence[str]
-
-
 @dataclass(frozen=True)
 class SearchCandidate:
     family: CandidateFamily
     origin: str
     destination: str
-    departure_date: date
-    return_date: date | None
+    departure_date: str
+    return_date: str | None
+    requested_departure_date: str
+    requested_return_date: str | None
     departure_offset_days: int
     return_offset_days: int | None
     capability: str
@@ -47,14 +42,13 @@ class SearchCandidate:
 @dataclass(frozen=True)
 class PlannedProviderCall:
     candidate: SearchCandidate
-    provider: SearchProvider
+    provider: FlightProvider
 
 
 @dataclass(frozen=True)
 class PlannedSearch:
     search_plan: SearchPlanV1
-    planned_candidates: list[SearchCandidate]
-    candidates: tuple[SearchCandidate, ...]
+    planned_candidates: tuple[SearchCandidate, ...]
     planned_calls: tuple[PlannedProviderCall, ...]
     selected_calls: tuple[PlannedProviderCall, ...]
 
@@ -63,7 +57,7 @@ def plan_search(
     request: SearchRequestV1,
     origin: str,
     destination: str,
-    providers: Sequence[SearchProvider],
+    providers: Sequence[FlightProvider],
 ) -> PlannedSearch:
     """Build candidate/provider calls and select calls within the Gate 8 budget."""
 
@@ -73,8 +67,7 @@ def plan_search(
     search_plan = _build_search_plan(request, candidates, planned_calls, selected_calls)
     return PlannedSearch(
         search_plan=search_plan,
-        planned_candidates=list(candidates),
-        candidates=candidates,
+        planned_candidates=candidates,
         planned_calls=planned_calls,
         selected_calls=selected_calls,
     )
@@ -99,6 +92,8 @@ def _build_candidates(
                 destination=destination,
                 departure_date=departure_date + timedelta(days=offset),
                 return_date=None,
+                requested_departure_date=departure_date,
+                requested_return_date=None,
                 departure_offset_days=offset,
                 return_offset_days=None,
                 capability=EXACT_ONE_WAY_CAPABILITY,
@@ -127,6 +122,8 @@ def _build_candidates(
                 destination=destination,
                 departure_date=candidate_departure,
                 return_date=candidate_return,
+                requested_departure_date=departure_date,
+                requested_return_date=return_date,
                 departure_offset_days=departure_offset,
                 return_offset_days=return_offset,
                 capability=EXACT_ROUND_TRIP_CAPABILITY,
@@ -142,6 +139,8 @@ def _candidate(
     destination: str,
     departure_date: date,
     return_date: date | None,
+    requested_departure_date: date,
+    requested_return_date: date | None,
     departure_offset_days: int,
     return_offset_days: int | None,
     capability: str,
@@ -150,8 +149,14 @@ def _candidate(
         family=family,
         origin=origin,
         destination=destination,
-        departure_date=departure_date,
-        return_date=return_date,
+        departure_date=departure_date.isoformat(),
+        return_date=return_date.isoformat() if return_date is not None else None,
+        requested_departure_date=requested_departure_date.isoformat(),
+        requested_return_date=(
+            requested_return_date.isoformat()
+            if requested_return_date is not None
+            else None
+        ),
         departure_offset_days=departure_offset_days,
         return_offset_days=return_offset_days,
         capability=capability,
@@ -191,7 +196,7 @@ def _round_trip_expanded_offset_pairs() -> tuple[tuple[int, int], ...]:
 
 def _planned_calls(
     candidates: Sequence[SearchCandidate],
-    providers: Sequence[SearchProvider],
+    providers: Sequence[FlightProvider],
 ) -> tuple[PlannedProviderCall, ...]:
     return tuple(
         PlannedProviderCall(candidate=candidate, provider=provider)

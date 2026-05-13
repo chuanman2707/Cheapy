@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 from cheapy.models import CandidateFamily, PassengersV1, SearchMode, SearchRequestV1
+from cheapy.providers.base import (
+    ProviderExactOneWayRequest,
+    ProviderExactRoundTripRequest,
+    ProviderResult,
+)
 from cheapy.search_planner import (
     EXACT_ONE_WAY_CAPABILITY,
     EXACT_ROUND_TRIP_CAPABILITY,
@@ -13,6 +18,18 @@ class _Provider:
     def __init__(self, name: str, capabilities: tuple[str, ...]) -> None:
         self.name = name
         self.capabilities = capabilities
+
+    async def search_exact_one_way(
+        self,
+        request: ProviderExactOneWayRequest,
+    ) -> ProviderResult:
+        raise NotImplementedError
+
+    async def search_exact_round_trip(
+        self,
+        request: ProviderExactRoundTripRequest,
+    ) -> ProviderResult:
+        raise NotImplementedError
 
 
 def _request(**overrides: object) -> SearchRequestV1:
@@ -34,6 +51,7 @@ def test_plan_expanded_one_way_orders_exact_then_nearest_dates() -> None:
     provider = _Provider("one", (EXACT_ONE_WAY_CAPABILITY,))
 
     planned = plan_search(_request(), "SGN", "BKK", [provider])
+    first_flexible = planned.selected_calls[1].candidate
 
     assert [
         (call.candidate.departure_offset_days, call.provider.name)
@@ -52,6 +70,10 @@ def test_plan_expanded_one_way_orders_exact_then_nearest_dates() -> None:
     assert planned.search_plan.planned_provider_call_count == 7
     assert planned.search_plan.executed_provider_call_count == 7
     assert planned.search_plan.truncated is False
+    assert first_flexible.departure_date == "2026-07-09"
+    assert first_flexible.return_date is None
+    assert first_flexible.requested_departure_date == "2026-07-10"
+    assert first_flexible.requested_return_date is None
 
 
 def test_plan_expanded_round_trip_uses_true_round_trip_capability() -> None:
@@ -87,6 +109,10 @@ def test_plan_expanded_round_trip_uses_true_round_trip_capability() -> None:
     assert planned.search_plan.executed_provider_call_count == 10
     assert planned.search_plan.truncated is True
     assert planned.search_plan.truncated_families == [CandidateFamily.FLEXIBLE_DATES]
+    assert planned.selected_calls[1].candidate.departure_date == "2026-07-10"
+    assert planned.selected_calls[1].candidate.return_date == "2026-07-16"
+    assert planned.selected_calls[1].candidate.requested_departure_date == "2026-07-10"
+    assert planned.selected_calls[1].candidate.requested_return_date == "2026-07-17"
 
 
 def test_plan_skips_invalid_round_trip_flexible_pairs() -> None:
@@ -104,6 +130,8 @@ def test_plan_skips_invalid_round_trip_flexible_pairs() -> None:
         or candidate.return_date >= candidate.departure_date
         for candidate in planned.planned_candidates
     )
+    assert isinstance(planned.planned_candidates, tuple)
+    assert not hasattr(planned, "candidates")
     assert planned.search_plan.planned_candidate_count < 49
 
 
