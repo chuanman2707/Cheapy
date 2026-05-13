@@ -7,6 +7,9 @@ Date: 2026-05-13
 Gate 8 expands Cheapy search beyond exact one-way dates. It turns
 `search_mode="expanded"` into flexible-date search with a fixed plus/minus
 3-day window and a Gate 8 execution budget of 10 provider calls per request.
+This intentionally overrides the master-spec default of 20 calls for the first
+live flexible-date release; the master-spec value remains the longer-term
+target after Gate 8 stability is proven.
 
 Gate 8 also starts true round-trip search when `return_date` is provided. A
 round-trip result must come from a provider round-trip query, not from pairing
@@ -155,6 +158,12 @@ exact_round_trip
 This is provider-internal capability metadata, not a new public Contract V1
 enum.
 
+Gate 8 flexible-date expansion does not require providers to advertise a
+separate `flexible_dates` capability. The planner implements flexible dates by
+issuing multiple exact-date provider calls. The master-spec idea of a native
+provider flexible-date capability remains deferred for a future provider that
+can search a date calendar in a single call.
+
 ## Planner Rules
 
 The flexible window is fixed:
@@ -195,13 +204,34 @@ maximum provider calls per request = 10
 ```
 
 Budget accounting is based on provider calls. If two enabled providers support
-the candidate capability, one candidate costs two provider calls.
+the candidate capability, one candidate contributes two planned provider calls.
 
-The planner should compute the full planned candidate set first, estimate
-provider-call cost by capability, then select candidates until the budget is
-exhausted. If a family is partially executed or skipped because of budget,
-`SearchPlanV1.truncated` is true and `truncated_families` includes
-`flexible_dates`.
+The planner should compute the full planned candidate set first, then expand it
+into an ordered provider-call list:
+
+```text
+(candidate order, provider manifest/load order)
+```
+
+Cheapy executes the first 10 calls from that ordered list. Candidate execution
+is therefore call-budgeted, not all-or-nothing:
+
+- `planned_provider_call_count` is the full count before the budget is applied.
+- `executed_provider_call_count` is the number of provider calls actually run.
+- `planned_candidate_count` is the full candidate count before budget.
+- `executed_candidate_count` is the count of candidates with at least one
+  provider call executed.
+- `candidate_count_by_family` is planned candidate count by family.
+- `provider_call_count_by_family` is executed provider-call count by family.
+
+If the budget ends in the middle of a candidate's provider list, Cheapy executes
+the calls that fit and skips the remaining provider calls. If the first exact
+candidate alone has more than 10 provider calls, Cheapy executes the first 10
+exact calls in stable provider order and marks the exact family as truncated.
+
+If any candidate family is partially executed or skipped because of budget,
+`SearchPlanV1.truncated` is true and `truncated_families` includes every
+affected family.
 
 Contract V1 has candidate families for search breadth, not trip shape. Exact
 one-way and exact round-trip candidates both count under `CandidateFamily.EXACT`.
@@ -215,16 +245,36 @@ For each selected candidate, core search builds a provider-local request:
 - one-way candidate -> `ProviderExactOneWayRequest`
 - round-trip candidate -> `ProviderExactRoundTripRequest`
 
-The request should carry both requested and actual dates so normalizers can
-fill Contract V1 fields without guessing:
+`ProviderExactOneWayRequest` should use these field names:
 
-- requested origin and destination
-- actual origin and destination
-- requested departure date
-- actual departure date
-- requested return date for round trips
-- actual return date for round trips
-- passengers
+```text
+origin: actual query origin IATA
+destination: actual query destination IATA
+departure_date: actual query departure date
+requested_origin: requested origin IATA, defaulting to origin
+requested_destination: requested destination IATA, defaulting to destination
+requested_departure_date: requested departure date, defaulting to departure_date
+passengers: Contract V1 passenger counts
+```
+
+`ProviderExactRoundTripRequest` should use these field names:
+
+```text
+origin: actual outbound origin IATA
+destination: actual outbound destination IATA
+departure_date: actual outbound departure date
+return_date: actual inbound departure date
+requested_origin: requested origin IATA, defaulting to origin
+requested_destination: requested destination IATA, defaulting to destination
+requested_departure_date: requested departure date, defaulting to departure_date
+requested_return_date: requested return date, defaulting to return_date
+passengers: Contract V1 passenger counts
+```
+
+The existing one-way field names remain the actual provider query fields. The
+new requested fields let normalizers fill Contract V1 requested/actual date
+fields without guessing and without breaking exact one-way call sites that only
+set the existing fields.
 
 For Gate 8, actual origin and destination are the requested airports because
 nearby-airport expansion remains deferred.
@@ -244,8 +294,26 @@ legs in a single `FlightOfferV1` when upstream returns them as one itinerary.
 
 ## Response Assembly
 
+Gate 8 should update request IDs so one-way and round-trip requests cannot
+collide. The request ID must include trip shape and return date:
+
+```text
+search:{trip_shape}:{origin}:{destination}:{departure_date}:{return_date_or_none}:{search_mode}:{adults}:{children}:{infants_on_lap}:{infants_in_seat}:{max_results}
+```
+
+`trip_shape` is `one_way` when `return_date` is omitted and `round_trip` when
+`return_date` is present.
+
 Core search merges all offers from executed provider calls, then applies the
-same Gate 7 ordering and ranking rules:
+same Gate 7 ordering and ranking rules after deduplication:
+
+- Deduplicate before applying `request.max_results`.
+- Within the same provider, deduplicate by exact itinerary signature and keep
+  the cheapest duplicate.
+- Across providers, do not deduplicate offers when either offer has
+  `fare_details_status="not_collected"`.
+- Cross-provider deduplication remains deferred until fare details are known
+  well enough to prove two offers are equivalent.
 
 - If all returned offers use one currency, sort by `price_amount` then
   `offer_id`.
@@ -257,6 +325,12 @@ same Gate 7 ordering and ranking rules:
 `ProviderStatusV1` should be emitted per provider call. This makes
 `executed_provider_call_count` easy to reconcile with response details, and it
 keeps failures on individual flexible candidates visible.
+
+Budget-skipped provider calls are not emitted as
+`ProviderStatusV1(status="skipped")` in Gate 8. They are represented through
+`SearchPlanV1.truncated`, `truncated_families`, and
+`CANDIDATE_FAMILY_TRUNCATED` warnings. Provider statuses describe calls Cheapy
+actually attempted.
 
 Provider status `capability` should be either:
 
@@ -280,6 +354,15 @@ Unsupported scope handling:
 - One-way searches require at least one provider with `exact_one_way`.
 - Round-trip searches require at least one provider with `exact_round_trip`.
 
+Invalid date ordering:
+
+- `SearchRequestV1` should reject `return_date` values earlier than
+  `departure_date` with a Pydantic validation error.
+- Exact round-trip and expanded round-trip searches therefore never reach
+  provider loading with an impossible requested date order.
+- Flexible round-trip planning still omits generated candidate pairs where the
+  actual return date is before the actual departure date.
+
 If no provider supports the needed capability, Cheapy returns
 `NO_PROVIDER_AVAILABLE` with a clear reason.
 
@@ -296,9 +379,10 @@ Truncation behavior:
 
 - If candidate execution is budget-truncated, response search plan marks
   `truncated=true`.
-- `truncated_families` includes `flexible_dates`.
-- Cheapy adds `CANDIDATE_FAMILY_TRUNCATED` when flexible-date candidates are
+- `truncated_families` includes every family that had planned provider calls
   skipped because of budget.
+- Cheapy adds `CANDIDATE_FAMILY_TRUNCATED` for every family in
+  `truncated_families`.
 - `SEARCH_TRUNCATED` is reserved for a future whole-request truncation case
   that is not specific to one candidate family.
 - The response can still be `success` if executed candidates returned offers
@@ -321,9 +405,13 @@ Search orchestration tests should cover:
 
 - exact one-way regression behavior
 - exact round-trip provider call routing
+- `return_date < departure_date` rejected at request validation
 - expanded one-way provider call routing
 - expanded round-trip true round-trip provider call routing
 - no synthetic two-one-way round-trip pairing
+- request IDs include trip shape and return date to avoid one-way/round-trip
+  collisions
+- deduplication happens before sorting, `max_results`, and ranking
 - flexible offer flags and offsets
 - truncation warnings and search plan flags
 - mixed provider success and failure producing `partial`
