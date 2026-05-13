@@ -22,7 +22,7 @@ ProviderRequest = ProviderExactOneWayRequest | ProviderExactRoundTripRequest
 
 
 def normalize_flights(
-    flights: list[object],
+    flights: list[object] | tuple[object, ...],
     request: ProviderRequest,
     *,
     configured_currency: str | None = None,
@@ -30,7 +30,7 @@ def normalize_flights(
     """Convert upstream fli flight result objects into Contract V1 offers."""
     offers: list[FlightOfferV1] = []
     errors: list[ErrorV1] = []
-    for item_index, flight in enumerate(flights, start=1):
+    for item_index, flight in enumerate(_flight_items(flights), start=1):
         try:
             offers.append(
                 _normalize_flight(
@@ -211,12 +211,20 @@ def _flight_parts(flight: object) -> tuple[list[object], bool]:
     return [flight], False
 
 
+def _flight_items(flights: list[object] | tuple[object, ...]) -> list[object]:
+    if isinstance(flights, tuple):
+        return [flights]
+    return flights
+
+
 def _validate_round_trip_part_count(
     request: ProviderRequest,
     parts: list[object],
     *,
     is_composite: bool,
 ) -> None:
+    if is_composite and not isinstance(request, ProviderExactRoundTripRequest):
+        raise ValueError("one-way result must not be composite")
     if not isinstance(request, ProviderExactRoundTripRequest):
         return
     if is_composite and len(parts) != 2:

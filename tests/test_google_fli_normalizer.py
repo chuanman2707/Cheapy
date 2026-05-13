@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
 from enum import Enum
 from types import SimpleNamespace
@@ -173,6 +174,36 @@ def test_normalize_flights_maps_round_trip_list_result() -> None:
     ]
     assert offers[0].price_amount == 250
     assert offers[0].currency == "EUR"
+
+
+@pytest.mark.parametrize(
+    "result_shape",
+    [
+        pytest.param(
+            lambda outbound, inbound: [(outbound, inbound)],
+            id="list-item-tuple",
+        ),
+        pytest.param(
+            lambda outbound, inbound: (outbound, inbound),
+            id="direct-tuple",
+        ),
+    ],
+)
+def test_normalize_flights_rejects_one_way_composite_tuple_result(
+    result_shape: Callable[
+        [SimpleNamespace, SimpleNamespace],
+        list[object] | tuple[object, ...],
+    ],
+) -> None:
+    outbound = _flight(legs=[_leg()], duration=90, price=100, currency="USD")
+    inbound = _flight(legs=[_return_leg()], duration=90, price=250, currency="EUR")
+
+    offers, errors = normalize_flights(result_shape(outbound, inbound), _request())
+
+    assert offers == []
+    assert len(errors) == 1
+    assert errors[0].details["capability"] == "exact_one_way"
+    assert errors[0].details["failure_type"] == "parse_error"
 
 
 @pytest.mark.parametrize("container", [tuple, list])
