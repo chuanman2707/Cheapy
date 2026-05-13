@@ -68,7 +68,7 @@ assert 'name = "manual_fixture"' in manual_manifest
 assert 'provider_kind = "fixture"' in manual_manifest
 assert 'name = "google_fli"' in google_manifest
 assert 'provider_kind = "live"' in google_manifest
-assert "default_enabled = false" in google_manifest
+assert "default_enabled = true" in google_manifest
 """
     subprocess.run([str(python), "-c", resource_script], check=True, cwd=tmp_path)
 
@@ -97,7 +97,7 @@ assert not installed_package.is_relative_to(repo_package), installed_package
     }
     assert providers["manual_fixture"]["provider_kind"] == "fixture"
     assert providers["google_fli"]["provider_kind"] == "live"
-    assert providers["google_fli"]["default_enabled"] is False
+    assert providers["google_fli"]["default_enabled"] is True
 
     test_result = subprocess.run(
         [str(python), "-m", "cheapy", "providers", "test"],
@@ -108,4 +108,7 @@ assert not installed_package.is_relative_to(repo_package), installed_package
         cwd=tmp_path,
     )
     assert test_result.stderr == ""
-    assert json.loads(test_result.stdout)["providers_tested"] == 1
+    test_payload = json.loads(test_result.stdout)
+    providers = {provider["name"]: provider for provider in test_payload["providers"]}
+    assert providers["manual_fixture"]["status"] == "success"
+    assert providers["google_fli"]["live_smoke"] == "not_run"
