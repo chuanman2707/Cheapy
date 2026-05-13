@@ -156,6 +156,37 @@ def test_normalize_flights_maps_round_trip_tuple_result() -> None:
     assert offers[0].actual_return_date == "2026-06-19"
 
 
+def test_normalize_flights_returns_parse_error_for_empty_round_trip_tuple() -> None:
+    offers, errors = normalize_flights([()], _round_trip_request())
+
+    assert offers == []
+    assert len(errors) == 1
+    payload = errors[0].model_dump_json()
+    assert errors[0].details["capability"] == "exact_round_trip"
+    assert errors[0].details["failure_type"] == "parse_error"
+    assert "raw_payload" not in payload
+
+
+def test_normalize_flights_rejects_round_trip_tuple_without_return_leg() -> None:
+    outbound = _flight(legs=[_leg()], duration=90)
+
+    offers, errors = normalize_flights([(outbound,)], _round_trip_request())
+
+    assert offers == []
+    assert len(errors) == 1
+    assert errors[0].details["capability"] == "exact_round_trip"
+    assert errors[0].details["failure_type"] == "parse_error"
+
+
+def test_normalize_flights_uses_round_trip_capability_for_direct_currency_error() -> None:
+    offers, errors = normalize_flights([_flight(currency=None)], _round_trip_request())
+
+    assert offers == []
+    assert len(errors) == 1
+    assert errors[0].details["capability"] == "exact_round_trip"
+    assert errors[0].details["failure_type"] == "currency_unavailable"
+
+
 def test_normalize_flights_uses_upstream_enum_names_for_codes() -> None:
     class FakeAirport(Enum):
         SGN = "Tan Son Nhat International Airport"

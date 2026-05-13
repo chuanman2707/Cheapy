@@ -93,12 +93,15 @@ def _normalize_flight(
     rank: int,
     configured_currency: str | None,
 ) -> FlightOfferV1:
-    parts = _flight_parts(flight)
-    currency = _currency(parts[0], configured_currency=configured_currency)
-    if currency is None:
-        raise _ItemNormalizationError(_currency_unavailable_error(item_index))
-
     try:
+        parts = _flight_parts(flight)
+        if not parts:
+            raise ValueError("flight tuple has no parts")
+        currency = _currency(parts[0], configured_currency=configured_currency)
+        if currency is None:
+            raise _ItemNormalizationError(
+                _currency_unavailable_error(item_index, request)
+            )
         legs = [
             leg
             for part in parts
@@ -112,6 +115,12 @@ def _normalize_flight(
         stops = sum(int(_attr(part, "stops")) for part in parts)
         actual_departure_date = first_leg.departure_time[:10]
         actual_return_date = _round_trip_return_departure_date(request, legs)
+        if (
+            isinstance(request, ProviderExactRoundTripRequest)
+            and actual_return_date is None
+            and isinstance(flight, tuple)
+        ):
+            raise ValueError("round-trip result has no return leg")
         departure_offset_days = _date_offset(
             actual_departure_date, request.requested_departure_date
         )
@@ -162,8 +171,10 @@ def _normalize_flight(
             ),
             fare_details_status="not_collected",
         )
+    except _ItemNormalizationError:
+        raise
     except Exception as exc:
-        raise _ItemNormalizationError(_parse_error(item_index, exc)) from exc
+        raise _ItemNormalizationError(_parse_error(item_index, request, exc)) from exc
 
 
 def _flight_parts(flight: object) -> list[object]:
@@ -185,7 +196,7 @@ def _round_trip_return_departure_date(
     for leg in legs:
         if leg.origin == request.destination:
             return leg.departure_time[:10]
-    return request.return_date
+    return None
 
 
 def _normalize_leg(leg: object) -> FlightLegV1:
@@ -237,21 +248,29 @@ def _iso_datetime(value: object) -> str:
     return str(value)
 
 
-def _currency_unavailable_error(index: int) -> ErrorV1:
+def _currency_unavailable_error(index: int, request: ProviderRequest) -> ErrorV1:
     return _error(
         message_en="Provider result did not include a reliable currency.",
         failure_type="currency_unavailable",
         item_index=index,
+        capability=_capability_for_request(request),
     )
 
 
-def _parse_error(index: int, exc: Exception) -> ErrorV1:
+def _parse_error(index: int, request: ProviderRequest, exc: Exception) -> ErrorV1:
     return _error(
         message_en="Provider result could not be normalized.",
         failure_type="parse_error",
         item_index=index,
+        capability=_capability_for_request(request),
         exception_type=type(exc).__name__,
     )
+
+
+def _capability_for_request(request: ProviderRequest) -> str:
+    if isinstance(request, ProviderExactRoundTripRequest):
+        return "exact_round_trip"
+    return CAPABILITY
 
 
 def _error(
@@ -259,11 +278,12 @@ def _error(
     message_en: str,
     failure_type: str,
     item_index: int,
+    capability: str,
     exception_type: str | None = None,
 ) -> ErrorV1:
     details: dict[str, object] = {
         "provider": PROVIDER_NAME,
-        "capability": CAPABILITY,
+        "capability": capability,
         "failure_type": failure_type,
         "item_index": item_index,
     }
