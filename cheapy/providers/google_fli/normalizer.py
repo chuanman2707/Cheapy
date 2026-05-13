@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from cheapy.models import (
@@ -13,16 +13,17 @@ from cheapy.models import (
     OfferFlagsV1,
     Severity,
 )
-from cheapy.providers.base import ProviderExactOneWayRequest
+from cheapy.providers.base import ProviderExactOneWayRequest, ProviderExactRoundTripRequest
 
 
 PROVIDER_NAME = "google_fli"
 CAPABILITY = "exact_one_way"
+ProviderRequest = ProviderExactOneWayRequest | ProviderExactRoundTripRequest
 
 
 def normalize_flights(
     flights: list[object],
-    request: ProviderExactOneWayRequest,
+    request: ProviderRequest,
     *,
     configured_currency: str | None = None,
 ) -> tuple[list[FlightOfferV1], list[ErrorV1]]:
@@ -86,29 +87,56 @@ class _ItemNormalizationError(Exception):
 
 def _normalize_flight(
     flight: object,
-    request: ProviderExactOneWayRequest,
+    request: ProviderRequest,
     *,
     item_index: int,
     rank: int,
     configured_currency: str | None,
 ) -> FlightOfferV1:
-    currency = _currency(flight, configured_currency=configured_currency)
+    parts = _flight_parts(flight)
+    currency = _currency(parts[0], configured_currency=configured_currency)
     if currency is None:
         raise _ItemNormalizationError(_currency_unavailable_error(item_index))
+    if any(
+        _currency(part, configured_currency=configured_currency) != currency
+        for part in parts[1:]
+    ):
+        raise _ItemNormalizationError(
+            _parse_error(item_index, ValueError("flight parts use different currencies"))
+        )
 
     try:
-        legs = [_normalize_leg(leg) for leg in _attr(flight, "legs")]
+        legs = [
+            leg
+            for part in parts
+            for leg in [_normalize_leg(raw_leg) for raw_leg in _attr(part, "legs")]
+        ]
         if not legs:
             raise ValueError("flight has no legs")
         first_leg = legs[0]
-        last_leg = legs[-1]
-        price_amount = float(_attr(flight, "price"))
-        duration = int(_attr(flight, "duration"))
-        stops = int(_attr(flight, "stops"))
+        price_amount = float(_attr(parts[0], "price"))
+        duration = sum(int(_attr(part, "duration")) for part in parts)
+        stops = sum(int(_attr(part, "stops")) for part in parts)
+        actual_departure_date = first_leg.departure_time[:10]
+        actual_return_date = _round_trip_return_departure_date(request, legs)
+        departure_offset_days = _date_offset(
+            actual_departure_date, request.requested_departure_date
+        )
+        return_offset_days = (
+            None
+            if actual_return_date is None
+            or not isinstance(request, ProviderExactRoundTripRequest)
+            else _date_offset(actual_return_date, request.requested_return_date)
+        )
+        return_suffix = (
+            f":{request.return_date}"
+            if isinstance(request, ProviderExactRoundTripRequest)
+            else ""
+        )
         return FlightOfferV1(
             offer_id=(
                 f"{PROVIDER_NAME}:{request.origin}-{request.destination}:"
-                f"{request.departure_date}:{item_index}"
+                f"{request.departure_date}{return_suffix}:{item_index}"
             ),
             price_amount=price_amount,
             currency=currency,
@@ -119,23 +147,52 @@ def _normalize_flight(
             requested_origin=request.origin,
             requested_destination=request.destination,
             actual_origin=first_leg.origin,
-            actual_destination=last_leg.destination,
+            actual_destination=request.destination,
             nearby_origin_distance_km=None,
             nearby_destination_distance_km=None,
-            requested_departure_date=request.departure_date,
-            actual_departure_date=first_leg.departure_time[:10],
-            departure_offset_days=0,
-            requested_return_date=None,
-            actual_return_date=None,
-            return_offset_days=None,
+            requested_departure_date=request.requested_departure_date,
+            actual_departure_date=actual_departure_date,
+            departure_offset_days=departure_offset_days,
+            requested_return_date=(
+                request.requested_return_date
+                if isinstance(request, ProviderExactRoundTripRequest)
+                else None
+            ),
+            actual_return_date=actual_return_date,
+            return_offset_days=return_offset_days,
             legs=legs,
             total_duration_minutes=duration,
             stops=stops,
-            flags=OfferFlagsV1(),
+            flags=OfferFlagsV1(
+                uses_flexible_departure_date=departure_offset_days != 0,
+                uses_flexible_return_date=return_offset_days not in (None, 0),
+            ),
             fare_details_status="not_collected",
         )
     except Exception as exc:
         raise _ItemNormalizationError(_parse_error(item_index, exc)) from exc
+
+
+def _flight_parts(flight: object) -> list[object]:
+    if isinstance(flight, tuple):
+        return list(flight)
+    return [flight]
+
+
+def _date_offset(actual: str, requested: str) -> int:
+    return (date.fromisoformat(actual) - date.fromisoformat(requested)).days
+
+
+def _round_trip_return_departure_date(
+    request: ProviderRequest,
+    legs: list[FlightLegV1],
+) -> str | None:
+    if not isinstance(request, ProviderExactRoundTripRequest):
+        return None
+    for leg in legs:
+        if leg.origin == request.destination:
+            return leg.departure_time[:10]
+    return request.return_date
 
 
 def _normalize_leg(leg: object) -> FlightLegV1:
@@ -172,6 +229,11 @@ def _attr(value: object, name: str) -> Any:
 
 
 def _enum_value(value: object) -> str:
+    enum_name = getattr(value, "name", None)
+    if isinstance(enum_name, str):
+        if len(enum_name) > 1 and enum_name.startswith("_") and enum_name[1].isdigit():
+            return enum_name[1:]
+        return enum_name
     enum_value = getattr(value, "value", value)
     return str(enum_value)
 
