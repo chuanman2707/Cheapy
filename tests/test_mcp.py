@@ -9,7 +9,7 @@ from mcp import ClientSession, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
 
 from cheapy.mcp import create_mcp_server
-from cheapy.models import SearchResponseV1, SearchStatus
+from cheapy.models import SearchMode, SearchResponseV1, SearchStatus
 
 
 T = TypeVar("T")
@@ -137,17 +137,22 @@ def test_mcp_search_tool_returns_structured_contract_response(
         assert request.origin == "CXR"
         assert request.destination == "SGN"
         assert request.departure_date == "2026-07-10"
+        assert request.return_date == "2026-07-15"
+        assert request.search_mode == SearchMode.EXPANDED
         return SearchResponseV1.model_validate(
             {
                 "schema_version": "1",
                 "status": "success",
-                "request_id": "exact:CXR:SGN:2026-07-10:exact:1:0:0:0:5",
+                "request_id": (
+                    "search:round_trip:CXR:SGN:2026-07-10:2026-07-15:"
+                    "expanded:1:0:0:0:5"
+                ),
                 "offers": [],
                 "warnings": [],
                 "errors": [],
                 "provider_statuses": [],
                 "search_plan": {
-                    "search_mode": "exact",
+                    "search_mode": "expanded",
                     "planned_candidate_count": 1,
                     "executed_candidate_count": 1,
                     "planned_provider_call_count": 1,
@@ -172,8 +177,8 @@ def test_mcp_search_tool_returns_structured_contract_response(
         "origin": "CXR",
         "destination": "SGN",
         "departure_date": "2026-07-10",
-        "return_date": None,
-        "search_mode": "exact",
+        "return_date": "2026-07-15",
+        "search_mode": "expanded",
         "passengers": {
             "adults": 1,
             "children": 0,
@@ -189,6 +194,10 @@ def test_mcp_search_tool_returns_structured_contract_response(
     response = SearchResponseV1.model_validate(payload)
     assert response.schema_version == "1"
     assert response.status == SearchStatus.SUCCESS
+    assert (
+        "search:round_trip:CXR:SGN:2026-07-10:2026-07-15:"
+        "expanded:1:0:0:0:5"
+    ) in response.request_id
     assert response.offers == []
     assert response.errors == []
 

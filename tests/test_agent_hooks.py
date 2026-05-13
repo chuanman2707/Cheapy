@@ -17,21 +17,24 @@ def _assert_not_applicable(report: dict[str, object], key: str) -> None:
     assert report[key] == {"status": "not_applicable"}
 
 
-def _assert_gate_6_instruction_text(text: str) -> None:
+def _assert_gate_8_instruction_text(text: str) -> None:
     for phrase in (
         "clarify ambiguous airports",
         "origin, destination, and departure date",
         "Contract V1 passenger defaults",
         "ambiguous non-default passenger counts",
-        "exact one-way MVP",
-        "expanded, flexible, nearby-airport, split-ticket, and round-trip search is deferred",
-        "do not pass return_date",
+        "exact one-way",
+        "exact round-trip",
+        "expanded flexible-date",
+        "nearby-airport and split-ticket search is deferred",
         "Do not ask the user to choose providers",
         "Use each offer's `provider` field when explaining where a fare came from.",
         "Choose the cheapest result from the returned `offers` list when currencies are comparable.",
         "mixed currency",
     ):
         assert phrase in text
+    assert "round-trip search is deferred" not in text
+    assert "do not pass return_date" not in text
 
 
 def _expected_codex_agents_manual_step(path: Path) -> str:
@@ -76,9 +79,7 @@ def test_codex_hooks_create_skill_and_agents_hook_only(tmp_path: Path) -> None:
 
     skill_text = skill_path.read_text(encoding="utf-8")
     assert "search_cheapest_flights" in skill_text
-    assert "round-trip search is deferred" in skill_text
-    assert "do not pass return_date" in skill_text
-    _assert_gate_6_instruction_text(skill_text)
+    _assert_gate_8_instruction_text(skill_text)
 
     agents_text = agents_path.read_text(encoding="utf-8")
     assert CODEX_BEGIN in agents_text
@@ -122,9 +123,7 @@ def test_claude_hooks_create_instructions_and_claude_hook_only(
 
     instruction_text = claude_instructions_path.read_text(encoding="utf-8")
     assert "search_cheapest_flights" in instruction_text
-    assert "round-trip search is deferred" in instruction_text
-    assert "do not pass return_date" in instruction_text
-    _assert_gate_6_instruction_text(instruction_text)
+    _assert_gate_8_instruction_text(instruction_text)
 
     claude_text = claude_path.read_text(encoding="utf-8")
     assert CLAUDE_BEGIN in claude_text

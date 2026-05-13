@@ -39,7 +39,7 @@ def create_mcp_server() -> FastMCP:
         passengers: Any = Field(default_factory=PassengersV1),
         max_results: Any = 5,
     ) -> SearchResponseV1:
-        """Search exact one-way flights and return Contract V1 results."""
+        """Search one-way or round-trip flights and return Contract V1 results."""
         request = SearchRequestV1.model_validate(
             _request_payload(
                 schema_version=schema_version,

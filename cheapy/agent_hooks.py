@@ -18,7 +18,7 @@ CLAUDE_END = "<!-- END CHEAPY MANAGED CLAUDE INSTRUCTIONS -->"
 
 CODEX_SKILL_HEADER = """---
 name: cheapy-flight-search
-description: Use when searching one-way flights with Cheapy MCP.
+description: Use when searching one-way or round-trip flights with Cheapy MCP.
 ---
 
 # Cheapy Flight Search
@@ -29,7 +29,7 @@ CLAUDE_INSTRUCTIONS_HEADER = """# Cheapy MCP Flight Search
 
 """
 
-INSTRUCTION_BODY = """Use Cheapy only for exact one-way MVP flight searches.
+INSTRUCTION_BODY = """Use Cheapy for one-way and round-trip MVP flight searches.
 
 - Call only `search_cheapest_flights`.
 - Pass `schema_version="1"`.
@@ -37,9 +37,12 @@ INSTRUCTION_BODY = """Use Cheapy only for exact one-way MVP flight searches.
 - Normalize clear origin and destination airports to 3-letter IATA codes.
 - If airport meaning is unclear, clarify ambiguous airports instead of guessing.
 - Normalize dates to ISO `YYYY-MM-DD`.
+- Use `search_mode="exact"` for fixed exact one-way or exact round-trip searches.
+- Use `return_date` for round-trip searches when the user asks for a return.
+- Use `search_mode="expanded"` for expanded flexible-date searches around the requested date.
 - Use Contract V1 passenger defaults when unspecified: `adults=1`, `children=0`, `infants_on_lap=0`, `infants_in_seat=0`.
 - Ask a follow-up for ambiguous non-default passenger counts.
-- expanded, flexible, nearby-airport, split-ticket, and round-trip search is deferred; do not pass return_date.
+- nearby-airport and split-ticket search is deferred.
 - Do not ask the user to choose providers.
 - Use each offer's `provider` field when explaining where a fare came from.
 - Choose the cheapest result from the returned `offers` list when currencies are comparable.
