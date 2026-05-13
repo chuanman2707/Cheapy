@@ -22,11 +22,14 @@ from cheapy.providers.google_fli.normalizer import (
 )
 
 
+EXACT_ROUND_TRIP_CAPABILITY = "exact_round_trip"
+
+
 class GoogleFliProvider:
     """Live provider backed by upstream fli."""
 
     name = PROVIDER_NAME
-    capabilities = (CAPABILITY, "exact_round_trip")
+    capabilities = (CAPABILITY, EXACT_ROUND_TRIP_CAPABILITY)
 
     def __init__(
         self,
@@ -41,10 +44,34 @@ class GoogleFliProvider:
         self,
         request: ProviderExactOneWayRequest,
     ) -> ProviderResult:
+        return await self._search(
+            request,
+            capability=CAPABILITY,
+            search_method_name="search_exact_one_way",
+        )
+
+    async def search_exact_round_trip(
+        self,
+        request: ProviderExactRoundTripRequest,
+    ) -> ProviderResult:
+        return await self._search(
+            request,
+            capability=EXACT_ROUND_TRIP_CAPABILITY,
+            search_method_name="search_exact_round_trip",
+        )
+
+    async def _search(
+        self,
+        request: ProviderExactOneWayRequest | ProviderExactRoundTripRequest,
+        *,
+        capability: str,
+        search_method_name: str,
+    ) -> ProviderResult:
         started = perf_counter()
         try:
+            search_method = getattr(self._adapter, search_method_name)
             flights = await asyncio.wait_for(
-                asyncio.to_thread(self._adapter.search_exact_one_way, request),
+                asyncio.to_thread(search_method, request),
                 timeout=self._timeout_seconds,
             )
             offers, errors = normalize_flights(
@@ -55,32 +82,38 @@ class GoogleFliProvider:
         except TimeoutError:
             return self._failed_result(
                 started,
+                capability,
                 _provider_error(
                     code=ErrorCode.PROVIDER_TIMEOUT,
                     message_en="Google Fli provider timed out.",
                     failure_type="timeout",
                     retryable=True,
+                    capability=capability,
                 ),
             )
         except GoogleFliProviderError as exc:
             return self._failed_result(
                 started,
+                capability,
                 _provider_error(
                     code=exc.error_code,
                     message_en=exc.message_en,
                     failure_type=exc.failure_type,
                     retryable=exc.retryable,
+                    capability=capability,
                     exception_type=exc.exception_type,
                 ),
             )
         except Exception as exc:
             return self._failed_result(
                 started,
+                capability,
                 _provider_error(
                     code=ErrorCode.PROVIDER_FAILED,
                     message_en="Google Fli provider raised an unexpected exception.",
                     failure_type="unexpected_error",
                     retryable=False,
+                    capability=capability,
                     exception_type=type(exc).__name__,
                 ),
             )
@@ -94,7 +127,7 @@ class GoogleFliProvider:
 
         return ProviderResult(
             provider_name=self.name,
-            capability=CAPABILITY,
+            capability=capability,
             status=status,
             offers=offers,
             warnings=[],
@@ -103,42 +136,15 @@ class GoogleFliProvider:
             retryable=any(error.retryable for error in errors),
         )
 
-    async def search_exact_round_trip(
+    def _failed_result(
         self,
-        request: ProviderExactRoundTripRequest,
+        started: float,
+        capability: str,
+        error: ErrorV1,
     ) -> ProviderResult:
-        """Return exact round-trip provider results."""
-        started = perf_counter()
         return ProviderResult(
             provider_name=self.name,
-            capability="exact_round_trip",
-            status=ProviderStatusCode.FAILED,
-            offers=[],
-            warnings=[],
-            errors=[
-                ErrorV1(
-                    code=ErrorCode.PROVIDER_FAILED,
-                    severity=Severity.ERROR,
-                    message_en="Google Fli round-trip provider search is not implemented.",
-                    details={
-                        "provider": PROVIDER_NAME,
-                        "capability": "exact_round_trip",
-                        "origin": request.origin,
-                        "destination": request.destination,
-                        "departure_date": request.departure_date,
-                        "return_date": request.return_date,
-                    },
-                    retryable=False,
-                )
-            ],
-            duration_ms=_duration_ms(started),
-            retryable=False,
-        )
-
-    def _failed_result(self, started: float, error: ErrorV1) -> ProviderResult:
-        return ProviderResult(
-            provider_name=self.name,
-            capability=CAPABILITY,
+            capability=capability,
             status=ProviderStatusCode.FAILED,
             offers=[],
             warnings=[],
@@ -158,11 +164,12 @@ def _provider_error(
     message_en: str,
     failure_type: str,
     retryable: bool,
+    capability: str,
     exception_type: str | None = None,
 ) -> ErrorV1:
     details: dict[str, object] = {
         "provider": PROVIDER_NAME,
-        "capability": CAPABILITY,
+        "capability": capability,
         "failure_type": failure_type,
     }
     if exception_type is not None:

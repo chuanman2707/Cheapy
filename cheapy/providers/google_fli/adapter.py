@@ -5,7 +5,10 @@ from __future__ import annotations
 from typing import Any
 
 from cheapy.models import ErrorCode
-from cheapy.providers.base import ProviderExactOneWayRequest
+from cheapy.providers.base import (
+    ProviderExactOneWayRequest,
+    ProviderExactRoundTripRequest,
+)
 
 
 class GoogleFliProviderError(Exception):
@@ -34,6 +37,18 @@ class GoogleFliAdapter:
     configured_currency: str | None = None
 
     def search_exact_one_way(self, request: ProviderExactOneWayRequest) -> list[object]:
+        return self._search(request)
+
+    def search_exact_round_trip(
+        self,
+        request: ProviderExactRoundTripRequest,
+    ) -> list[object]:
+        return self._search(request)
+
+    def _search(
+        self,
+        request: ProviderExactOneWayRequest | ProviderExactRoundTripRequest,
+    ) -> list[object]:
         try:
             search = _search_class()()
             filters = build_search_filters(request)
@@ -58,8 +73,10 @@ class GoogleFliAdapter:
         return list(results)
 
 
-def build_search_filters(request: ProviderExactOneWayRequest) -> Any:
-    """Build upstream fli search filters for exact one-way search."""
+def build_search_filters(
+    request: ProviderExactOneWayRequest | ProviderExactRoundTripRequest,
+) -> Any:
+    """Build upstream fli search filters for exact search."""
     try:
         from fli.models import (
             Airport,
@@ -81,23 +98,36 @@ def build_search_filters(request: ProviderExactOneWayRequest) -> Any:
 
     origin = _airport(Airport, request.origin)
     destination = _airport(Airport, request.destination)
+    segments = [
+        FlightSegment(
+            departure_airport=[[origin, 0]],
+            arrival_airport=[[destination, 0]],
+            travel_date=request.departure_date,
+        )
+    ]
+    trip_type = TripType.ONE_WAY
+    if isinstance(request, ProviderExactRoundTripRequest):
+        segments.append(
+            FlightSegment(
+                departure_airport=[[destination, 0]],
+                arrival_airport=[[origin, 0]],
+                travel_date=request.return_date,
+            )
+        )
+        trip_type = TripType.ROUND_TRIP
+
     return FlightSearchFilters(
-        trip_type=TripType.ONE_WAY,
+        trip_type=trip_type,
         passenger_info=PassengerInfo(
             adults=request.passengers.adults,
             children=request.passengers.children,
             infants_in_seat=request.passengers.infants_in_seat,
             infants_on_lap=request.passengers.infants_on_lap,
         ),
-        flight_segments=[
-            FlightSegment(
-                departure_airport=[[origin, 0]],
-                arrival_airport=[[destination, 0]],
-                travel_date=request.departure_date,
-            )
-        ],
+        flight_segments=segments,
         seat_type=SeatType.ECONOMY,
         sort_by=SortBy.CHEAPEST,
+        show_all_results=False,
     )
 
 

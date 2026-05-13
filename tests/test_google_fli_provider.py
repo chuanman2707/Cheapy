@@ -8,7 +8,10 @@ from types import SimpleNamespace
 import pytest
 
 from cheapy.models import ErrorCode, ProviderStatusCode
-from cheapy.providers.base import ProviderExactOneWayRequest
+from cheapy.providers.base import (
+    ProviderExactOneWayRequest,
+    ProviderExactRoundTripRequest,
+)
 from cheapy.providers.google_fli.adapter import (
     GoogleFliAdapter,
     GoogleFliProviderError,
@@ -22,6 +25,15 @@ def _request() -> ProviderExactOneWayRequest:
         origin="SGN",
         destination="BKK",
         departure_date="2026-06-11",
+    )
+
+
+def _round_trip_request() -> ProviderExactRoundTripRequest:
+    return ProviderExactRoundTripRequest(
+        origin="SGN",
+        destination="BKK",
+        departure_date="2026-06-11",
+        return_date="2026-06-18",
     )
 
 
@@ -59,9 +71,19 @@ class FakeAdapter:
         self.result = result
         self.configured_currency = configured_currency
         self.seen_request: ProviderExactOneWayRequest | None = None
+        self.seen_round_trip_request: ProviderExactRoundTripRequest | None = None
 
     def search_exact_one_way(self, request: ProviderExactOneWayRequest) -> list[object]:
         self.seen_request = request
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+    def search_exact_round_trip(
+        self,
+        request: ProviderExactRoundTripRequest,
+    ) -> list[object]:
+        self.seen_round_trip_request = request
         if isinstance(self.result, Exception):
             raise self.result
         return self.result
@@ -80,6 +102,21 @@ def test_build_search_filters_maps_contract_request_to_fli_filters() -> None:
     assert filters.flight_segments[0].departure_airport[0][0].name == "SGN"
     assert filters.flight_segments[0].arrival_airport[0][0].name == "BKK"
     assert filters.flight_segments[0].travel_date == "2026-06-11"
+    assert filters.show_all_results is False
+
+
+def test_build_search_filters_maps_round_trip_request_to_fli_filters() -> None:
+    filters = build_search_filters(_round_trip_request())
+
+    assert filters.trip_type.name == "ROUND_TRIP"
+    assert len(filters.flight_segments) == 2
+    assert filters.flight_segments[0].departure_airport[0][0].name == "SGN"
+    assert filters.flight_segments[0].arrival_airport[0][0].name == "BKK"
+    assert filters.flight_segments[0].travel_date == "2026-06-11"
+    assert filters.flight_segments[1].departure_airport[0][0].name == "BKK"
+    assert filters.flight_segments[1].arrival_airport[0][0].name == "SGN"
+    assert filters.flight_segments[1].travel_date == "2026-06-18"
+    assert filters.show_all_results is False
 
 
 def test_build_search_filters_maps_unsupported_airport_to_structured_error() -> None:
@@ -150,6 +187,18 @@ def test_google_fli_provider_returns_success_result() -> None:
     assert result.errors == []
     assert [offer.provider for offer in result.offers] == ["google_fli"]
     assert result.duration_ms >= 0
+
+
+def test_google_fli_provider_returns_round_trip_success_result() -> None:
+    adapter = FakeAdapter([_flight()])
+    provider = GoogleFliProvider(adapter=adapter, timeout_seconds=1)
+
+    result = asyncio.run(provider.search_exact_round_trip(_round_trip_request()))
+
+    assert adapter.seen_round_trip_request == _round_trip_request()
+    assert result.provider_name == "google_fli"
+    assert result.capability == "exact_round_trip"
+    assert result.status == ProviderStatusCode.SUCCESS
 
 
 def test_google_fli_provider_treats_empty_results_as_success() -> None:
