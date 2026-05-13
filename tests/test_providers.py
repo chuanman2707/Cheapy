@@ -14,7 +14,11 @@ from cheapy.models import (
     Severity,
 )
 from cheapy.providers.manual_fixture.provider import create_provider
-from cheapy.providers.base import ProviderExactOneWayRequest, ProviderResult
+from cheapy.providers.base import (
+    ProviderExactOneWayRequest,
+    ProviderExactRoundTripRequest,
+    ProviderResult,
+)
 from cheapy.providers import registry
 from cheapy.providers.registry import (
     ProviderManifest,
@@ -43,6 +47,61 @@ def test_provider_exact_one_way_request_defaults_to_one_adult() -> None:
     assert request.destination == "SGN"
     assert request.departure_date == "2026-07-10"
     assert request.passengers == PassengersV1()
+
+
+def test_provider_exact_one_way_request_defaults_requested_fields() -> None:
+    request = ProviderExactOneWayRequest(
+        origin="SGN",
+        destination="BKK",
+        departure_date="2026-07-11",
+    )
+
+    assert request.requested_origin == "SGN"
+    assert request.requested_destination == "BKK"
+    assert request.requested_departure_date == "2026-07-11"
+
+
+def test_provider_exact_one_way_request_accepts_flexible_actual_date() -> None:
+    request = ProviderExactOneWayRequest(
+        origin="SGN",
+        destination="BKK",
+        departure_date="2026-07-12",
+        requested_origin="SGN",
+        requested_destination="BKK",
+        requested_departure_date="2026-07-10",
+    )
+
+    assert request.departure_date == "2026-07-12"
+    assert request.requested_departure_date == "2026-07-10"
+
+
+def test_provider_exact_round_trip_request_defaults_requested_fields() -> None:
+    request = ProviderExactRoundTripRequest(
+        origin="SGN",
+        destination="BKK",
+        departure_date="2026-07-10",
+        return_date="2026-07-17",
+    )
+
+    assert request.origin == "SGN"
+    assert request.destination == "BKK"
+    assert request.departure_date == "2026-07-10"
+    assert request.return_date == "2026-07-17"
+    assert request.requested_origin == "SGN"
+    assert request.requested_destination == "BKK"
+    assert request.requested_departure_date == "2026-07-10"
+    assert request.requested_return_date == "2026-07-17"
+    assert request.passengers == PassengersV1()
+
+
+def test_provider_exact_round_trip_request_rejects_return_before_departure() -> None:
+    with pytest.raises(ValidationError, match="return_date must not be earlier"):
+        ProviderExactRoundTripRequest(
+            origin="SGN",
+            destination="BKK",
+            departure_date="2026-07-10",
+            return_date="2026-07-09",
+        )
 
 
 def test_provider_exact_one_way_request_rejects_non_iso_date_shape() -> None:
@@ -138,7 +197,7 @@ def test_google_fli_manifest_is_discovered_from_package_resources() -> None:
         default_enabled=True,
         provider_kind="live",
         module="cheapy.providers.google_fli.provider",
-        capabilities=["exact_one_way"],
+        capabilities=["exact_one_way", "exact_round_trip"],
     )
 
 
@@ -362,7 +421,7 @@ def test_load_enabled_providers_loads_all_default_enabled_providers() -> None:
 
     assert [provider.name for provider in providers] == ["google_fli", "manual_fixture"]
     assert [provider.capabilities for provider in providers] == [
-        ("exact_one_way",),
+        ("exact_one_way", "exact_round_trip"),
         ("exact_one_way",),
     ]
 
@@ -371,7 +430,7 @@ def test_load_search_providers_excludes_fixture_providers() -> None:
     providers = registry.load_search_providers()
 
     assert [provider.name for provider in providers] == ["google_fli"]
-    assert providers[0].capabilities == ("exact_one_way",)
+    assert providers[0].capabilities == ("exact_one_way", "exact_round_trip")
     assert all(provider.name != "manual_fixture" for provider in providers)
 
 

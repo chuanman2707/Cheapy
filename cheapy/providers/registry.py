@@ -90,14 +90,18 @@ def _validate_provider_shape(
 ) -> FlightProvider:
     name = getattr(provider, "name", None)
     capabilities = getattr(provider, "capabilities", None)
-    search_exact_one_way = getattr(provider, "search_exact_one_way", None)
 
-    if (
-        not isinstance(name, str)
-        or not isinstance(capabilities, tuple)
-        or not callable(search_exact_one_way)
-    ):
+    if not isinstance(name, str) or not isinstance(capabilities, tuple):
         raise ProviderLoadError(_provider_load_error_message(manifest))
+
+    required_methods = {
+        "exact_one_way": "search_exact_one_way",
+        "exact_round_trip": "search_exact_round_trip",
+    }
+    for capability in manifest.capabilities:
+        method_name = required_methods.get(capability)
+        if method_name is not None and not callable(getattr(provider, method_name, None)):
+            raise ProviderLoadError(_provider_load_error_message(manifest))
 
     return cast(FlightProvider, provider)
 

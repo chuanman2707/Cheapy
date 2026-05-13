@@ -4,4 +4,4 @@ display_name = "Google Fli live provider"
 default_enabled = true
 provider_kind = "live"
 module = "cheapy.providers.google_fli.provider"
-capabilities = ["exact_one_way"]
+capabilities = ["exact_one_way", "exact_round_trip"]

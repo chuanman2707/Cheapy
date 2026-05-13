@@ -194,6 +194,16 @@ class SearchRequestV1(StrictModel):
     def validate_search_mode(cls, value: Any) -> Any:
         return _coerce_str_enum(SearchMode, value)
 
+    @model_validator(mode="after")
+    def validate_return_date_order(self) -> Self:
+        if self.return_date is None:
+            return self
+        departure = datetime.strptime(self.departure_date, "%Y-%m-%d")
+        return_date = datetime.strptime(self.return_date, "%Y-%m-%d")
+        if return_date < departure:
+            raise ValueError("return_date must not be earlier than departure_date")
+        return self
+
 
 class WarningV1(StrictModel):
     """Machine-readable warning."""

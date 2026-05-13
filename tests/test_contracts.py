@@ -71,6 +71,29 @@ def test_search_request_rejects_non_iso_dates() -> None:
         )
 
 
+def test_search_request_rejects_return_date_before_departure_date() -> None:
+    with pytest.raises(ValidationError, match="return_date must not be earlier"):
+        SearchRequestV1(
+            schema_version="1",
+            origin="SGN",
+            destination="BKK",
+            departure_date="2026-07-10",
+            return_date="2026-07-09",
+        )
+
+
+def test_search_request_accepts_same_day_round_trip() -> None:
+    request = SearchRequestV1(
+        schema_version="1",
+        origin="SGN",
+        destination="BKK",
+        departure_date="2026-07-10",
+        return_date="2026-07-10",
+    )
+
+    assert request.return_date == "2026-07-10"
+
+
 def test_search_plan_accepts_candidate_family_strings_from_parsed_dict() -> None:
     plan = SearchPlanV1.model_validate(
         {

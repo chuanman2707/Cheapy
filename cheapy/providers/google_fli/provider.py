@@ -6,7 +6,11 @@ import asyncio
 from time import perf_counter
 
 from cheapy.models import ErrorCode, ErrorV1, ProviderStatusCode, Severity
-from cheapy.providers.base import ProviderExactOneWayRequest, ProviderResult
+from cheapy.providers.base import (
+    ProviderExactOneWayRequest,
+    ProviderExactRoundTripRequest,
+    ProviderResult,
+)
 from cheapy.providers.google_fli.adapter import (
     GoogleFliAdapter,
     GoogleFliProviderError,
@@ -22,7 +26,7 @@ class GoogleFliProvider:
     """Live provider backed by upstream fli."""
 
     name = PROVIDER_NAME
-    capabilities = (CAPABILITY,)
+    capabilities = (CAPABILITY, "exact_round_trip")
 
     def __init__(
         self,
@@ -97,6 +101,38 @@ class GoogleFliProvider:
             errors=errors,
             duration_ms=_duration_ms(started),
             retryable=any(error.retryable for error in errors),
+        )
+
+    async def search_exact_round_trip(
+        self,
+        request: ProviderExactRoundTripRequest,
+    ) -> ProviderResult:
+        """Return exact round-trip provider results."""
+        started = perf_counter()
+        return ProviderResult(
+            provider_name=self.name,
+            capability="exact_round_trip",
+            status=ProviderStatusCode.FAILED,
+            offers=[],
+            warnings=[],
+            errors=[
+                ErrorV1(
+                    code=ErrorCode.PROVIDER_FAILED,
+                    severity=Severity.ERROR,
+                    message_en="Google Fli round-trip provider search is not implemented.",
+                    details={
+                        "provider": PROVIDER_NAME,
+                        "capability": "exact_round_trip",
+                        "origin": request.origin,
+                        "destination": request.destination,
+                        "departure_date": request.departure_date,
+                        "return_date": request.return_date,
+                    },
+                    retryable=False,
+                )
+            ],
+            duration_ms=_duration_ms(started),
+            retryable=False,
         )
 
     def _failed_result(self, started: float, error: ErrorV1) -> ProviderResult:
