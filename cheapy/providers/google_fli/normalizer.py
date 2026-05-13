@@ -115,6 +115,11 @@ def _normalize_flight(
             )
         if not part_legs:
             part_legs = [_normalize_part_legs(part) for part in parts]
+            _validate_non_composite_round_trip_chains(
+                request,
+                part_legs,
+                is_composite=is_composite,
+            )
         legs = [leg for legs_for_part in part_legs for leg in legs_for_part]
         if not legs:
             raise ValueError("flight has no legs")
@@ -241,6 +246,36 @@ def _validate_composite_round_trip_chains(
         raise ValueError("round-trip return part does not match request")
 
 
+def _validate_non_composite_round_trip_chains(
+    request: ProviderRequest,
+    part_legs: list[list[FlightLegV1]],
+    *,
+    is_composite: bool,
+) -> None:
+    if not isinstance(request, ProviderExactRoundTripRequest) or is_composite:
+        return
+    legs = [leg for legs_for_part in part_legs for leg in legs_for_part]
+    outbound_end_index = _chain_end_index(
+        legs,
+        start=request.origin,
+        end=request.destination,
+        start_index=0,
+    )
+    if outbound_end_index is None:
+        raise ValueError("round-trip outbound legs do not match request")
+    return_start_index = outbound_end_index + 1
+    return_end_index = _chain_end_index(
+        legs,
+        start=request.destination,
+        end=request.origin,
+        start_index=return_start_index,
+    )
+    if return_end_index is None:
+        raise ValueError("round-trip return legs do not match request")
+    if return_end_index != len(legs) - 1:
+        raise ValueError("round-trip result has unexpected trailing legs")
+
+
 def _pricing_part(parts: list[object]) -> object:
     if len(parts) > 1:
         return parts[-1]
@@ -293,6 +328,28 @@ def _first_chain_departure_date(
             current_destination = next_leg.destination
             if current_destination == end:
                 return first_leg.departure_time[:10]
+    return None
+
+
+def _chain_end_index(
+    legs: list[FlightLegV1],
+    *,
+    start: str,
+    end: str,
+    start_index: int,
+) -> int | None:
+    if start_index >= len(legs) or legs[start_index].origin != start:
+        return None
+    current_destination = legs[start_index].destination
+    if current_destination == end:
+        return start_index
+    for index in range(start_index + 1, len(legs)):
+        leg = legs[index]
+        if leg.origin != current_destination:
+            return None
+        current_destination = leg.destination
+        if current_destination == end:
+            return index
     return None
 
 

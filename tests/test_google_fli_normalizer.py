@@ -242,7 +242,7 @@ def test_normalize_flights_rejects_round_trip_return_leg_with_wrong_destination(
 
 
 def test_normalize_flights_round_trip_actual_airports_remain_requested() -> None:
-    outbound = _leg(origin="CXR", destination="DMK")
+    outbound = _leg()
     inbound = _return_leg()
 
     offers, errors = normalize_flights(
@@ -256,7 +256,7 @@ def test_normalize_flights_round_trip_actual_airports_remain_requested() -> None
     assert offers[0].actual_origin == "SGN"
     assert offers[0].actual_destination == "BKK"
     assert [(leg.origin, leg.destination) for leg in offers[0].legs] == [
-        ("CXR", "DMK"),
+        ("SGN", "BKK"),
         ("BKK", "SGN"),
     ]
 
@@ -318,6 +318,31 @@ def test_normalize_flights_rejects_round_trip_tuple_without_return_leg() -> None
 
 def test_normalize_flights_rejects_round_trip_single_flight_without_return_leg() -> None:
     offers, errors = normalize_flights([_flight(legs=[_leg()])], _round_trip_request())
+
+    assert offers == []
+    assert len(errors) == 1
+    assert errors[0].details["capability"] == "exact_round_trip"
+    assert errors[0].details["failure_type"] == "parse_error"
+
+
+def test_normalize_flights_rejects_round_trip_single_flight_with_return_leg_only() -> None:
+    offers, errors = normalize_flights(
+        [_flight(legs=[_return_leg()])],
+        _round_trip_request(),
+    )
+
+    assert offers == []
+    assert len(errors) == 1
+    assert errors[0].details["capability"] == "exact_round_trip"
+    assert errors[0].details["failure_type"] == "parse_error"
+    assert "VJ802" not in errors[0].model_dump_json()
+
+
+def test_normalize_flights_rejects_round_trip_single_flight_with_return_before_outbound() -> None:
+    offers, errors = normalize_flights(
+        [_flight(legs=[_return_leg(), _leg()], duration=180)],
+        _round_trip_request(),
+    )
 
     assert offers == []
     assert len(errors) == 1
