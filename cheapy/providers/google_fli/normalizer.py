@@ -97,7 +97,8 @@ def _normalize_flight(
         parts = _flight_parts(flight)
         if not parts:
             raise ValueError("flight tuple has no parts")
-        currency = _currency(parts[0], configured_currency=configured_currency)
+        pricing_part = _pricing_part(parts)
+        currency = _currency(pricing_part, configured_currency=configured_currency)
         if currency is None:
             raise _ItemNormalizationError(
                 _currency_unavailable_error(item_index, request)
@@ -110,7 +111,8 @@ def _normalize_flight(
         if not legs:
             raise ValueError("flight has no legs")
         first_leg = legs[0]
-        price_amount = float(_attr(parts[0], "price"))
+        last_leg = legs[-1]
+        price_amount = float(_attr(pricing_part, "price"))
         duration = sum(int(_attr(part, "duration")) for part in parts)
         stops = sum(int(_attr(part, "stops")) for part in parts)
         actual_departure_date = first_leg.departure_time[:10]
@@ -118,9 +120,13 @@ def _normalize_flight(
         if (
             isinstance(request, ProviderExactRoundTripRequest)
             and actual_return_date is None
-            and isinstance(flight, tuple)
         ):
             raise ValueError("round-trip result has no return leg")
+        actual_destination = (
+            request.destination
+            if isinstance(request, ProviderExactRoundTripRequest)
+            else last_leg.destination
+        )
         departure_offset_days = _date_offset(
             actual_departure_date, request.requested_departure_date
         )
@@ -149,7 +155,7 @@ def _normalize_flight(
             requested_origin=request.origin,
             requested_destination=request.destination,
             actual_origin=first_leg.origin,
-            actual_destination=request.destination,
+            actual_destination=actual_destination,
             nearby_origin_distance_km=None,
             nearby_destination_distance_km=None,
             requested_departure_date=request.requested_departure_date,
@@ -181,6 +187,12 @@ def _flight_parts(flight: object) -> list[object]:
     if isinstance(flight, tuple):
         return list(flight)
     return [flight]
+
+
+def _pricing_part(parts: list[object]) -> object:
+    if len(parts) > 1:
+        return parts[-1]
+    return parts[0]
 
 
 def _date_offset(actual: str, requested: str) -> int:

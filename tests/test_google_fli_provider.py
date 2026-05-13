@@ -49,13 +49,32 @@ def _leg() -> SimpleNamespace:
     )
 
 
-def _flight(currency: str | None = "USD") -> SimpleNamespace:
+def _return_leg() -> SimpleNamespace:
     return SimpleNamespace(
-        price=88.5,
-        currency=currency,
+        airline=SimpleNamespace(value="VJ"),
+        flight_number="VJ802",
+        departure_airport=SimpleNamespace(value="BKK"),
+        arrival_airport=SimpleNamespace(value="SGN"),
+        departure_datetime=datetime(2026, 6, 18, 11, 15),
+        arrival_datetime=datetime(2026, 6, 18, 12, 45),
         duration=90,
-        stops=0,
-        legs=[_leg()],
+    )
+
+
+def _flight(
+    *,
+    price: float = 88.5,
+    currency: str | None = "USD",
+    duration: int = 90,
+    stops: int = 0,
+    legs: list[SimpleNamespace] | None = None,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        price=price,
+        currency=currency,
+        duration=duration,
+        stops=stops,
+        legs=legs if legs is not None else [_leg()],
     )
 
 
@@ -190,7 +209,14 @@ def test_google_fli_provider_returns_success_result() -> None:
 
 
 def test_google_fli_provider_returns_round_trip_success_result() -> None:
-    adapter = FakeAdapter([_flight()])
+    adapter = FakeAdapter(
+        [
+            (
+                _flight(),
+                _flight(legs=[_return_leg()], price=250, currency="EUR"),
+            )
+        ]
+    )
     provider = GoogleFliProvider(adapter=adapter, timeout_seconds=1)
 
     result = asyncio.run(provider.search_exact_round_trip(_round_trip_request()))
@@ -199,6 +225,8 @@ def test_google_fli_provider_returns_round_trip_success_result() -> None:
     assert result.provider_name == "google_fli"
     assert result.capability == "exact_round_trip"
     assert result.status == ProviderStatusCode.SUCCESS
+    assert result.errors == []
+    assert result.offers[0].actual_return_date == "2026-06-18"
 
 
 def test_google_fli_provider_treats_empty_results_as_success() -> None:

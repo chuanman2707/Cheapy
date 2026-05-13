@@ -142,7 +142,7 @@ def test_normalize_flights_maps_round_trip_dates_and_flags() -> None:
 
 def test_normalize_flights_maps_round_trip_tuple_result() -> None:
     outbound = _flight(legs=[_leg()], duration=90)
-    inbound = _flight(legs=[_return_leg()], duration=90, currency=None)
+    inbound = _flight(legs=[_return_leg()], duration=90, price=250, currency="EUR")
 
     offers, errors = normalize_flights([(outbound, inbound)], _round_trip_request())
 
@@ -152,8 +152,21 @@ def test_normalize_flights_maps_round_trip_tuple_result() -> None:
         ("SGN", "BKK"),
         ("BKK", "SGN"),
     ]
-    assert offers[0].currency == "USD"
+    assert offers[0].price_amount == 250
+    assert offers[0].currency == "EUR"
     assert offers[0].actual_return_date == "2026-06-19"
+
+
+def test_normalize_flights_preserves_one_way_actual_destination_from_last_leg() -> None:
+    offers, errors = normalize_flights(
+        [_flight(legs=[_leg(destination="DMK")])],
+        _request(),
+    )
+
+    assert errors == []
+    assert len(offers) == 1
+    assert offers[0].requested_destination == "BKK"
+    assert offers[0].actual_destination == "DMK"
 
 
 def test_normalize_flights_returns_parse_error_for_empty_round_trip_tuple() -> None:
@@ -171,6 +184,15 @@ def test_normalize_flights_rejects_round_trip_tuple_without_return_leg() -> None
     outbound = _flight(legs=[_leg()], duration=90)
 
     offers, errors = normalize_flights([(outbound,)], _round_trip_request())
+
+    assert offers == []
+    assert len(errors) == 1
+    assert errors[0].details["capability"] == "exact_round_trip"
+    assert errors[0].details["failure_type"] == "parse_error"
+
+
+def test_normalize_flights_rejects_round_trip_single_flight_without_return_leg() -> None:
+    offers, errors = normalize_flights([_flight(legs=[_leg()])], _round_trip_request())
 
     assert offers == []
     assert len(errors) == 1
