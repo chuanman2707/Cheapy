@@ -112,6 +112,56 @@ class _ProviderFromResult:
         assert request.departure_date == "2026-07-10"
         return self._result
 
+    async def search_exact_round_trip(
+        self,
+        request: ProviderExactRoundTripRequest,
+    ) -> ProviderResult:
+        raise AssertionError("one-way provider must not receive round-trip calls")
+
+
+class _RecordingOneWayProvider:
+    name = "recording_one_way"
+    capabilities = ("exact_one_way",)
+
+    def __init__(self) -> None:
+        self.seen_requests: list[ProviderExactOneWayRequest] = []
+
+    async def search_exact_one_way(
+        self,
+        request: ProviderExactOneWayRequest,
+    ) -> ProviderResult:
+        self.seen_requests.append(request)
+        return ProviderResult(
+            provider_name=self.name,
+            capability="exact_one_way",
+            status=ProviderStatusCode.SUCCESS,
+            offers=[
+                _offer(
+                    offer_id=f"one:{request.departure_date}",
+                    provider=self.name,
+                    currency="USD",
+                    price_amount=100.0 + len(self.seen_requests),
+                    requested_departure_date=request.requested_departure_date,
+                    actual_departure_date=request.departure_date,
+                    departure_offset_days=(
+                        0
+                        if request.departure_date == request.requested_departure_date
+                        else 1
+                    ),
+                )
+            ],
+            warnings=[],
+            errors=[],
+            duration_ms=1,
+            retryable=False,
+        )
+
+    async def search_exact_round_trip(
+        self,
+        request: ProviderExactRoundTripRequest,
+    ) -> ProviderResult:
+        raise AssertionError("one-way provider must not receive round-trip calls")
+
 
 class _RoundTripProvider:
     name = "round_provider"
@@ -253,6 +303,89 @@ def test_search_exact_round_trip_requires_round_trip_provider(
     assert response.errors[0].details["reason"] == "no_exact_round_trip_provider"
     assert response.search_plan.planned_candidate_count == 1
     assert response.search_plan.executed_provider_call_count == 0
+
+
+def test_search_expanded_one_way_executes_flexible_dates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _RecordingOneWayProvider()
+    monkeypatch.setattr("cheapy.search.load_search_providers", lambda: [provider])
+
+    response = search_exact(_request(search_mode=SearchMode.EXPANDED))
+
+    assert [request.departure_date for request in provider.seen_requests] == [
+        "2026-07-10",
+        "2026-07-09",
+        "2026-07-11",
+        "2026-07-08",
+        "2026-07-12",
+        "2026-07-07",
+        "2026-07-13",
+    ]
+    assert response.search_plan.search_mode == SearchMode.EXPANDED
+    assert response.search_plan.candidate_families == [
+        CandidateFamily.EXACT,
+        CandidateFamily.FLEXIBLE_DATES,
+    ]
+    assert response.search_plan.truncated is False
+    assert any(
+        warning.code == WarningCode.FLEXIBLE_DATE_USED
+        for warning in response.warnings
+    )
+
+
+def test_search_expanded_round_trip_truncates_to_gate_8_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _RoundTripProvider()
+    monkeypatch.setattr("cheapy.search.load_search_providers", lambda: [provider])
+
+    response = search_exact(
+        _request(search_mode=SearchMode.EXPANDED, return_date="2026-07-17")
+    )
+
+    assert len(provider.seen_requests) == 10
+    assert response.search_plan.planned_candidate_count == 49
+    assert response.search_plan.executed_provider_call_count == 10
+    assert response.search_plan.truncated is True
+    assert response.search_plan.truncated_families == [CandidateFamily.FLEXIBLE_DATES]
+    assert any(
+        warning.code == WarningCode.CANDIDATE_FAMILY_TRUNCATED
+        for warning in response.warnings
+    )
+
+
+def test_search_deduplicates_same_provider_itineraries_before_max_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    duplicate = _offer(
+        offer_id="dup:expensive",
+        provider="dup_provider",
+        currency="USD",
+        price_amount=200.0,
+    )
+    cheaper_duplicate = duplicate.model_copy(
+        update={"offer_id": "dup:cheap", "price_amount": 100.0}
+    )
+    result = ProviderResult(
+        provider_name="dup_provider",
+        capability="exact_one_way",
+        status=ProviderStatusCode.SUCCESS,
+        offers=[duplicate, cheaper_duplicate],
+        warnings=[],
+        errors=[],
+        duration_ms=1,
+        retryable=False,
+    )
+    monkeypatch.setattr(
+        "cheapy.search.load_search_providers",
+        lambda: [_ProviderFromResult(result)],
+    )
+
+    response = search_exact(_request(max_results=1))
+
+    assert [offer.offer_id for offer in response.offers] == ["dup:cheap"]
+    assert response.offers[0].global_rank == 1
 
 
 def test_search_exact_respects_max_results_and_uses_resolved_iata(

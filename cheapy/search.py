@@ -20,6 +20,8 @@ from cheapy.models import (
     SearchResponseV1,
     SearchStatus,
     Severity,
+    WarningCode,
+    WarningV1,
 )
 from cheapy.providers.base import (
     FlightProvider,
@@ -47,11 +49,11 @@ _MIXED_CURRENCY_NOTE = (
 
 
 def search_exact(request: SearchRequestV1) -> SearchResponseV1:
-    """Run Gate 4 exact one-way search and return a Contract V1 response.
+    """Run planner-backed one-way or round-trip search and return Contract V1.
 
-    This Gate 4 API is intentionally sync-only. It crosses into provider async
+    This API is intentionally sync-only. It crosses into provider async
     code with ``asyncio.run()``, so callers must invoke it outside an active
-    event loop; future async hosts should dispatch it from a worker thread.
+    event loop. Future async hosts should dispatch it from a worker thread.
     """
     fallback_origin = _normalize_airport_value(request.origin)
     fallback_destination = _normalize_airport_value(request.destination)
@@ -310,9 +312,15 @@ def _response_from_provider_results(
     provider_results: list[ProviderResult],
     search_plan: SearchPlanV1,
 ) -> SearchResponseV1:
-    offers = [offer for result in provider_results for offer in result.offers]
+    offers = _deduplicate_offers(
+        [offer for result in provider_results for offer in result.offers]
+    )
     returned_offers = _rank_offers(_sort_offers(offers)[: request.max_results])
-    warnings = [warning for result in provider_results for warning in result.warnings]
+    warnings = _response_warnings(
+        provider_results=provider_results,
+        returned_offers=returned_offers,
+        search_plan=search_plan,
+    )
     errors = [error for result in provider_results for error in result.errors]
     mixed_currency = len({offer.currency for offer in returned_offers}) > 1
 
@@ -332,6 +340,36 @@ def _response_from_provider_results(
         currency_notes=[_MIXED_CURRENCY_NOTE] if mixed_currency else [],
         candidates=None,
     )
+
+
+def _response_warnings(
+    *,
+    provider_results: list[ProviderResult],
+    returned_offers: list[FlightOfferV1],
+    search_plan: SearchPlanV1,
+) -> list[WarningV1]:
+    warnings = [warning for result in provider_results for warning in result.warnings]
+    if any(
+        offer.departure_offset_days != 0
+        or (offer.return_offset_days is not None and offer.return_offset_days != 0)
+        for offer in returned_offers
+    ):
+        warnings.append(
+            _warning(
+                code=WarningCode.FLEXIBLE_DATE_USED,
+                message_en="Returned offers include dates outside the exact requested dates.",
+                details={"candidate_family": CandidateFamily.FLEXIBLE_DATES.value},
+            )
+        )
+    for family in search_plan.truncated_families:
+        warnings.append(
+            _warning(
+                code=WarningCode.CANDIDATE_FAMILY_TRUNCATED,
+                message_en="Some search candidates were skipped because of the provider-call budget.",
+                details={"candidate_family": family.value},
+            )
+        )
+    return warnings
 
 
 def _failed_response(
@@ -390,6 +428,46 @@ def _response_status(
     if offers:
         return SearchStatus.SUCCESS
     return SearchStatus.FAILED
+
+
+def _deduplicate_offers(offers: list[FlightOfferV1]) -> list[FlightOfferV1]:
+    by_signature: dict[tuple[object, ...], FlightOfferV1] = {}
+    ordered_signatures: list[tuple[object, ...]] = []
+    for offer in offers:
+        signature = _same_provider_itinerary_signature(offer)
+        current = by_signature.get(signature)
+        if current is None:
+            by_signature[signature] = offer
+            ordered_signatures.append(signature)
+        elif (offer.price_amount, offer.offer_id) < (
+            current.price_amount,
+            current.offer_id,
+        ):
+            by_signature[signature] = offer
+    return [by_signature[signature] for signature in ordered_signatures]
+
+
+def _same_provider_itinerary_signature(offer: FlightOfferV1) -> tuple[object, ...]:
+    return (
+        offer.provider,
+        offer.actual_origin,
+        offer.actual_destination,
+        offer.actual_departure_date,
+        offer.actual_return_date,
+        offer.currency,
+        offer.fare_details_status,
+        tuple(
+            (
+                leg.origin,
+                leg.destination,
+                leg.departure_time,
+                leg.arrival_time,
+                leg.airline_code,
+                leg.flight_number,
+            )
+            for leg in offer.legs
+        ),
+    )
 
 
 def _sort_offers(offers: list[FlightOfferV1]) -> list[FlightOfferV1]:
@@ -466,6 +544,21 @@ def _error(
     )
 
 
+def _warning(
+    *,
+    code: WarningCode,
+    message_en: str,
+    details: dict[str, object],
+) -> WarningV1:
+    return WarningV1(
+        code=code,
+        severity=Severity.WARNING,
+        message_en=message_en,
+        details=details,
+        retryable=False,
+    )
+
+
 def _empty_plan(search_mode: SearchMode) -> SearchPlanV1:
     return SearchPlanV1(
         search_mode=search_mode,
@@ -490,25 +583,6 @@ def _planned_unexecuted_exact_plan(search_mode: SearchMode) -> SearchPlanV1:
         executed_provider_call_count=0,
         candidate_count_by_family={CandidateFamily.EXACT: 1},
         provider_call_count_by_family={CandidateFamily.EXACT: 0},
-        truncated=False,
-        truncated_families=[],
-        candidate_families=[CandidateFamily.EXACT],
-    )
-
-
-def _executed_exact_plan(
-    search_mode: SearchMode,
-    *,
-    provider_call_count: int,
-) -> SearchPlanV1:
-    return SearchPlanV1(
-        search_mode=search_mode,
-        planned_candidate_count=1,
-        executed_candidate_count=1,
-        planned_provider_call_count=provider_call_count,
-        executed_provider_call_count=provider_call_count,
-        candidate_count_by_family={CandidateFamily.EXACT: 1},
-        provider_call_count_by_family={CandidateFamily.EXACT: provider_call_count},
         truncated=False,
         truncated_families=[],
         candidate_families=[CandidateFamily.EXACT],
