@@ -97,13 +97,6 @@ def _normalize_flight(
     currency = _currency(parts[0], configured_currency=configured_currency)
     if currency is None:
         raise _ItemNormalizationError(_currency_unavailable_error(item_index))
-    if any(
-        _currency(part, configured_currency=configured_currency) != currency
-        for part in parts[1:]
-    ):
-        raise _ItemNormalizationError(
-            _parse_error(item_index, ValueError("flight parts use different currencies"))
-        )
 
     try:
         legs = [

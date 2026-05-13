@@ -142,7 +142,7 @@ def test_normalize_flights_maps_round_trip_dates_and_flags() -> None:
 
 def test_normalize_flights_maps_round_trip_tuple_result() -> None:
     outbound = _flight(legs=[_leg()], duration=90)
-    inbound = _flight(legs=[_return_leg()], duration=90)
+    inbound = _flight(legs=[_return_leg()], duration=90, currency=None)
 
     offers, errors = normalize_flights([(outbound, inbound)], _round_trip_request())
 
@@ -152,6 +152,7 @@ def test_normalize_flights_maps_round_trip_tuple_result() -> None:
         ("SGN", "BKK"),
         ("BKK", "SGN"),
     ]
+    assert offers[0].currency == "USD"
     assert offers[0].actual_return_date == "2026-06-19"
 
 
