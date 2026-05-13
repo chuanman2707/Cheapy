@@ -53,6 +53,7 @@ class PlannedProviderCall:
 @dataclass(frozen=True)
 class PlannedSearch:
     search_plan: SearchPlanV1
+    planned_candidates: list[SearchCandidate]
     candidates: tuple[SearchCandidate, ...]
     planned_calls: tuple[PlannedProviderCall, ...]
     selected_calls: tuple[PlannedProviderCall, ...]
@@ -72,6 +73,7 @@ def plan_search(
     search_plan = _build_search_plan(request, candidates, planned_calls, selected_calls)
     return PlannedSearch(
         search_plan=search_plan,
+        planned_candidates=list(candidates),
         candidates=candidates,
         planned_calls=planned_calls,
         selected_calls=selected_calls,
@@ -178,7 +180,6 @@ def _round_trip_expanded_offset_pairs() -> tuple[tuple[int, int], ...]:
             ),
             key=lambda pair: (
                 abs(pair[0]) + abs(pair[1]),
-                _round_trip_axis_rank(pair),
                 abs(pair[0]),
                 abs(pair[1]),
                 pair[0],
@@ -186,19 +187,6 @@ def _round_trip_expanded_offset_pairs() -> tuple[tuple[int, int], ...]:
             ),
         )
     )
-
-
-def _round_trip_axis_rank(pair: tuple[int, int]) -> int:
-    departure_offset, return_offset = pair
-    if departure_offset < 0 and return_offset == 0:
-        return 0
-    if departure_offset == 0 and return_offset < 0:
-        return 1
-    if departure_offset == 0 and return_offset > 0:
-        return 2
-    if departure_offset > 0 and return_offset == 0:
-        return 3
-    return 4
 
 
 def _planned_calls(

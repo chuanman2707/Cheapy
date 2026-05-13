@@ -75,9 +75,9 @@ def test_plan_expanded_round_trip_uses_true_round_trip_capability() -> None:
 
     assert selected[:5] == [
         (0, 0, "exact_round_trip"),
-        (-1, 0, "exact_round_trip"),
         (0, -1, "exact_round_trip"),
         (0, 1, "exact_round_trip"),
+        (-1, 0, "exact_round_trip"),
         (1, 0, "exact_round_trip"),
     ]
     assert len(planned.selected_calls) == GATE_8_PROVIDER_CALL_BUDGET
@@ -100,9 +100,9 @@ def test_plan_skips_invalid_round_trip_flexible_pairs() -> None:
     )
 
     assert all(
-        call.candidate.return_date is None
-        or call.candidate.return_date >= call.candidate.departure_date
-        for call in planned.selected_calls
+        candidate.return_date is None
+        or candidate.return_date >= candidate.departure_date
+        for candidate in planned.planned_candidates
     )
     assert planned.search_plan.planned_candidate_count < 49
 
