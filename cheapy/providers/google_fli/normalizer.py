@@ -97,18 +97,25 @@ def _normalize_flight(
         parts, is_composite = _flight_parts(flight)
         if not parts:
             raise ValueError("flight tuple has no parts")
-        _validate_round_trip_shape(request, parts, is_composite=is_composite)
+        _validate_round_trip_part_count(request, parts, is_composite=is_composite)
+        if is_composite:
+            part_legs = [_normalize_part_legs(part) for part in parts]
+            _validate_composite_round_trip_chains(
+                request,
+                part_legs,
+                is_composite=is_composite,
+            )
+        else:
+            part_legs = []
         pricing_part = _pricing_part(parts)
         currency = _currency(pricing_part, configured_currency=configured_currency)
         if currency is None:
             raise _ItemNormalizationError(
                 _currency_unavailable_error(item_index, request)
             )
-        legs = [
-            leg
-            for part in parts
-            for leg in [_normalize_leg(raw_leg) for raw_leg in _attr(part, "legs")]
-        ]
+        if not part_legs:
+            part_legs = [_normalize_part_legs(part) for part in parts]
+        legs = [leg for legs_for_part in part_legs for leg in legs_for_part]
         if not legs:
             raise ValueError("flight has no legs")
         first_leg = legs[0]
@@ -117,7 +124,11 @@ def _normalize_flight(
         duration = sum(int(_attr(part, "duration")) for part in parts)
         stops = sum(int(_attr(part, "stops")) for part in parts)
         actual_departure_date = first_leg.departure_time[:10]
-        actual_return_date = _round_trip_return_departure_date(request, legs)
+        actual_return_date = _round_trip_return_departure_date(
+            request,
+            part_legs,
+            is_composite=is_composite,
+        )
         if (
             isinstance(request, ProviderExactRoundTripRequest)
             and actual_return_date is None
@@ -195,7 +206,7 @@ def _flight_parts(flight: object) -> tuple[list[object], bool]:
     return [flight], False
 
 
-def _validate_round_trip_shape(
+def _validate_round_trip_part_count(
     request: ProviderRequest,
     parts: list[object],
     *,
@@ -205,6 +216,29 @@ def _validate_round_trip_shape(
         return
     if is_composite and len(parts) != 2:
         raise ValueError("round-trip composite result must include outbound and return parts")
+
+
+def _validate_composite_round_trip_chains(
+    request: ProviderRequest,
+    part_legs: list[list[FlightLegV1]],
+    *,
+    is_composite: bool,
+) -> None:
+    if not isinstance(request, ProviderExactRoundTripRequest) or not is_composite:
+        return
+    outbound_legs, return_legs = part_legs
+    if not _is_leg_chain(
+        outbound_legs,
+        start=request.origin,
+        end=request.destination,
+    ):
+        raise ValueError("round-trip outbound part does not match request")
+    if not _is_leg_chain(
+        return_legs,
+        start=request.destination,
+        end=request.origin,
+    ):
+        raise ValueError("round-trip return part does not match request")
 
 
 def _pricing_part(parts: list[object]) -> object:
@@ -219,14 +253,65 @@ def _date_offset(actual: str, requested: str) -> int:
 
 def _round_trip_return_departure_date(
     request: ProviderRequest,
-    legs: list[FlightLegV1],
+    part_legs: list[list[FlightLegV1]],
+    *,
+    is_composite: bool,
 ) -> str | None:
     if not isinstance(request, ProviderExactRoundTripRequest):
         return None
-    for leg in legs:
-        if leg.origin == request.destination and leg.destination == request.origin:
-            return leg.departure_time[:10]
+    if is_composite:
+        return_part_legs = part_legs[1]
+        if _is_leg_chain(
+            return_part_legs,
+            start=request.destination,
+            end=request.origin,
+        ):
+            return return_part_legs[0].departure_time[:10]
+        return None
+    return _first_chain_departure_date(
+        [leg for legs_for_part in part_legs for leg in legs_for_part],
+        start=request.destination,
+        end=request.origin,
+    )
+
+
+def _first_chain_departure_date(
+    legs: list[FlightLegV1],
+    *,
+    start: str,
+    end: str,
+) -> str | None:
+    for index, first_leg in enumerate(legs):
+        if first_leg.origin != start:
+            continue
+        current_destination = first_leg.destination
+        if current_destination == end:
+            return first_leg.departure_time[:10]
+        for next_leg in legs[index + 1 :]:
+            if next_leg.origin != current_destination:
+                break
+            current_destination = next_leg.destination
+            if current_destination == end:
+                return first_leg.departure_time[:10]
     return None
+
+
+def _is_leg_chain(
+    legs: list[FlightLegV1],
+    *,
+    start: str,
+    end: str,
+) -> bool:
+    if not legs or legs[0].origin != start or legs[-1].destination != end:
+        return False
+    return all(
+        previous_leg.destination == next_leg.origin
+        for previous_leg, next_leg in zip(legs, legs[1:])
+    )
+
+
+def _normalize_part_legs(part: object) -> list[FlightLegV1]:
+    return [_normalize_leg(raw_leg) for raw_leg in _attr(part, "legs")]
 
 
 def _normalize_leg(leg: object) -> FlightLegV1:

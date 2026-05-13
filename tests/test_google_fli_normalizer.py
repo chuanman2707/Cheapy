@@ -4,6 +4,8 @@ from datetime import datetime
 from enum import Enum
 from types import SimpleNamespace
 
+import pytest
+
 from cheapy.models import ErrorCode
 from cheapy.providers.base import ProviderExactOneWayRequest, ProviderExactRoundTripRequest
 from cheapy.providers.google_fli.normalizer import normalize_flights
@@ -171,6 +173,51 @@ def test_normalize_flights_maps_round_trip_list_result() -> None:
     ]
     assert offers[0].price_amount == 250
     assert offers[0].currency == "EUR"
+
+
+@pytest.mark.parametrize("container", [tuple, list])
+def test_normalize_flights_maps_connected_round_trip_return_part(
+    container: type[tuple] | type[list],
+) -> None:
+    outbound = _flight(legs=[_leg()], duration=90, price=100, currency="USD")
+    inbound = _flight(
+        legs=[
+            _leg(
+                flight_number="VJ901",
+                origin="BKK",
+                destination="HAN",
+                departure_datetime=datetime(2026, 6, 19, 7, 15),
+                arrival_datetime=datetime(2026, 6, 19, 9, 5),
+            ),
+            _leg(
+                flight_number="VJ902",
+                origin="HAN",
+                destination="SGN",
+                departure_datetime=datetime(2026, 6, 19, 11, 30),
+                arrival_datetime=datetime(2026, 6, 19, 13, 40),
+            ),
+        ],
+        duration=240,
+        stops=1,
+        price=250,
+        currency="EUR",
+    )
+
+    offers, errors = normalize_flights(
+        [container([outbound, inbound])],
+        _round_trip_request(),
+    )
+
+    assert errors == []
+    assert len(offers) == 1
+    assert [(leg.origin, leg.destination) for leg in offers[0].legs] == [
+        ("SGN", "BKK"),
+        ("BKK", "HAN"),
+        ("HAN", "SGN"),
+    ]
+    assert offers[0].price_amount == 250
+    assert offers[0].currency == "EUR"
+    assert offers[0].actual_return_date == "2026-06-19"
 
 
 def test_normalize_flights_rejects_round_trip_return_leg_with_wrong_destination() -> None:
