@@ -502,6 +502,47 @@ def test_load_provider_rejects_provider_capability_mismatch(
         registry.load_provider(manifest)
 
 
+def test_load_provider_rejects_one_way_provider_missing_round_trip_protocol_method(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeProvider:
+        name = "one_way_missing_round_trip_method"
+        capabilities = ("exact_one_way",)
+
+        async def search_exact_one_way(
+            self,
+            request: ProviderExactOneWayRequest,
+        ) -> ProviderResult:
+            raise NotImplementedError
+
+    class FakeProviderModule:
+        @staticmethod
+        def create_provider() -> FakeProvider:
+            return FakeProvider()
+
+    manifest = ProviderManifest(
+        manifest_schema_version="1",
+        name="one_way_missing_round_trip_method",
+        display_name="One-way missing round-trip method",
+        default_enabled=True,
+        provider_kind="live",
+        module="oneway.missing.method",
+        capabilities=["exact_one_way"],
+    )
+
+    monkeypatch.setattr(
+        registry,
+        "import_module",
+        lambda module_name: FakeProviderModule,
+    )
+
+    with pytest.raises(
+        ProviderLoadError,
+        match="Unable to load provider 'one_way_missing_round_trip_method'",
+    ):
+        registry.load_provider(manifest)
+
+
 def test_load_provider_rejects_round_trip_capability_without_method(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

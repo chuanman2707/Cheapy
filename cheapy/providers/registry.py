@@ -97,12 +97,20 @@ def _validate_provider_shape(
     if capabilities != tuple(manifest.capabilities):
         raise ProviderLoadError(_provider_load_error_message(manifest))
 
-    required_methods = {
+    protocol_methods = (
+        "search_exact_one_way",
+        "search_exact_round_trip",
+    )
+    for method_name in protocol_methods:
+        if not callable(getattr(provider, method_name, None)):
+            raise ProviderLoadError(_provider_load_error_message(manifest))
+
+    capability_methods = {
         "exact_one_way": "search_exact_one_way",
         "exact_round_trip": "search_exact_round_trip",
     }
     for capability in manifest.capabilities:
-        method_name = required_methods.get(capability)
+        method_name = capability_methods.get(capability)
         if method_name is not None and not callable(getattr(provider, method_name, None)):
             raise ProviderLoadError(_provider_load_error_message(manifest))
 
