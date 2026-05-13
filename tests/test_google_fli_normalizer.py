@@ -157,6 +157,84 @@ def test_normalize_flights_maps_round_trip_tuple_result() -> None:
     assert offers[0].actual_return_date == "2026-06-19"
 
 
+def test_normalize_flights_maps_round_trip_list_result() -> None:
+    outbound = _flight(legs=[_leg()], duration=90, price=100, currency="USD")
+    inbound = _flight(legs=[_return_leg()], duration=90, price=250, currency="EUR")
+
+    offers, errors = normalize_flights([[outbound, inbound]], _round_trip_request())
+
+    assert errors == []
+    assert len(offers) == 1
+    assert [(leg.origin, leg.destination) for leg in offers[0].legs] == [
+        ("SGN", "BKK"),
+        ("BKK", "SGN"),
+    ]
+    assert offers[0].price_amount == 250
+    assert offers[0].currency == "EUR"
+
+
+def test_normalize_flights_rejects_round_trip_return_leg_with_wrong_destination() -> None:
+    malformed_return = _leg(
+        flight_number="VJ803",
+        origin="BKK",
+        destination="CNX",
+        departure_datetime=datetime(2026, 6, 19, 11, 15),
+        arrival_datetime=datetime(2026, 6, 19, 12, 45),
+    )
+
+    offers, errors = normalize_flights(
+        [_flight(legs=[_leg(), malformed_return], duration=180)],
+        _round_trip_request(),
+    )
+
+    assert offers == []
+    assert len(errors) == 1
+    assert errors[0].details["capability"] == "exact_round_trip"
+    assert errors[0].details["failure_type"] == "parse_error"
+    assert "CNX" not in errors[0].model_dump_json()
+
+
+def test_normalize_flights_round_trip_actual_airports_remain_requested() -> None:
+    outbound = _leg(origin="CXR", destination="DMK")
+    inbound = _return_leg()
+
+    offers, errors = normalize_flights(
+        [_flight(legs=[outbound, inbound], duration=180)],
+        _round_trip_request(),
+    )
+
+    assert errors == []
+    assert offers[0].requested_origin == "SGN"
+    assert offers[0].requested_destination == "BKK"
+    assert offers[0].actual_origin == "SGN"
+    assert offers[0].actual_destination == "BKK"
+    assert [(leg.origin, leg.destination) for leg in offers[0].legs] == [
+        ("CXR", "DMK"),
+        ("BKK", "SGN"),
+    ]
+
+
+def test_normalize_flights_rejects_outbound_only_round_trip_before_currency() -> None:
+    outbound = _flight(legs=[_leg()], duration=90, currency=None)
+
+    offers, errors = normalize_flights([(outbound,)], _round_trip_request())
+
+    assert offers == []
+    assert len(errors) == 1
+    assert errors[0].details["capability"] == "exact_round_trip"
+    assert errors[0].details["failure_type"] == "parse_error"
+
+
+def test_normalize_flights_round_trip_offer_id_includes_return_date() -> None:
+    outbound = _flight(legs=[_leg()], duration=90)
+    inbound = _flight(legs=[_return_leg()], duration=90)
+
+    offers, errors = normalize_flights([(outbound, inbound)], _round_trip_request())
+
+    assert errors == []
+    assert offers[0].offer_id == "google_fli:SGN-BKK:2026-06-12:2026-06-19:1"
+
+
 def test_normalize_flights_preserves_one_way_actual_destination_from_last_leg() -> None:
     offers, errors = normalize_flights(
         [_flight(legs=[_leg(destination="DMK")])],

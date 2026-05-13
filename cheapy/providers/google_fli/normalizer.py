@@ -94,9 +94,10 @@ def _normalize_flight(
     configured_currency: str | None,
 ) -> FlightOfferV1:
     try:
-        parts = _flight_parts(flight)
+        parts, is_composite = _flight_parts(flight)
         if not parts:
             raise ValueError("flight tuple has no parts")
+        _validate_round_trip_shape(request, parts, is_composite=is_composite)
         pricing_part = _pricing_part(parts)
         currency = _currency(pricing_part, configured_currency=configured_currency)
         if currency is None:
@@ -122,6 +123,11 @@ def _normalize_flight(
             and actual_return_date is None
         ):
             raise ValueError("round-trip result has no return leg")
+        actual_origin = (
+            request.origin
+            if isinstance(request, ProviderExactRoundTripRequest)
+            else first_leg.origin
+        )
         actual_destination = (
             request.destination
             if isinstance(request, ProviderExactRoundTripRequest)
@@ -154,7 +160,7 @@ def _normalize_flight(
             provider=PROVIDER_NAME,
             requested_origin=request.origin,
             requested_destination=request.destination,
-            actual_origin=first_leg.origin,
+            actual_origin=actual_origin,
             actual_destination=actual_destination,
             nearby_origin_distance_km=None,
             nearby_destination_distance_km=None,
@@ -183,10 +189,22 @@ def _normalize_flight(
         raise _ItemNormalizationError(_parse_error(item_index, request, exc)) from exc
 
 
-def _flight_parts(flight: object) -> list[object]:
-    if isinstance(flight, tuple):
-        return list(flight)
-    return [flight]
+def _flight_parts(flight: object) -> tuple[list[object], bool]:
+    if isinstance(flight, (list, tuple)):
+        return list(flight), True
+    return [flight], False
+
+
+def _validate_round_trip_shape(
+    request: ProviderRequest,
+    parts: list[object],
+    *,
+    is_composite: bool,
+) -> None:
+    if not isinstance(request, ProviderExactRoundTripRequest):
+        return
+    if is_composite and len(parts) != 2:
+        raise ValueError("round-trip composite result must include outbound and return parts")
 
 
 def _pricing_part(parts: list[object]) -> object:
@@ -206,7 +224,7 @@ def _round_trip_return_departure_date(
     if not isinstance(request, ProviderExactRoundTripRequest):
         return None
     for leg in legs:
-        if leg.origin == request.destination:
+        if leg.origin == request.destination and leg.destination == request.origin:
             return leg.departure_time[:10]
     return None
 
