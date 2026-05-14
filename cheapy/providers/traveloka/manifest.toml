@@ -1,0 +1,7 @@
+manifest_schema_version = "1"
+name = "traveloka"
+display_name = "Traveloka research provider"
+default_enabled = true
+provider_kind = "live"
+module = "cheapy.providers.traveloka.provider"
+capabilities = ["exact_one_way", "exact_round_trip"]

@@ -158,6 +158,14 @@ def test_providers_list_prints_json() -> None:
             "name": "manual_fixture",
             "provider_kind": "fixture",
         },
+        "traveloka": {
+            "capabilities": ["exact_one_way", "exact_round_trip"],
+            "default_enabled": True,
+            "display_name": "Traveloka research provider",
+            "enabled": True,
+            "name": "traveloka",
+            "provider_kind": "live",
+        },
     }
 
 
@@ -169,13 +177,16 @@ def test_providers_test_prints_json() -> None:
     payload = json.loads(result.stdout)
     providers = {provider["name"]: provider for provider in payload["providers"]}
     assert payload["status"] == "ok"
-    assert payload["providers_tested"] == 2
+    assert payload["providers_tested"] == 3
     assert providers["manual_fixture"]["status"] == "success"
     assert providers["manual_fixture"]["provider_kind"] == "fixture"
     assert providers["manual_fixture"]["live_smoke"] == "not_applicable"
     assert providers["google_fli"]["status"] == "skipped"
     assert providers["google_fli"]["provider_kind"] == "live"
     assert providers["google_fli"]["live_smoke"] == "not_run"
+    assert providers["traveloka"]["status"] == "skipped"
+    assert providers["traveloka"]["provider_kind"] == "live"
+    assert providers["traveloka"]["live_smoke"] == "not_run"
 
 
 def test_providers_test_default_does_not_run_live_provider(monkeypatch) -> None:
@@ -189,6 +200,9 @@ def test_providers_test_default_does_not_run_live_provider(monkeypatch) -> None:
     assert providers["manual_fixture"]["live_smoke"] == "not_applicable"
     assert providers["google_fli"]["status"] == "skipped"
     assert providers["google_fli"]["live_smoke"] == "not_run"
+    assert providers["traveloka"]["status"] == "skipped"
+    assert providers["traveloka"]["provider_kind"] == "live"
+    assert providers["traveloka"]["live_smoke"] == "not_run"
 
 
 def test_providers_test_human_prints_success_report() -> None:
@@ -198,6 +212,7 @@ def test_providers_test_human_prints_success_report() -> None:
     assert result.stderr == ""
     assert "manual_fixture fixture exact_one_way: success" in result.stdout
     assert "google_fli live exact_one_way: skipped" in result.stdout
+    assert "traveloka live exact_one_way: skipped" in result.stdout
     assert result.stdout.endswith("status: ok\n")
 
 

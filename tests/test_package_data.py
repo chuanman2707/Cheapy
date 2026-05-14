@@ -38,6 +38,7 @@ def test_built_wheel_can_load_packaged_airport_and_provider_data(tmp_path: Path)
     assert "cheapy/data/README.md" in names
     assert "cheapy/providers/manual_fixture/manifest.toml" in names
     assert "cheapy/providers/google_fli/manifest.toml" in names
+    assert "cheapy/providers/traveloka/manifest.toml" in names
 
     venv_dir = tmp_path / "venv"
     subprocess.run([sys.executable, "-m", "venv", str(venv_dir)], check=True)
@@ -60,6 +61,7 @@ hubs = json.loads(base.joinpath("hubs.v1.json").read_text(encoding="utf-8"))
 readme = base.joinpath("README.md").read_text(encoding="utf-8")
 manual_manifest = files("cheapy.providers").joinpath("manual_fixture", "manifest.toml").read_text(encoding="utf-8")
 google_manifest = files("cheapy.providers").joinpath("google_fli", "manifest.toml").read_text(encoding="utf-8")
+traveloka_manifest = files("cheapy.providers").joinpath("traveloka", "manifest.toml").read_text(encoding="utf-8")
 
 assert airports["version"] == 1
 assert hubs["version"] == 1
@@ -69,6 +71,9 @@ assert 'provider_kind = "fixture"' in manual_manifest
 assert 'name = "google_fli"' in google_manifest
 assert 'provider_kind = "live"' in google_manifest
 assert "default_enabled = true" in google_manifest
+assert 'name = "traveloka"' in traveloka_manifest
+assert 'provider_kind = "live"' in traveloka_manifest
+assert "default_enabled = true" in traveloka_manifest
 """
     subprocess.run([str(python), "-c", resource_script], check=True, cwd=tmp_path)
 
@@ -98,6 +103,8 @@ assert not installed_package.is_relative_to(repo_package), installed_package
     assert providers["manual_fixture"]["provider_kind"] == "fixture"
     assert providers["google_fli"]["provider_kind"] == "live"
     assert providers["google_fli"]["default_enabled"] is True
+    assert providers["traveloka"]["provider_kind"] == "live"
+    assert providers["traveloka"]["default_enabled"] is True
 
     test_result = subprocess.run(
         [str(python), "-m", "cheapy", "providers", "test"],
@@ -112,3 +119,4 @@ assert not installed_package.is_relative_to(repo_package), installed_package
     providers = {provider["name"]: provider for provider in test_payload["providers"]}
     assert providers["manual_fixture"]["status"] == "success"
     assert providers["google_fli"]["live_smoke"] == "not_run"
+    assert providers["traveloka"]["live_smoke"] == "not_run"
