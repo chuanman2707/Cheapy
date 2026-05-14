@@ -158,6 +158,30 @@ def test_adapter_detects_bot_challenge_body() -> None:
     assert exc_info.value.retryable is False
 
 
+def test_adapter_detects_generic_bot_body() -> None:
+    def fake_http_get(
+        url: str,
+        headers: dict[str, str],
+        timeout_seconds: float,
+        max_bytes: int,
+    ) -> TravelokaHTTPResponse:
+        return TravelokaHTTPResponse(
+            status_code=200,
+            body=b"<html>automated bot traffic detected</html>",
+            content_type="text/html",
+            final_url=url,
+        )
+
+    adapter = TravelokaAdapter(http_get=fake_http_get)
+
+    with pytest.raises(TravelokaProviderError) as exc_info:
+        adapter.search_exact_one_way(_one_way_request())
+
+    assert exc_info.value.failure_type == "blocked"
+    assert exc_info.value.error_code == ErrorCode.PROVIDER_BLOCKED
+    assert exc_info.value.retryable is False
+
+
 def test_adapter_detects_access_challenge_body() -> None:
     def fake_http_get(
         url: str,
