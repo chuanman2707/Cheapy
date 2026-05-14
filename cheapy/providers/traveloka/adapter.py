@@ -91,6 +91,7 @@ class TravelokaAdapter:
     def _search(self, request: ProviderRequest) -> dict[str, Any]:
         url = build_search_url(request, base_url=self._base_url)
         headers = _headers()
+        provider_error: TravelokaProviderError | None = None
         try:
             response = self._http_get(
                 url,
@@ -101,15 +102,12 @@ class TravelokaAdapter:
         except TravelokaProviderError:
             raise
         except TimeoutError as exc:
-            raise _timeout_error(type(exc).__name__) from None
+            provider_error = _timeout_error(type(exc).__name__)
         except Exception as exc:
-            raise TravelokaProviderError(
-                failure_type="transport_error",
-                message_en="Traveloka transport failed.",
-                error_code=ErrorCode.PROVIDER_FAILED,
-                retryable=True,
-                exception_type=type(exc).__name__,
-            ) from None
+            provider_error = _transport_error(type(exc).__name__)
+
+        if provider_error is not None:
+            raise provider_error
 
         _raise_for_status(response)
         _raise_if_too_large(response.body, self._max_response_bytes)
@@ -152,6 +150,7 @@ def _stdlib_http_get(
     max_bytes: int,
 ) -> TravelokaHTTPResponse:
     request = Request(url, headers=headers, method="GET")
+    provider_error: TravelokaProviderError | None = None
     try:
         with urlopen(request, timeout=timeout_seconds) as response:
             body = response.read(max_bytes + 1)
@@ -173,20 +172,19 @@ def _stdlib_http_get(
             final_url=exc.url,
         )
     except TimeoutError as exc:
-        raise _timeout_error(type(exc).__name__) from None
+        provider_error = _timeout_error(type(exc).__name__)
     except URLError as exc:
         timeout_exception_type = _timeout_reason_exception_type(
             getattr(exc, "reason", None),
         )
         if timeout_exception_type is not None:
-            raise _timeout_error(timeout_exception_type) from None
-        raise TravelokaProviderError(
-            failure_type="transport_error",
-            message_en="Traveloka transport failed.",
-            error_code=ErrorCode.PROVIDER_FAILED,
-            retryable=True,
-            exception_type=type(exc).__name__,
-        ) from None
+            provider_error = _timeout_error(timeout_exception_type)
+        else:
+            provider_error = _transport_error(type(exc).__name__)
+
+    if provider_error is not None:
+        raise provider_error
+    raise RuntimeError("unreachable Traveloka HTTP adapter state")
 
 
 def _timeout_error(exception_type: str) -> TravelokaProviderError:
@@ -194,6 +192,16 @@ def _timeout_error(exception_type: str) -> TravelokaProviderError:
         failure_type="timeout",
         message_en="Traveloka request timed out.",
         error_code=ErrorCode.PROVIDER_TIMEOUT,
+        retryable=True,
+        exception_type=exception_type,
+    )
+
+
+def _transport_error(exception_type: str) -> TravelokaProviderError:
+    return TravelokaProviderError(
+        failure_type="transport_error",
+        message_en="Traveloka transport failed.",
+        error_code=ErrorCode.PROVIDER_FAILED,
         retryable=True,
         exception_type=exception_type,
     )

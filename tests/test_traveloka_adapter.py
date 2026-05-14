@@ -185,6 +185,7 @@ def test_stdlib_http_get_maps_timeout_without_raw_cause(
     assert exc_info.value.retryable is True
     assert exc_info.value.exception_type == "TimeoutError"
     assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
     assert "raw timeout secret" not in str(exc_info.value)
 
 
@@ -209,7 +210,33 @@ def test_stdlib_http_get_maps_urlerror_timeout_reason_without_raw_cause(
     assert exc_info.value.retryable is True
     assert exc_info.value.exception_type == "TimeoutError"
     assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
     assert "raw timeout secret" not in str(exc_info.value)
+
+
+def test_stdlib_http_get_maps_urlerror_transport_without_raw_cause(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_urlopen(request, timeout: float):
+        raise URLError(RuntimeError("raw transport secret"))
+
+    monkeypatch.setattr(traveloka_adapter, "urlopen", fake_urlopen)
+
+    with pytest.raises(TravelokaProviderError) as exc_info:
+        traveloka_adapter._stdlib_http_get(
+            "https://example.test/search",
+            {"User-Agent": "CheapyTest"},
+            7.5,
+            12,
+        )
+
+    assert exc_info.value.failure_type == "transport_error"
+    assert exc_info.value.error_code == ErrorCode.PROVIDER_FAILED
+    assert exc_info.value.retryable is True
+    assert exc_info.value.exception_type == "URLError"
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+    assert "raw transport secret" not in str(exc_info.value)
 
 
 def test_adapter_fetches_once_without_retry() -> None:
@@ -484,6 +511,7 @@ def test_adapter_fetches_once_for_transport_exception_without_retry() -> None:
     assert exc_info.value.exception_type == "RuntimeError"
     assert str(exc_info.value) == "Traveloka transport failed."
     assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
     assert "raw payload secret" not in str(exc_info.value)
 
 
@@ -510,6 +538,7 @@ def test_adapter_fetches_once_for_timeout_without_raw_cause() -> None:
     assert exc_info.value.retryable is True
     assert exc_info.value.exception_type == "TimeoutError"
     assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
     assert "raw timeout secret" not in str(exc_info.value)
 
 
