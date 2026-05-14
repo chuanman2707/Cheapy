@@ -220,8 +220,10 @@ def _raise_if_blocked_body(body: bytes) -> None:
     sample = body[:4096].decode("utf-8", errors="ignore").lower()
     blocked_markers = (
         "captcha",
+        "automated bot traffic detected",
         "bot challenge",
         "robot check",
+        "verify you are not a bot",
         "access challenge",
         "access denied",
         "unusual traffic",
