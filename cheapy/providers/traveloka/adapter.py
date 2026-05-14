@@ -70,6 +70,8 @@ class TravelokaAdapter:
         max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
         http_get: HTTPGet | None = None,
     ) -> None:
+        if timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be greater than 0")
         if max_response_bytes < 1:
             raise ValueError("max_response_bytes must be at least 1")
         self._base_url = base_url
@@ -107,7 +109,7 @@ class TravelokaAdapter:
                 error_code=ErrorCode.PROVIDER_FAILED,
                 retryable=True,
                 exception_type=type(exc).__name__,
-            ) from exc
+            ) from None
 
         _raise_for_status(response)
         _raise_if_too_large(response.body, self._max_response_bytes)
@@ -176,7 +178,7 @@ def _stdlib_http_get(
             error_code=ErrorCode.PROVIDER_FAILED,
             retryable=True,
             exception_type=type(exc).__name__,
-        ) from exc
+        ) from None
 
 
 def _raise_for_status(response: TravelokaHTTPResponse) -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -9,6 +10,7 @@ from cheapy.providers.base import (
     ProviderExactOneWayRequest,
     ProviderExactRoundTripRequest,
 )
+from cheapy.providers.traveloka import adapter as traveloka_adapter
 from cheapy.providers.traveloka.adapter import (
     TravelokaAdapter,
     TravelokaHTTPResponse,
@@ -69,6 +71,90 @@ def test_build_search_url_maps_round_trip_request_to_safe_query() -> None:
     assert params["departureDate"] == ["2026-07-10"]
     assert params["returnDate"] == ["2026-07-17"]
     assert params["currency"] == ["USD"]
+
+
+def test_stdlib_http_get_reads_success_response_once_with_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    read_sizes: list[int] = []
+    timeouts: list[float] = []
+
+    class FakeResponse:
+        status = 200
+        headers = {"content-type": "application/json"}
+        url = "https://example.test/final"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback) -> None:
+            return None
+
+        def read(self, size: int) -> bytes:
+            read_sizes.append(size)
+            return b'{"ok": true}'
+
+    def fake_urlopen(request, timeout: float):
+        timeouts.append(timeout)
+        return FakeResponse()
+
+    monkeypatch.setattr(traveloka_adapter, "urlopen", fake_urlopen)
+
+    response = traveloka_adapter._stdlib_http_get(
+        "https://example.test/search",
+        {"User-Agent": "CheapyTest"},
+        7.5,
+        12,
+    )
+
+    assert timeouts == [7.5]
+    assert read_sizes == [13]
+    assert response == TravelokaHTTPResponse(
+        status_code=200,
+        body=b'{"ok": true}',
+        content_type="application/json",
+        final_url="https://example.test/final",
+    )
+
+
+def test_stdlib_http_get_reads_http_error_response_once_with_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    read_sizes: list[int] = []
+
+    class FakeErrorBody:
+        def read(self, size: int) -> bytes:
+            read_sizes.append(size)
+            return b"blocked"
+
+        def close(self) -> None:
+            return None
+
+    def fake_urlopen(request, timeout: float):
+        raise HTTPError(
+            "https://example.test/search",
+            503,
+            "Service Unavailable",
+            {"content-type": "text/plain"},
+            FakeErrorBody(),
+        )
+
+    monkeypatch.setattr(traveloka_adapter, "urlopen", fake_urlopen)
+
+    response = traveloka_adapter._stdlib_http_get(
+        "https://example.test/search",
+        {"User-Agent": "CheapyTest"},
+        7.5,
+        12,
+    )
+
+    assert read_sizes == [13]
+    assert response == TravelokaHTTPResponse(
+        status_code=503,
+        body=b"blocked",
+        content_type="text/plain",
+        final_url="https://example.test/search",
+    )
 
 
 def test_adapter_fetches_once_without_retry() -> None:
@@ -306,7 +392,7 @@ def test_adapter_fetches_once_for_transport_exception_without_retry() -> None:
         max_bytes: int,
     ) -> TravelokaHTTPResponse:
         calls.append(url)
-        raise RuntimeError("network failed")
+        raise RuntimeError("raw payload secret")
 
     adapter = TravelokaAdapter(http_get=fake_http_get)
 
@@ -318,6 +404,9 @@ def test_adapter_fetches_once_for_transport_exception_without_retry() -> None:
     assert exc_info.value.error_code == ErrorCode.PROVIDER_FAILED
     assert exc_info.value.retryable is True
     assert exc_info.value.exception_type == "RuntimeError"
+    assert str(exc_info.value) == "Traveloka transport failed."
+    assert exc_info.value.__cause__ is None
+    assert "raw payload secret" not in str(exc_info.value)
 
 
 def test_adapter_rejects_oversized_response() -> None:
@@ -348,6 +437,11 @@ def test_adapter_rejects_oversized_response() -> None:
 def test_adapter_rejects_invalid_max_response_bytes() -> None:
     with pytest.raises(ValueError, match="max_response_bytes"):
         TravelokaAdapter(max_response_bytes=0)
+
+
+def test_adapter_rejects_invalid_timeout_seconds() -> None:
+    with pytest.raises(ValueError, match="timeout_seconds"):
+        TravelokaAdapter(timeout_seconds=0)
 
 
 def test_adapter_returns_html_fallback_for_invalid_json_body() -> None:
