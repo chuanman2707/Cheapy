@@ -101,13 +101,7 @@ class TravelokaAdapter:
         except TravelokaProviderError:
             raise
         except TimeoutError as exc:
-            raise TravelokaProviderError(
-                failure_type="timeout",
-                message_en="Traveloka request timed out.",
-                error_code=ErrorCode.PROVIDER_TIMEOUT,
-                retryable=True,
-                exception_type=type(exc).__name__,
-            ) from None
+            raise _timeout_error(type(exc).__name__) from None
         except Exception as exc:
             raise TravelokaProviderError(
                 failure_type="transport_error",
@@ -179,14 +173,13 @@ def _stdlib_http_get(
             final_url=exc.url,
         )
     except TimeoutError as exc:
-        raise TravelokaProviderError(
-            failure_type="timeout",
-            message_en="Traveloka request timed out.",
-            error_code=ErrorCode.PROVIDER_TIMEOUT,
-            retryable=True,
-            exception_type=type(exc).__name__,
-        ) from None
+        raise _timeout_error(type(exc).__name__) from None
     except URLError as exc:
+        timeout_exception_type = _timeout_reason_exception_type(
+            getattr(exc, "reason", None),
+        )
+        if timeout_exception_type is not None:
+            raise _timeout_error(timeout_exception_type) from None
         raise TravelokaProviderError(
             failure_type="transport_error",
             message_en="Traveloka transport failed.",
@@ -194,6 +187,27 @@ def _stdlib_http_get(
             retryable=True,
             exception_type=type(exc).__name__,
         ) from None
+
+
+def _timeout_error(exception_type: str) -> TravelokaProviderError:
+    return TravelokaProviderError(
+        failure_type="timeout",
+        message_en="Traveloka request timed out.",
+        error_code=ErrorCode.PROVIDER_TIMEOUT,
+        retryable=True,
+        exception_type=exception_type,
+    )
+
+
+def _timeout_reason_exception_type(reason: object) -> str | None:
+    if isinstance(reason, TimeoutError):
+        return type(reason).__name__
+    if reason is None:
+        return None
+    reason_text = str(reason).lower()
+    if "timeout" in reason_text or "timed out" in reason_text:
+        return type(reason).__name__
+    return None
 
 
 def _raise_for_status(response: TravelokaHTTPResponse) -> None:
@@ -236,7 +250,10 @@ def _raise_if_too_large(body: bytes, max_bytes: int) -> None:
 def _raise_if_blocked_body(body: bytes) -> None:
     sample = body[:4096].decode("utf-8", errors="ignore").lower()
     blocked_markers = (
-        "captcha",
+        "captcha required",
+        "captcha challenge",
+        "complete the captcha",
+        "solve captcha",
         "automated bot traffic detected",
         "bot challenge",
         "robot check",

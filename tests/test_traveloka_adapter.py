@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -188,6 +188,30 @@ def test_stdlib_http_get_maps_timeout_without_raw_cause(
     assert "raw timeout secret" not in str(exc_info.value)
 
 
+def test_stdlib_http_get_maps_urlerror_timeout_reason_without_raw_cause(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_urlopen(request, timeout: float):
+        raise URLError(TimeoutError("raw timeout secret"))
+
+    monkeypatch.setattr(traveloka_adapter, "urlopen", fake_urlopen)
+
+    with pytest.raises(TravelokaProviderError) as exc_info:
+        traveloka_adapter._stdlib_http_get(
+            "https://example.test/search",
+            {"User-Agent": "CheapyTest"},
+            7.5,
+            12,
+        )
+
+    assert exc_info.value.failure_type == "timeout"
+    assert exc_info.value.error_code == ErrorCode.PROVIDER_TIMEOUT
+    assert exc_info.value.retryable is True
+    assert exc_info.value.exception_type == "TimeoutError"
+    assert exc_info.value.__cause__ is None
+    assert "raw timeout secret" not in str(exc_info.value)
+
+
 def test_adapter_fetches_once_without_retry() -> None:
     calls: list[str] = []
 
@@ -340,6 +364,29 @@ def test_adapter_detects_explicit_bot_challenge_phrases(body: str) -> None:
 def test_adapter_returns_html_fallback_for_ordinary_html_with_bot_substrings(
     body: str,
 ) -> None:
+    def fake_http_get(
+        url: str,
+        headers: dict[str, str],
+        timeout_seconds: float,
+        max_bytes: int,
+    ) -> TravelokaHTTPResponse:
+        return TravelokaHTTPResponse(
+            status_code=200,
+            body=body.encode("utf-8"),
+            content_type="text/html",
+            final_url=url,
+        )
+
+    adapter = TravelokaAdapter(http_get=fake_http_get)
+
+    payload = adapter.search_exact_one_way(_one_way_request())
+
+    assert payload == {"_html": body, "_content_type": "text/html"}
+
+
+def test_adapter_returns_html_fallback_for_ordinary_captcha_reference() -> None:
+    body = "<html>captcha documentation for support</html>"
+
     def fake_http_get(
         url: str,
         headers: dict[str, str],
