@@ -100,8 +100,14 @@ class TravelokaAdapter:
             )
         except TravelokaProviderError:
             raise
-        except TimeoutError:
-            raise
+        except TimeoutError as exc:
+            raise TravelokaProviderError(
+                failure_type="timeout",
+                message_en="Traveloka request timed out.",
+                error_code=ErrorCode.PROVIDER_TIMEOUT,
+                retryable=True,
+                exception_type=type(exc).__name__,
+            ) from None
         except Exception as exc:
             raise TravelokaProviderError(
                 failure_type="transport_error",
@@ -162,15 +168,24 @@ def _stdlib_http_get(
                 final_url=response.url,
             )
     except HTTPError as exc:
-        body = exc.read(max_bytes + 1)
+        try:
+            body = exc.read(max_bytes + 1)
+        finally:
+            exc.close()
         return TravelokaHTTPResponse(
             status_code=exc.code,
             body=body,
             content_type=exc.headers.get("content-type", ""),
             final_url=exc.url,
         )
-    except TimeoutError:
-        raise
+    except TimeoutError as exc:
+        raise TravelokaProviderError(
+            failure_type="timeout",
+            message_en="Traveloka request timed out.",
+            error_code=ErrorCode.PROVIDER_TIMEOUT,
+            retryable=True,
+            exception_type=type(exc).__name__,
+        ) from None
     except URLError as exc:
         raise TravelokaProviderError(
             failure_type="transport_error",

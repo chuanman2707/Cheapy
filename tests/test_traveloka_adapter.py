@@ -120,7 +120,9 @@ def test_stdlib_http_get_reads_success_response_once_with_limit(
 def test_stdlib_http_get_reads_http_error_response_once_with_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    closed: list[bool] = []
     read_sizes: list[int] = []
+    retained_errors: list[HTTPError] = []
 
     class FakeErrorBody:
         def read(self, size: int) -> bytes:
@@ -128,16 +130,19 @@ def test_stdlib_http_get_reads_http_error_response_once_with_limit(
             return b"blocked"
 
         def close(self) -> None:
+            closed.append(True)
             return None
 
     def fake_urlopen(request, timeout: float):
-        raise HTTPError(
+        error = HTTPError(
             "https://example.test/search",
             503,
             "Service Unavailable",
             {"content-type": "text/plain"},
             FakeErrorBody(),
         )
+        retained_errors.append(error)
+        raise error
 
     monkeypatch.setattr(traveloka_adapter, "urlopen", fake_urlopen)
 
@@ -148,13 +153,39 @@ def test_stdlib_http_get_reads_http_error_response_once_with_limit(
         12,
     )
 
+    assert retained_errors
     assert read_sizes == [13]
+    assert closed == [True]
     assert response == TravelokaHTTPResponse(
         status_code=503,
         body=b"blocked",
         content_type="text/plain",
         final_url="https://example.test/search",
     )
+
+
+def test_stdlib_http_get_maps_timeout_without_raw_cause(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_urlopen(request, timeout: float):
+        raise TimeoutError("raw timeout secret")
+
+    monkeypatch.setattr(traveloka_adapter, "urlopen", fake_urlopen)
+
+    with pytest.raises(TravelokaProviderError) as exc_info:
+        traveloka_adapter._stdlib_http_get(
+            "https://example.test/search",
+            {"User-Agent": "CheapyTest"},
+            7.5,
+            12,
+        )
+
+    assert exc_info.value.failure_type == "timeout"
+    assert exc_info.value.error_code == ErrorCode.PROVIDER_TIMEOUT
+    assert exc_info.value.retryable is True
+    assert exc_info.value.exception_type == "TimeoutError"
+    assert exc_info.value.__cause__ is None
+    assert "raw timeout secret" not in str(exc_info.value)
 
 
 def test_adapter_fetches_once_without_retry() -> None:
@@ -407,6 +438,32 @@ def test_adapter_fetches_once_for_transport_exception_without_retry() -> None:
     assert str(exc_info.value) == "Traveloka transport failed."
     assert exc_info.value.__cause__ is None
     assert "raw payload secret" not in str(exc_info.value)
+
+
+def test_adapter_fetches_once_for_timeout_without_raw_cause() -> None:
+    calls: list[str] = []
+
+    def fake_http_get(
+        url: str,
+        headers: dict[str, str],
+        timeout_seconds: float,
+        max_bytes: int,
+    ) -> TravelokaHTTPResponse:
+        calls.append(url)
+        raise TimeoutError("raw timeout secret")
+
+    adapter = TravelokaAdapter(http_get=fake_http_get)
+
+    with pytest.raises(TravelokaProviderError) as exc_info:
+        adapter.search_exact_one_way(_one_way_request())
+
+    assert len(calls) == 1
+    assert exc_info.value.failure_type == "timeout"
+    assert exc_info.value.error_code == ErrorCode.PROVIDER_TIMEOUT
+    assert exc_info.value.retryable is True
+    assert exc_info.value.exception_type == "TimeoutError"
+    assert exc_info.value.__cause__ is None
+    assert "raw timeout secret" not in str(exc_info.value)
 
 
 def test_adapter_rejects_oversized_response() -> None:
