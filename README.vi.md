@@ -27,6 +27,7 @@ Máy chủ MCP và gói Python ưu tiên tác nhân AI để tìm vé máy bay g
 - [Sử dụng CLI](#sử-dụng-cli)
 - [Thiết lập MCP](#thiết-lập-mcp)
 - [Kiểm thử](#kiểm-thử)
+- [Ghi nhận](#ghi-nhận)
 - [Đóng góp](#đóng-góp)
 
 ---
@@ -226,6 +227,21 @@ Test live provider được thiết kế để chỉ chạy khi bật rõ ràng:
 ```sh
 CHEAPY_RUN_LIVE_TESTS=1 uv run pytest tests/test_live_google_fli.py -v
 ```
+
+<p align="right"><a href="#top">về đầu trang</a></p>
+
+## Ghi Nhận
+
+Google Fli provider của Cheapy lấy cảm hứng từ và được xây trên project upstream
+[Fli](https://punitarani.github.io/fli/), package được publish trên PyPI với tên
+[`flights`](https://pypi.org/project/flights/). Fli cung cấp các primitive tìm
+kiếm Google Flights mà Cheapy adapter lại vào provider layer, MCP tool, và định
+dạng response Contract V1.
+
+Phần credit cho nền tảng tích hợp Google Flights thuộc về project Fli và các
+maintainer của họ. Cheapy bổ sung phần MCP ưu tiên agent, contract chặt chẽ,
+normalization provider, installer flow, test, và tài liệu đa ngôn ngữ xung quanh
+tích hợp đó.
 
 <p align="right"><a href="#top">về đầu trang</a></p>
 
