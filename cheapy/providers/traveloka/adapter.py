@@ -216,7 +216,13 @@ def _raise_if_too_large(body: bytes, max_bytes: int) -> None:
 
 def _raise_if_blocked_body(body: bytes) -> None:
     sample = body[:4096].decode("utf-8", errors="ignore").lower()
-    blocked_markers = ("captcha", "bot challenge", "access denied", "unusual traffic")
+    blocked_markers = (
+        "captcha",
+        "bot challenge",
+        "access challenge",
+        "access denied",
+        "unusual traffic",
+    )
     if any(marker in sample for marker in blocked_markers):
         raise TravelokaProviderError(
             failure_type="blocked",
@@ -229,7 +235,10 @@ def _raise_if_blocked_body(body: bytes) -> None:
 def _parse_body(response: TravelokaHTTPResponse) -> dict[str, Any]:
     text = response.body.decode("utf-8", errors="replace")
     if "json" in response.content_type.lower() or text.lstrip().startswith(("{", "[")):
-        parsed = json.loads(text)
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return {"_html": text, "_content_type": response.content_type}
         if isinstance(parsed, dict):
             return parsed
         return {"data": parsed}

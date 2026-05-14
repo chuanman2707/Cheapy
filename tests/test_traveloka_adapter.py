@@ -158,6 +158,30 @@ def test_adapter_detects_bot_challenge_body() -> None:
     assert exc_info.value.retryable is False
 
 
+def test_adapter_detects_access_challenge_body() -> None:
+    def fake_http_get(
+        url: str,
+        headers: dict[str, str],
+        timeout_seconds: float,
+        max_bytes: int,
+    ) -> TravelokaHTTPResponse:
+        return TravelokaHTTPResponse(
+            status_code=200,
+            body=b"<html><body>Access challenge required</body></html>",
+            content_type="text/html",
+            final_url=url,
+        )
+
+    adapter = TravelokaAdapter(http_get=fake_http_get)
+
+    with pytest.raises(TravelokaProviderError) as exc_info:
+        adapter.search_exact_one_way(_one_way_request())
+
+    assert exc_info.value.failure_type == "blocked"
+    assert exc_info.value.error_code == ErrorCode.PROVIDER_BLOCKED
+    assert exc_info.value.retryable is False
+
+
 def test_adapter_rejects_oversized_response() -> None:
     def fake_http_get(
         url: str,
@@ -181,3 +205,27 @@ def test_adapter_rejects_oversized_response() -> None:
     assert exc_info.value.failure_type == "response_too_large"
     assert exc_info.value.error_code == ErrorCode.PROVIDER_FAILED
     assert exc_info.value.retryable is False
+
+
+def test_adapter_returns_html_fallback_for_invalid_json_body() -> None:
+    def fake_http_get(
+        url: str,
+        headers: dict[str, str],
+        timeout_seconds: float,
+        max_bytes: int,
+    ) -> TravelokaHTTPResponse:
+        return TravelokaHTTPResponse(
+            status_code=200,
+            body=b"{invalid-json",
+            content_type="application/json",
+            final_url=url,
+        )
+
+    adapter = TravelokaAdapter(http_get=fake_http_get)
+
+    payload = adapter.search_exact_one_way(_one_way_request())
+
+    assert payload == {
+        "_html": "{invalid-json",
+        "_content_type": "application/json",
+    }
