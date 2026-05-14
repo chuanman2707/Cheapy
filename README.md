@@ -27,6 +27,7 @@ Agent-first MCP server and Python package for cheap flight search.
 - [CLI Usage](#cli-usage)
 - [MCP Setup](#mcp-setup)
 - [Testing](#testing)
+- [Credits](#credits)
 - [Contributing](#contributing)
 
 ---
@@ -226,6 +227,21 @@ Live provider tests are intentionally opt-in:
 ```sh
 CHEAPY_RUN_LIVE_TESTS=1 uv run pytest tests/test_live_google_fli.py -v
 ```
+
+<p align="right"><a href="#top">back to top</a></p>
+
+## Credits
+
+Cheapy's Google Fli provider is inspired by and built on the upstream
+[Fli](https://punitarani.github.io/fli/) project, published on PyPI as
+[`flights`](https://pypi.org/project/flights/). Fli provides the Google Flights
+search primitives that Cheapy adapts into its provider layer, MCP tool, and
+Contract V1 response format.
+
+Credit for the underlying Google Flights integration belongs to the Fli project
+and its maintainers. Cheapy adds the agent-first MCP packaging, strict contracts,
+provider normalization, installer flow, tests, and multilingual docs around that
+integration.
 
 <p align="right"><a href="#top">back to top</a></p>
 
