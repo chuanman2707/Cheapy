@@ -311,17 +311,11 @@ def providers_test(
         for report in reports
         if report["status"] == ProviderStatusCode.FAILED.value
     ]
-    if failed_reports:
-        code = "PROVIDER_LIVE_TEST_FAILED" if live else "PROVIDER_TEST_FAILED"
-        message = (
-            "One or more live provider checks failed."
-            if live
-            else "One or more provider checks failed."
-        )
+    if failed_reports and not live:
         _json_echo(
             _error_payload(
-                code,
-                message,
+                "PROVIDER_TEST_FAILED",
+                "One or more provider checks failed.",
                 "Run 'cheapy providers test --human' for a concise provider report.",
             ),
             err=True,

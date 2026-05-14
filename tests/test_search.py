@@ -119,6 +119,44 @@ class _ProviderFromResult:
         raise AssertionError("one-way provider must not receive round-trip calls")
 
 
+class _FailingTravelokaProvider:
+    name = "traveloka"
+    capabilities = ("exact_one_way", "exact_round_trip")
+
+    async def search_exact_one_way(
+        self,
+        request: ProviderExactOneWayRequest,
+    ) -> ProviderResult:
+        return ProviderResult(
+            provider_name=self.name,
+            capability="exact_one_way",
+            status=ProviderStatusCode.FAILED,
+            offers=[],
+            warnings=[],
+            errors=[
+                ErrorV1(
+                    code=ErrorCode.PROVIDER_TIMEOUT,
+                    severity=Severity.ERROR,
+                    message_en="Traveloka provider timed out.",
+                    details={
+                        "provider": "traveloka",
+                        "capability": "exact_one_way",
+                        "failure_type": "timeout",
+                    },
+                    retryable=True,
+                )
+            ],
+            duration_ms=20_000,
+            retryable=True,
+        )
+
+    async def search_exact_round_trip(
+        self,
+        request: ProviderExactRoundTripRequest,
+    ) -> ProviderResult:
+        raise AssertionError("round-trip should not be called")
+
+
 class _RecordingOneWayProvider:
     name = "recording_one_way"
     capabilities = ("exact_one_way",)
@@ -644,6 +682,41 @@ def test_search_exact_returns_partial_when_offers_and_provider_errors_exist(
     ]
     assert response.search_plan.planned_provider_call_count == 2
     assert response.search_plan.executed_provider_call_count == 2
+
+
+def test_search_returns_other_provider_offers_when_traveloka_times_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    google_result = ProviderResult(
+        provider_name="google_fli",
+        capability="exact_one_way",
+        status=ProviderStatusCode.SUCCESS,
+        offers=[
+            _offer(
+                offer_id="google:1",
+                provider="google_fli",
+                currency="USD",
+                price_amount=120.0,
+            )
+        ],
+        warnings=[],
+        errors=[],
+        duration_ms=5,
+        retryable=False,
+    )
+    monkeypatch.setattr(
+        "cheapy.search.load_search_providers",
+        lambda: [_ProviderFromResult(google_result), _FailingTravelokaProvider()],
+    )
+
+    response = search_exact(_request())
+
+    assert response.status == SearchStatus.PARTIAL
+    assert [offer.provider for offer in response.offers] == ["google_fli"]
+    statuses = {status.provider_name: status for status in response.provider_statuses}
+    assert statuses["google_fli"].status == ProviderStatusCode.SUCCESS
+    assert statuses["traveloka"].status == ProviderStatusCode.FAILED
+    assert statuses["traveloka"].errors[0].code == ErrorCode.PROVIDER_TIMEOUT
 
 
 def test_search_exact_synthesizes_error_for_failed_provider_without_errors(

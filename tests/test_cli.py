@@ -231,9 +231,11 @@ def test_providers_test_live_requires_environment_gate(monkeypatch) -> None:
     }
 
 
-def test_providers_test_live_reports_provider_failure(monkeypatch) -> None:
+def test_providers_test_live_reports_structured_provider_failure_without_crashing(
+    monkeypatch,
+) -> None:
     class FailingLiveProvider:
-        name = "google_fli"
+        name = "traveloka"
         capabilities = ("exact_one_way",)
 
         async def search_exact_one_way(
@@ -248,9 +250,15 @@ def test_providers_test_live_reports_provider_failure(monkeypatch) -> None:
                 warnings=[],
                 errors=[
                     ErrorV1(
-                        code=ErrorCode.PROVIDER_FAILED,
+                        code=ErrorCode.PROVIDER_BLOCKED,
                         severity=Severity.ERROR,
-                        message_en="Live provider failed.",
+                        message_en="Traveloka blocked the request.",
+                        details={
+                            "provider": "traveloka",
+                            "capability": "exact_one_way",
+                            "failure_type": "blocked",
+                        },
+                        retryable=False,
                     )
                 ],
                 duration_ms=1,
@@ -262,10 +270,15 @@ def test_providers_test_live_reports_provider_failure(monkeypatch) -> None:
 
     result = runner.invoke(app, ["providers", "test", "--live"])
 
-    assert result.exit_code == 1
-    assert result.stdout == ""
-    error = json.loads(result.stderr)
-    assert error["code"] == "PROVIDER_LIVE_TEST_FAILED"
+    assert result.exit_code == 0
+    assert result.stderr == ""
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "ok"
+    provider = payload["providers"][0]
+    assert provider["name"] == "traveloka"
+    assert provider["status"] == "failed"
+    assert provider["error_count"] == 1
+    assert provider["live_smoke"] == "run"
 
 
 def test_providers_test_live_reports_unexpected_provider_exception(monkeypatch) -> None:
