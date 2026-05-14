@@ -91,6 +91,28 @@ uv --version
 
 ### Cài Đặt
 
+Để setup đơn giản nhất, paste prompt này vào Codex hoặc Claude:
+
+```text
+Hãy setup Cheapy từ GitHub trong môi trường này.
+
+Yêu cầu:
+- Không xóa hoặc ghi đè file có sẵn của user.
+- Nếu thư mục Cheapy đã tồn tại, hãy dùng thư mục đó; nếu chưa có, clone https://github.com/chuanman2707/Cheapy.git.
+- Đảm bảo uv đã có sẵn. Nếu thiếu uv và không thể cài đặt an toàn, dừng lại và báo rõ đang bị chặn ở đâu.
+- Trong thư mục Cheapy, chạy uv sync --extra dev.
+- Verify setup bằng:
+  - uv run cheapy --version
+  - uv run cheapy providers test
+  - uv run pytest -v
+- Nếu đang chạy trong Codex, chạy uv run cheapy mcp install --client codex.
+- Nếu đang chạy trong Claude Code, chạy uv run cheapy mcp install --client claude.
+- Không chạy live provider tests trừ khi tôi yêu cầu rõ.
+- Báo lại các lệnh đã chạy và trạng thái cuối cùng.
+```
+
+Setup thủ công:
+
 Clone repository và cài dependency phục vụ phát triển:
 
 ```sh

@@ -91,6 +91,28 @@ uv --version
 
 ### Installation
 
+For the simplest setup, paste this prompt into Codex or Claude:
+
+```text
+Set up Cheapy from GitHub in this environment.
+
+Requirements:
+- Do not delete or overwrite existing user files.
+- If a Cheapy directory already exists, use it; otherwise clone https://github.com/chuanman2707/Cheapy.git.
+- Ensure uv is available. If uv is missing and you cannot install it safely, stop and tell me what is blocked.
+- From the Cheapy directory, run uv sync --extra dev.
+- Verify the setup with:
+  - uv run cheapy --version
+  - uv run cheapy providers test
+  - uv run pytest -v
+- If you are running inside Codex, run uv run cheapy mcp install --client codex.
+- If you are running inside Claude Code, run uv run cheapy mcp install --client claude.
+- Do not run live provider tests unless I explicitly ask.
+- Report the commands you ran and the final status.
+```
+
+Manual setup:
+
 Clone the repository and install development dependencies:
 
 ```sh
