@@ -138,6 +138,31 @@ def test_traveloka_provider_does_not_retry_adapter_error() -> None:
     }
 
 
+def test_traveloka_provider_maps_unsupported_response_failure() -> None:
+    adapter = FakeAdapter(
+        TravelokaProviderError(
+            failure_type="unsupported_response",
+            message_en="Traveloka returned an unsupported response.",
+            error_code=ErrorCode.PROVIDER_FAILED,
+            retryable=False,
+        )
+    )
+    provider = TravelokaProvider(adapter=adapter, timeout_seconds=1)
+
+    result = asyncio.run(provider.search_exact_round_trip(_round_trip_request()))
+
+    assert adapter.round_trip_calls == 1
+    assert result.status == ProviderStatusCode.FAILED
+    assert result.offers == []
+    assert result.retryable is False
+    assert result.errors[0].code == ErrorCode.PROVIDER_FAILED
+    assert result.errors[0].details == {
+        "provider": "traveloka",
+        "capability": "exact_round_trip",
+        "failure_type": "unsupported_response",
+    }
+
+
 def test_traveloka_provider_maps_timeout() -> None:
     class SlowAdapter:
         configured_currency = "USD"

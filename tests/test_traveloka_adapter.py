@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlparse
+from urllib.request import Request
 
 import pytest
 
@@ -94,11 +95,11 @@ def test_stdlib_http_get_reads_success_response_once_with_limit(
             read_sizes.append(size)
             return b'{"ok": true}'
 
-    def fake_urlopen(request, timeout: float):
+    def fake_open_request(request, timeout: float, redirect_handler):
         timeouts.append(timeout)
         return FakeResponse()
 
-    monkeypatch.setattr(traveloka_adapter, "urlopen", fake_urlopen)
+    monkeypatch.setattr(traveloka_adapter, "_open_request", fake_open_request)
 
     response = traveloka_adapter._stdlib_http_get(
         "https://example.test/search",
@@ -133,7 +134,7 @@ def test_stdlib_http_get_reads_http_error_response_once_with_limit(
             closed.append(True)
             return None
 
-    def fake_urlopen(request, timeout: float):
+    def fake_open_request(request, timeout: float, redirect_handler):
         error = HTTPError(
             "https://example.test/search",
             503,
@@ -144,7 +145,7 @@ def test_stdlib_http_get_reads_http_error_response_once_with_limit(
         retained_errors.append(error)
         raise error
 
-    monkeypatch.setattr(traveloka_adapter, "urlopen", fake_urlopen)
+    monkeypatch.setattr(traveloka_adapter, "_open_request", fake_open_request)
 
     response = traveloka_adapter._stdlib_http_get(
         "https://example.test/search",
@@ -167,10 +168,10 @@ def test_stdlib_http_get_reads_http_error_response_once_with_limit(
 def test_stdlib_http_get_maps_timeout_without_raw_cause(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fake_urlopen(request, timeout: float):
+    def fake_open_request(request, timeout: float, redirect_handler):
         raise TimeoutError("raw timeout secret")
 
-    monkeypatch.setattr(traveloka_adapter, "urlopen", fake_urlopen)
+    monkeypatch.setattr(traveloka_adapter, "_open_request", fake_open_request)
 
     with pytest.raises(TravelokaProviderError) as exc_info:
         traveloka_adapter._stdlib_http_get(
@@ -192,10 +193,10 @@ def test_stdlib_http_get_maps_timeout_without_raw_cause(
 def test_stdlib_http_get_maps_urlerror_timeout_reason_without_raw_cause(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fake_urlopen(request, timeout: float):
+    def fake_open_request(request, timeout: float, redirect_handler):
         raise URLError(TimeoutError("raw timeout secret"))
 
-    monkeypatch.setattr(traveloka_adapter, "urlopen", fake_urlopen)
+    monkeypatch.setattr(traveloka_adapter, "_open_request", fake_open_request)
 
     with pytest.raises(TravelokaProviderError) as exc_info:
         traveloka_adapter._stdlib_http_get(
@@ -217,10 +218,10 @@ def test_stdlib_http_get_maps_urlerror_timeout_reason_without_raw_cause(
 def test_stdlib_http_get_maps_urlerror_transport_without_raw_cause(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fake_urlopen(request, timeout: float):
+    def fake_open_request(request, timeout: float, redirect_handler):
         raise URLError(RuntimeError("raw transport secret"))
 
-    monkeypatch.setattr(traveloka_adapter, "urlopen", fake_urlopen)
+    monkeypatch.setattr(traveloka_adapter, "_open_request", fake_open_request)
 
     with pytest.raises(TravelokaProviderError) as exc_info:
         traveloka_adapter._stdlib_http_get(
@@ -264,11 +265,122 @@ def test_adapter_fetches_once_without_retry() -> None:
     assert len(calls) == 1
 
 
+def test_adapter_rejects_response_that_exceeds_request_budget() -> None:
+    def fake_http_get(
+        url: str,
+        headers: dict[str, str],
+        timeout_seconds: float,
+        max_bytes: int,
+    ) -> TravelokaHTTPResponse:
+        return TravelokaHTTPResponse(
+            status_code=200,
+            body=b'{"data": {"itineraries": []}}',
+            content_type="application/json",
+            final_url=url,
+            request_count=3,
+        )
+
+    adapter = TravelokaAdapter(http_get=fake_http_get)
+
+    with pytest.raises(TravelokaProviderError) as exc_info:
+        adapter.search_exact_one_way(_one_way_request())
+
+    assert exc_info.value.failure_type == "request_budget_exceeded"
+    assert exc_info.value.error_code == ErrorCode.PROVIDER_FAILED
+    assert exc_info.value.retryable is False
+
+
+@pytest.mark.parametrize(
+    "final_url",
+    [
+        "https://geo.captcha-delivery.com/interstitial",
+        "http://www.traveloka.com/en-en/flight",
+        "https://traveloka.com/en-en/flight",
+        "https://www.traveloka.com/en-en/captcha",
+    ],
+)
+def test_adapter_blocks_unsafe_final_url(final_url: str) -> None:
+    def fake_http_get(
+        url: str,
+        headers: dict[str, str],
+        timeout_seconds: float,
+        max_bytes: int,
+    ) -> TravelokaHTTPResponse:
+        return TravelokaHTTPResponse(
+            status_code=200,
+            body=b'{"data": {"itineraries": []}}',
+            content_type="application/json",
+            final_url=final_url,
+        )
+
+    adapter = TravelokaAdapter(http_get=fake_http_get)
+
+    with pytest.raises(TravelokaProviderError) as exc_info:
+        adapter.search_exact_one_way(_one_way_request())
+
+    assert exc_info.value.failure_type == "blocked"
+    assert exc_info.value.error_code == ErrorCode.PROVIDER_BLOCKED
+    assert exc_info.value.retryable is False
+
+
+def test_redirect_handler_counts_redirects_against_request_budget() -> None:
+    handler = traveloka_adapter._TravelokaRedirectHandler(max_requests=2)
+    request = Request("https://www.traveloka.com/en-en/flight")
+
+    redirected = handler.redirect_request(
+        request,
+        fp=None,
+        code=302,
+        msg="Found",
+        headers={},
+        newurl="https://www.traveloka.com/en-en/flight/fulltwosearch",
+    )
+
+    assert redirected is not None
+    assert handler.request_count == 2
+    with pytest.raises(TravelokaProviderError) as exc_info:
+        handler.redirect_request(
+            redirected,
+            fp=None,
+            code=302,
+            msg="Found",
+            headers={},
+            newurl="https://www.traveloka.com/en-en/flight/next",
+        )
+
+    assert exc_info.value.failure_type == "request_budget_exceeded"
+    assert exc_info.value.retryable is False
+
+
+def test_redirect_handler_blocks_redirects_outside_traveloka_allowlist() -> None:
+    handler = traveloka_adapter._TravelokaRedirectHandler(max_requests=2)
+    request = Request("https://www.traveloka.com/en-en/flight")
+
+    with pytest.raises(TravelokaProviderError) as exc_info:
+        handler.redirect_request(
+            request,
+            fp=None,
+            code=302,
+            msg="Found",
+            headers={},
+            newurl="https://geo.captcha-delivery.com/i.js",
+        )
+
+    assert exc_info.value.failure_type == "blocked"
+    assert exc_info.value.error_code == ErrorCode.PROVIDER_BLOCKED
+    assert exc_info.value.retryable is False
+
+
 @pytest.mark.parametrize(
     ("status_code", "failure_type", "error_code", "retryable"),
     [
         (403, "blocked", ErrorCode.PROVIDER_BLOCKED, False),
         (429, "rate_limited", ErrorCode.PROVIDER_RATE_LIMITED, True),
+        (408, "timeout", ErrorCode.PROVIDER_TIMEOUT, True),
+        (400, "bad_request", ErrorCode.PROVIDER_FAILED, False),
+        (404, "bad_request", ErrorCode.PROVIDER_FAILED, False),
+        (409, "bad_request", ErrorCode.PROVIDER_FAILED, False),
+        (422, "bad_request", ErrorCode.PROVIDER_FAILED, False),
         (503, "transport_error", ErrorCode.PROVIDER_FAILED, True),
     ],
 )
@@ -388,7 +500,7 @@ def test_adapter_detects_explicit_bot_challenge_phrases(body: str) -> None:
         "<html><body>See the fare rules at the bottom of the page.</body></html>",
     ],
 )
-def test_adapter_returns_html_fallback_for_ordinary_html_with_bot_substrings(
+def test_adapter_rejects_ordinary_html_with_bot_substrings_as_unsupported_response(
     body: str,
 ) -> None:
     def fake_http_get(
@@ -406,12 +518,15 @@ def test_adapter_returns_html_fallback_for_ordinary_html_with_bot_substrings(
 
     adapter = TravelokaAdapter(http_get=fake_http_get)
 
-    payload = adapter.search_exact_one_way(_one_way_request())
+    with pytest.raises(TravelokaProviderError) as exc_info:
+        adapter.search_exact_one_way(_one_way_request())
 
-    assert payload == {"_html": body, "_content_type": "text/html"}
+    assert exc_info.value.failure_type == "unsupported_response"
+    assert exc_info.value.error_code == ErrorCode.PROVIDER_FAILED
+    assert exc_info.value.retryable is False
 
 
-def test_adapter_returns_html_fallback_for_ordinary_captcha_reference() -> None:
+def test_adapter_rejects_ordinary_captcha_reference_as_unsupported_response() -> None:
     body = "<html>captcha documentation for support</html>"
 
     def fake_http_get(
@@ -429,9 +544,12 @@ def test_adapter_returns_html_fallback_for_ordinary_captcha_reference() -> None:
 
     adapter = TravelokaAdapter(http_get=fake_http_get)
 
-    payload = adapter.search_exact_one_way(_one_way_request())
+    with pytest.raises(TravelokaProviderError) as exc_info:
+        adapter.search_exact_one_way(_one_way_request())
 
-    assert payload == {"_html": body, "_content_type": "text/html"}
+    assert exc_info.value.failure_type == "unsupported_response"
+    assert exc_info.value.error_code == ErrorCode.PROVIDER_FAILED
+    assert exc_info.value.retryable is False
 
 
 def test_adapter_detects_access_challenge_body() -> None:
@@ -577,7 +695,36 @@ def test_adapter_rejects_invalid_timeout_seconds() -> None:
         TravelokaAdapter(timeout_seconds=0)
 
 
-def test_adapter_returns_html_fallback_for_invalid_json_body() -> None:
+def test_adapter_rejects_html_app_shell_without_supported_api_payload() -> None:
+    def fake_http_get(
+        url: str,
+        headers: dict[str, str],
+        timeout_seconds: float,
+        max_bytes: int,
+    ) -> TravelokaHTTPResponse:
+        return TravelokaHTTPResponse(
+            status_code=200,
+            body=(
+                b"<!DOCTYPE html><html><head><title>Cheap Flights</title></head>"
+                b'<body><script id="__NEXT_DATA__">{}</script></body></html>'
+            ),
+            content_type="text/html; charset=utf-8",
+            final_url="https://www.traveloka.com/en-en/flight",
+        )
+
+    adapter = TravelokaAdapter(http_get=fake_http_get)
+
+    with pytest.raises(TravelokaProviderError) as exc_info:
+        adapter.search_exact_round_trip(_round_trip_request())
+
+    assert exc_info.value.failure_type == "unsupported_response"
+    assert exc_info.value.error_code == ErrorCode.PROVIDER_FAILED
+    assert exc_info.value.retryable is False
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+
+
+def test_adapter_rejects_invalid_json_body() -> None:
     def fake_http_get(
         url: str,
         headers: dict[str, str],
@@ -593,9 +740,35 @@ def test_adapter_returns_html_fallback_for_invalid_json_body() -> None:
 
     adapter = TravelokaAdapter(http_get=fake_http_get)
 
-    payload = adapter.search_exact_one_way(_one_way_request())
+    with pytest.raises(TravelokaProviderError) as exc_info:
+        adapter.search_exact_one_way(_one_way_request())
 
-    assert payload == {
-        "_html": "{invalid-json",
-        "_content_type": "application/json",
-    }
+    assert exc_info.value.failure_type == "invalid_json"
+    assert exc_info.value.error_code == ErrorCode.PROVIDER_FAILED
+    assert exc_info.value.retryable is False
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+
+
+def test_adapter_rejects_json_without_supported_api_envelope() -> None:
+    def fake_http_get(
+        url: str,
+        headers: dict[str, str],
+        timeout_seconds: float,
+        max_bytes: int,
+    ) -> TravelokaHTTPResponse:
+        return TravelokaHTTPResponse(
+            status_code=200,
+            body=b'{"data": {"calendarPrices": []}}',
+            content_type="application/json",
+            final_url=url,
+        )
+
+    adapter = TravelokaAdapter(http_get=fake_http_get)
+
+    with pytest.raises(TravelokaProviderError) as exc_info:
+        adapter.search_exact_one_way(_one_way_request())
+
+    assert exc_info.value.failure_type == "unsupported_response"
+    assert exc_info.value.error_code == ErrorCode.PROVIDER_FAILED
+    assert exc_info.value.retryable is False

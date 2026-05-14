@@ -6,8 +6,8 @@ from dataclasses import dataclass
 import json
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.parse import urlencode, urlparse
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from cheapy.models import ErrorCode
 from cheapy.providers.base import (
@@ -33,6 +33,7 @@ class TravelokaHTTPResponse:
     body: bytes
     content_type: str
     final_url: str
+    request_count: int = 1
 
 
 class TravelokaProviderError(Exception):
@@ -109,6 +110,8 @@ class TravelokaAdapter:
         if provider_error is not None:
             raise provider_error
 
+        _raise_if_request_budget_exceeded(response.request_count)
+        _raise_if_unsafe_final_url(response.final_url)
         _raise_for_status(response)
         _raise_if_too_large(response.body, self._max_response_bytes)
         _raise_if_blocked_body(response.body)
@@ -150,15 +153,17 @@ def _stdlib_http_get(
     max_bytes: int,
 ) -> TravelokaHTTPResponse:
     request = Request(url, headers=headers, method="GET")
+    redirect_handler = _TravelokaRedirectHandler(max_requests=2)
     provider_error: TravelokaProviderError | None = None
     try:
-        with urlopen(request, timeout=timeout_seconds) as response:
+        with _open_request(request, timeout_seconds, redirect_handler) as response:
             body = response.read(max_bytes + 1)
             return TravelokaHTTPResponse(
                 status_code=response.status,
                 body=body,
                 content_type=response.headers.get("content-type", ""),
                 final_url=response.url,
+                request_count=redirect_handler.request_count,
             )
     except HTTPError as exc:
         try:
@@ -170,6 +175,7 @@ def _stdlib_http_get(
             body=body,
             content_type=exc.headers.get("content-type", ""),
             final_url=exc.url,
+            request_count=redirect_handler.request_count,
         )
     except TimeoutError as exc:
         provider_error = _timeout_error(type(exc).__name__)
@@ -185,6 +191,28 @@ def _stdlib_http_get(
     if provider_error is not None:
         raise provider_error
     raise RuntimeError("unreachable Traveloka HTTP adapter state")
+
+
+def _open_request(
+    request: Request,
+    timeout_seconds: float,
+    redirect_handler: "_TravelokaRedirectHandler",
+):
+    return build_opener(redirect_handler).open(request, timeout=timeout_seconds)
+
+
+class _TravelokaRedirectHandler(HTTPRedirectHandler):
+    def __init__(self, *, max_requests: int) -> None:
+        super().__init__()
+        self.max_requests = max_requests
+        self.request_count = 1
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if self.request_count >= self.max_requests:
+            raise _request_budget_exceeded_error()
+        _raise_if_unsafe_final_url(newurl)
+        self.request_count += 1
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 def _timeout_error(exception_type: str) -> TravelokaProviderError:
@@ -218,6 +246,47 @@ def _timeout_reason_exception_type(reason: object) -> str | None:
     return None
 
 
+def _raise_if_request_budget_exceeded(request_count: int) -> None:
+    if request_count > 2:
+        raise _request_budget_exceeded_error()
+
+
+def _request_budget_exceeded_error() -> TravelokaProviderError:
+    return TravelokaProviderError(
+        failure_type="request_budget_exceeded",
+        message_en="Traveloka request budget was exceeded.",
+        error_code=ErrorCode.PROVIDER_FAILED,
+        retryable=False,
+    )
+
+
+def _raise_if_unsafe_final_url(final_url: str) -> None:
+    parsed = urlparse(final_url)
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc.lower() != "www.traveloka.com"
+        or _is_blocked_url_path(parsed.path)
+    ):
+        raise TravelokaProviderError(
+            failure_type="blocked",
+            message_en="Traveloka redirected to an unsupported or blocked URL.",
+            error_code=ErrorCode.PROVIDER_BLOCKED,
+            retryable=False,
+        )
+
+
+def _is_blocked_url_path(path: str) -> bool:
+    lowered = path.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "captcha",
+            "datadome",
+            "challenge",
+        )
+    )
+
+
 def _raise_for_status(response: TravelokaHTTPResponse) -> None:
     if response.status_code in {401, 403}:
         raise TravelokaProviderError(
@@ -235,12 +304,28 @@ def _raise_for_status(response: TravelokaHTTPResponse) -> None:
             retryable=True,
             http_status_code=response.status_code,
         )
+    if response.status_code == 408:
+        raise TravelokaProviderError(
+            failure_type="timeout",
+            message_en="Traveloka request timed out.",
+            error_code=ErrorCode.PROVIDER_TIMEOUT,
+            retryable=True,
+            http_status_code=response.status_code,
+        )
+    if response.status_code in {400, 404, 409, 422}:
+        raise TravelokaProviderError(
+            failure_type="bad_request",
+            message_en="Traveloka rejected the request.",
+            error_code=ErrorCode.PROVIDER_FAILED,
+            retryable=False,
+            http_status_code=response.status_code,
+        )
     if response.status_code >= 400:
         raise TravelokaProviderError(
             failure_type="transport_error",
             message_en="Traveloka returned an HTTP error.",
             error_code=ErrorCode.PROVIDER_FAILED,
-            retryable=True,
+            retryable=response.status_code >= 500,
             http_status_code=response.status_code,
         )
 
@@ -260,6 +345,7 @@ def _raise_if_blocked_body(body: bytes) -> None:
     blocked_markers = (
         "captcha required",
         "captcha challenge",
+        "captcha-delivery",
         "complete the captcha",
         "solve captcha",
         "automated bot traffic detected",
@@ -268,6 +354,7 @@ def _raise_if_blocked_body(body: bytes) -> None:
         "verify you are not a bot",
         "access challenge",
         "access denied",
+        "please enable js and disable any ad blocker",
         "unusual traffic",
     )
     if any(marker in sample for marker in blocked_markers):
@@ -282,11 +369,52 @@ def _raise_if_blocked_body(body: bytes) -> None:
 def _parse_body(response: TravelokaHTTPResponse) -> dict[str, Any]:
     text = response.body.decode("utf-8", errors="replace")
     if "json" in response.content_type.lower() or text.lstrip().startswith(("{", "[")):
+        parsed: object
+        invalid_json = False
         try:
             parsed = json.loads(text)
         except json.JSONDecodeError:
-            return {"_html": text, "_content_type": response.content_type}
-        if isinstance(parsed, dict):
-            return parsed
-        return {"data": parsed}
-    return {"_html": text, "_content_type": response.content_type}
+            invalid_json = True
+            parsed = None
+        if invalid_json:
+            raise _invalid_json_error()
+        if not isinstance(parsed, dict) or not _is_supported_api_payload(parsed):
+            raise _unsupported_response_error()
+        return parsed
+    raise _unsupported_response_error()
+
+
+def _invalid_json_error() -> TravelokaProviderError:
+    return TravelokaProviderError(
+        failure_type="invalid_json",
+        message_en="Traveloka returned invalid JSON.",
+        error_code=ErrorCode.PROVIDER_FAILED,
+        retryable=False,
+    )
+
+
+def _unsupported_response_error() -> TravelokaProviderError:
+    return TravelokaProviderError(
+        failure_type="unsupported_response",
+        message_en="Traveloka returned an unsupported response.",
+        error_code=ErrorCode.PROVIDER_FAILED,
+        retryable=False,
+    )
+
+
+def _is_supported_api_payload(payload: dict[str, Any]) -> bool:
+    for path in (
+        ("data", "itineraries"),
+        ("data", "flightSearchResult", "itineraries"),
+        ("itineraries",),
+        ("flightSearchResult", "itineraries"),
+    ):
+        value: object = payload
+        for key in path:
+            if not isinstance(value, dict):
+                break
+            value = value.get(key)
+        else:
+            if isinstance(value, list):
+                return True
+    return False
