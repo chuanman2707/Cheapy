@@ -31,6 +31,9 @@ Agents still call `search_cheapest_flights`; they do not choose providers.
    when another provider returns usable offers.
 8. No login, credential use, captcha solving, proxy rotation, aggressive retry,
    storage, or cache is added in this milestone.
+9. The default-enabled behavior relies on the project owner's stated Traveloka
+   support approval for this use. Deployments outside that permission must
+   disable the provider before use.
 
 ## Context And Risk
 
@@ -40,8 +43,11 @@ not that official path.
 
 Traveloka terms reviewed during design restrict unapproved commercial use and
 unapproved manual or automated access, monitoring, copying, scraping, and
-similar activity against site material. Because of that, this provider must be
-treated as a fragile research integration with conservative behavior:
+similar activity against site material. The project owner stated on
+2026-05-14 that Traveloka support approved this use, provided Cheapy does not
+send excessive traffic. This design therefore keeps the provider enabled by
+default for this codebase under that permission assumption, while treating the
+integration as fragile and conservative:
 
 - no authentication bypass
 - no account or cookie persistence
@@ -53,6 +59,10 @@ treated as a fragile research integration with conservative behavior:
 If Traveloka blocks the request, shows a challenge, changes response shape, or
 returns ambiguous currency data, the provider fails closed with a structured
 provider error.
+
+The repository must not commit private support correspondence. Public docs
+should state the permission assumption and tell deployments without Traveloka
+permission to disable the provider before running user-facing search.
 
 Sources checked:
 
@@ -74,6 +84,9 @@ Sources checked:
 - Keep default tests deterministic and offline.
 - Provide opt-in live smoke coverage that never crashes on block or parse
   failure.
+- Keep Traveloka request volume bounded: no provider-internal fanout, no
+  automatic retry, and no extra calls beyond the existing search-planner
+  selected provider calls.
 
 ## Non-Goals
 
@@ -261,6 +274,13 @@ Default runtime behavior:
 - response-size limit to avoid accidentally processing large pages
 - diagnostics and errors stay on stderr or structured response fields; MCP
   stdout remains protocol-clean
+- Traveloka provider timeout is 20 seconds per provider call. A timeout returns
+  `ProviderStatusCode.FAILED` with `PROVIDER_TIMEOUT` and does not retry.
+- Traveloka must not perform provider-internal fanout. One selected Cheapy
+  provider call maps to at most one Traveloka HTTP request.
+- Expanded search may call Traveloka multiple times through existing Cheapy
+  candidate expansion, but only under the current global selected provider-call
+  budget. The provider must not add another Traveloka-specific expansion layer.
 
 ## Testing
 
@@ -291,6 +311,8 @@ Update README and agent guidance enough to explain:
 
 - `traveloka` exists as a live research provider
 - it may be fragile or blocked
+- this codebase assumes Traveloka support approval for default-enabled research
+  access; deployments without permission must disable it
 - users and agents should not choose providers manually
 - each offer's `provider` field identifies the fare source
 - mixed provider results and provider failures are normal
@@ -303,13 +325,15 @@ evading Traveloka access controls.
 
 - `uv run pytest -v` passes without live network access.
 - `uv run cheapy providers list` includes `traveloka`.
+- Traveloka is default enabled under the documented permission assumption.
 - `search_cheapest_flights` can return offers from Traveloka when parsing
   succeeds.
 - If Traveloka is blocked or fails parsing, the response includes a structured
   provider status and search can still return offers from other providers.
+- If a Traveloka HTTP call exceeds 20 seconds, it returns a structured timeout
+  provider status and Cheapy continues assembling the response.
 - Exact one-way and exact round-trip requests are supported.
 - Expanded search uses existing exact-call candidate expansion and does not add
   a Traveloka-native flexible-date capability.
 - No raw Traveloka payload, cookie, header, or full traceback appears in
   Contract V1 errors.
-
