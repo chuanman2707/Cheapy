@@ -27,6 +27,7 @@
 - [CLI 用法](#cli-用法)
 - [MCP 设置](#mcp-设置)
 - [测试](#测试)
+- [致谢](#致谢)
 - [贡献](#贡献)
 
 ---
@@ -224,6 +225,20 @@ Live provider 测试需要显式开启：
 ```sh
 CHEAPY_RUN_LIVE_TESTS=1 uv run pytest tests/test_live_google_fli.py -v
 ```
+
+<p align="right"><a href="#top">返回顶部</a></p>
+
+## 致谢
+
+Cheapy 的 Google Fli provider 受到上游
+[Fli](https://punitarani.github.io/fli/) 项目的启发，并基于它构建；该项目在
+PyPI 上以 [`flights`](https://pypi.org/project/flights/) 名称发布。Fli 提供
+Google Flights 搜索 primitive，Cheapy 将其适配到 provider layer、MCP tool
+以及 Contract V1 response 格式中。
+
+底层 Google Flights 集成的 credit 属于 Fli 项目及其维护者。Cheapy 在此基础上
+加入面向 agent 的 MCP 打包、严格 contract、provider normalization、installer
+flow、测试和多语言文档。
 
 <p align="right"><a href="#top">返回顶部</a></p>
 
