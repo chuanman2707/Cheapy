@@ -92,6 +92,11 @@ def _normalize_item(
         route = _validate_route(request, legs)
         actual_departure_date = legs[0].departure_time[:10]
         actual_return_date = route.return_departure_date
+        _validate_exact_candidate_dates(
+            request,
+            actual_departure_date=actual_departure_date,
+            actual_return_date=actual_return_date,
+        )
         departure_offset_days = _date_offset(
             actual_departure_date,
             _requested_departure_date(request),
@@ -385,6 +390,20 @@ def _validate_route(request: ProviderRequest, legs: list[FlightLegV1]) -> "_Vali
     )
 
 
+def _validate_exact_candidate_dates(
+    request: ProviderRequest,
+    *,
+    actual_departure_date: str,
+    actual_return_date: str | None,
+) -> None:
+    if actual_departure_date != request.departure_date:
+        raise ValueError("outbound departure date does not match exact request")
+    if not isinstance(request, ProviderExactRoundTripRequest):
+        return
+    if actual_return_date != request.return_date:
+        raise ValueError("return departure date does not match exact request")
+
+
 @dataclass(frozen=True)
 class _ValidatedRoute:
     outbound_end_index: int
@@ -514,9 +533,8 @@ def _error(
         "capability": capability,
         "failure_type": failure_type,
         "item_index": item_index,
+        "exception_type": exception_type,
     }
-    if exception_type is not None:
-        details["exception_type"] = exception_type
     return ErrorV1(
         code=ErrorCode.PROVIDER_FAILED,
         severity=Severity.ERROR,
