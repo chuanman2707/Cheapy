@@ -158,7 +158,7 @@ def test_adapter_detects_bot_challenge_body() -> None:
     assert exc_info.value.retryable is False
 
 
-def test_adapter_detects_generic_bot_body() -> None:
+def test_adapter_detects_robot_check_body() -> None:
     def fake_http_get(
         url: str,
         headers: dict[str, str],
@@ -167,7 +167,7 @@ def test_adapter_detects_generic_bot_body() -> None:
     ) -> TravelokaHTTPResponse:
         return TravelokaHTTPResponse(
             status_code=200,
-            body=b"<html>automated bot traffic detected</html>",
+            body=b"<html>robot check required</html>",
             content_type="text/html",
             final_url=url,
         )
@@ -180,6 +180,36 @@ def test_adapter_detects_generic_bot_body() -> None:
     assert exc_info.value.failure_type == "blocked"
     assert exc_info.value.error_code == ErrorCode.PROVIDER_BLOCKED
     assert exc_info.value.retryable is False
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '<html><head><meta name="robots" content="index,follow"></head></html>',
+        "<html><body>See the fare rules at the bottom of the page.</body></html>",
+    ],
+)
+def test_adapter_returns_html_fallback_for_ordinary_html_with_bot_substrings(
+    body: str,
+) -> None:
+    def fake_http_get(
+        url: str,
+        headers: dict[str, str],
+        timeout_seconds: float,
+        max_bytes: int,
+    ) -> TravelokaHTTPResponse:
+        return TravelokaHTTPResponse(
+            status_code=200,
+            body=body.encode("utf-8"),
+            content_type="text/html",
+            final_url=url,
+        )
+
+    adapter = TravelokaAdapter(http_get=fake_http_get)
+
+    payload = adapter.search_exact_one_way(_one_way_request())
+
+    assert payload == {"_html": body, "_content_type": "text/html"}
 
 
 def test_adapter_detects_access_challenge_body() -> None:
@@ -206,6 +236,59 @@ def test_adapter_detects_access_challenge_body() -> None:
     assert exc_info.value.retryable is False
 
 
+def test_adapter_fetches_once_for_503_without_retry() -> None:
+    calls: list[str] = []
+
+    def fake_http_get(
+        url: str,
+        headers: dict[str, str],
+        timeout_seconds: float,
+        max_bytes: int,
+    ) -> TravelokaHTTPResponse:
+        calls.append(url)
+        return TravelokaHTTPResponse(
+            status_code=503,
+            body=b"service unavailable",
+            content_type="text/plain",
+            final_url=url,
+        )
+
+    adapter = TravelokaAdapter(http_get=fake_http_get)
+
+    with pytest.raises(TravelokaProviderError) as exc_info:
+        adapter.search_exact_one_way(_one_way_request())
+
+    assert len(calls) == 1
+    assert exc_info.value.failure_type == "transport_error"
+    assert exc_info.value.error_code == ErrorCode.PROVIDER_FAILED
+    assert exc_info.value.retryable is True
+    assert exc_info.value.http_status_code == 503
+
+
+def test_adapter_fetches_once_for_transport_exception_without_retry() -> None:
+    calls: list[str] = []
+
+    def fake_http_get(
+        url: str,
+        headers: dict[str, str],
+        timeout_seconds: float,
+        max_bytes: int,
+    ) -> TravelokaHTTPResponse:
+        calls.append(url)
+        raise RuntimeError("network failed")
+
+    adapter = TravelokaAdapter(http_get=fake_http_get)
+
+    with pytest.raises(TravelokaProviderError) as exc_info:
+        adapter.search_exact_one_way(_one_way_request())
+
+    assert len(calls) == 1
+    assert exc_info.value.failure_type == "transport_error"
+    assert exc_info.value.error_code == ErrorCode.PROVIDER_FAILED
+    assert exc_info.value.retryable is True
+    assert exc_info.value.exception_type == "RuntimeError"
+
+
 def test_adapter_rejects_oversized_response() -> None:
     def fake_http_get(
         url: str,
@@ -229,6 +312,11 @@ def test_adapter_rejects_oversized_response() -> None:
     assert exc_info.value.failure_type == "response_too_large"
     assert exc_info.value.error_code == ErrorCode.PROVIDER_FAILED
     assert exc_info.value.retryable is False
+
+
+def test_adapter_rejects_invalid_max_response_bytes() -> None:
+    with pytest.raises(ValueError, match="max_response_bytes"):
+        TravelokaAdapter(max_response_bytes=0)
 
 
 def test_adapter_returns_html_fallback_for_invalid_json_body() -> None:

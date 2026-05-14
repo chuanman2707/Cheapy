@@ -70,6 +70,8 @@ class TravelokaAdapter:
         max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
         http_get: HTTPGet | None = None,
     ) -> None:
+        if max_response_bytes < 1:
+            raise ValueError("max_response_bytes must be at least 1")
         self._base_url = base_url
         self._timeout_seconds = timeout_seconds
         self._max_response_bytes = max_response_bytes
@@ -218,8 +220,8 @@ def _raise_if_blocked_body(body: bytes) -> None:
     sample = body[:4096].decode("utf-8", errors="ignore").lower()
     blocked_markers = (
         "captcha",
-        "bot",
         "bot challenge",
+        "robot check",
         "access challenge",
         "access denied",
         "unusual traffic",
