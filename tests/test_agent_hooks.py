@@ -37,6 +37,21 @@ def _assert_gate_8_instruction_text(text: str) -> None:
     assert "do not pass return_date" not in text
 
 
+def test_agent_hooks_mentions_traveloka_provider_attribution() -> None:
+    assert "traveloka" in INSTRUCTION_BODY.lower()
+    assert (
+        "Cheapy may call multiple enabled live providers, including google_fli and traveloka."
+        in INSTRUCTION_BODY
+    )
+    assert "Use each offer's `provider` field" in INSTRUCTION_BODY
+    assert "Do not ask the user to choose providers." in INSTRUCTION_BODY
+    assert (
+        "Traveloka is a default-enabled research provider for this codebase under the "
+        "project permission assumption and may return structured timeout, block, or parse failures."
+        in INSTRUCTION_BODY
+    )
+
+
 def test_tracked_instruction_files_use_gate_8_guidance() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     stale_phrases = (

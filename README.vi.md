@@ -49,7 +49,7 @@ kế hoạch tìm kiếm một cách ổn định.
 | Contract V1 | Các model Pydantic chặt chẽ định nghĩa request và response để agent tích hợp ổn định. |
 | MCP tool | `cheapy mcp` chạy MCP server qua stdio và giữ stdout sạch cho protocol. |
 | CLI ưu tiên JSON | Payload thành công đi qua stdout dưới dạng JSON; lỗi có cấu trúc đi qua stderr. |
-| Provider registry | Provider đóng gói gồm fixture cố định và đường live provider Google Fli. |
+| Provider registry | Provider đóng gói gồm fixture cố định cùng các đường live provider Google Fli và Traveloka. |
 | Tìm đúng ngày và mở rộng | Hỗ trợ tìm đúng ngày và lập kế hoạch ngày linh hoạt với `search_mode="expanded"`. |
 | Test offline mặc định | Các lệnh test thông thường không gọi provider live trừ khi bật rõ ràng. |
 
@@ -161,6 +161,13 @@ ràng:
 CHEAPY_RUN_LIVE_TESTS=1 uv run cheapy providers test --live
 ```
 
+Traveloka là research provider mong manh và được bật mặc định trong codebase
+này theo xác nhận của project owner rằng Traveloka support đã đồng ý cho dùng,
+miễn là không gửi quá nhiều request. Provider này có thể timeout hoặc bị block,
+và chạy thận trọng: không login, không browser, không retry, không fanout nội
+bộ, và timeout 20 giây cho mỗi provider call. Không deploy bộ live provider mặc
+định này cho user-facing search nếu chưa có permission từ Traveloka.
+
 <p align="right"><a href="#top">về đầu trang</a></p>
 
 ## Thiết Lập MCP
@@ -222,7 +229,14 @@ uv run pytest tests/test_schema_export.py -v
 uv run pytest tests/test_mcp.py -v
 ```
 
-Test live provider được thiết kế để chỉ chạy khi bật rõ ràng:
+Test live provider được thiết kế để chỉ chạy khi bật rõ ràng. Dùng lệnh smoke
+provider cho bộ live provider mặc định:
+
+```sh
+CHEAPY_RUN_LIVE_TESTS=1 uv run cheapy providers test --live
+```
+
+Pytest riêng cho Google Fli vẫn có sẵn khi cần debug adapter đó:
 
 ```sh
 CHEAPY_RUN_LIVE_TESTS=1 uv run pytest tests/test_live_google_fli.py -v

@@ -49,7 +49,7 @@ plan metadata without scraping human text.
 | Contract V1 | Strict Pydantic models define request and response shapes for stable agent integrations. |
 | MCP tool | `cheapy mcp` runs a protocol-clean stdio MCP server with `search_cheapest_flights`. |
 | JSON-first CLI | CLI success payloads go to stdout as JSON; structured errors go to stderr. |
-| Provider registry | Packaged providers include a deterministic fixture and a Google Fli live provider path. |
+| Provider registry | Packaged providers include a deterministic fixture plus Google Fli and Traveloka live provider paths. |
 | Exact and expanded search | Supports exact requests and expanded flexible-date candidate planning. |
 | Offline default tests | Regular test commands avoid live provider calls unless explicitly enabled. |
 
@@ -161,6 +161,13 @@ opt-in:
 CHEAPY_RUN_LIVE_TESTS=1 uv run cheapy providers test --live
 ```
 
+Traveloka is a fragile, default-enabled research provider in this codebase under
+the project owner's stated Traveloka support approval. It may time out or be
+blocked, and it is intentionally conservative: no login, no browser, no retries,
+no provider-internal fanout, and a 20 second per-call timeout. Do not deploy
+this default live provider set for user-facing search without Traveloka
+permission.
+
 <p align="right"><a href="#top">back to top</a></p>
 
 ## MCP Setup
@@ -222,7 +229,14 @@ uv run pytest tests/test_schema_export.py -v
 uv run pytest tests/test_mcp.py -v
 ```
 
-Live provider tests are intentionally opt-in:
+Live provider tests are intentionally opt-in. Use the provider smoke command for
+the default live provider set:
+
+```sh
+CHEAPY_RUN_LIVE_TESTS=1 uv run cheapy providers test --live
+```
+
+The Google Fli-specific pytest remains available when debugging that adapter:
 
 ```sh
 CHEAPY_RUN_LIVE_TESTS=1 uv run pytest tests/test_live_google_fli.py -v
