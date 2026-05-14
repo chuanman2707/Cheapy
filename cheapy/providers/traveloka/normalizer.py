@@ -47,34 +47,16 @@ def normalize_payload(
 
 
 def _rank_offers(offers: list[FlightOfferV1]) -> list[FlightOfferV1]:
-    currencies = {offer.currency for offer in offers}
-    if len(currencies) <= 1:
-        return [
-            offer.model_copy(
-                update={
-                    "comparable": True,
-                    "rank_within_currency": rank,
-                    "global_rank": rank,
-                }
-            )
-            for rank, offer in enumerate(offers, start=1)
-        ]
-
-    currency_ranks: dict[str, int] = {}
-    ranked: list[FlightOfferV1] = []
-    for offer in offers:
-        rank = currency_ranks.get(offer.currency, 0) + 1
-        currency_ranks[offer.currency] = rank
-        ranked.append(
-            offer.model_copy(
-                update={
-                    "comparable": False,
-                    "rank_within_currency": rank,
-                    "global_rank": None,
-                }
-            )
+    return [
+        offer.model_copy(
+            update={
+                "comparable": True,
+                "rank_within_currency": rank,
+                "global_rank": rank,
+            }
         )
-    return ranked
+        for rank, offer in enumerate(offers, start=1)
+    ]
 
 
 class _ItemNormalizationError(Exception):

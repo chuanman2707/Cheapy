@@ -86,6 +86,40 @@ def test_normalize_payload_maps_one_way_offer() -> None:
     ]
 
 
+def test_normalize_payload_ranks_mixed_currency_offers_sequentially() -> None:
+    payload = {
+        "data": {
+            "itineraries": [
+                {
+                    "id": "usd",
+                    "price": {"amount": 88.5, "currency": "USD"},
+                    "durationMinutes": 95,
+                    "stops": 0,
+                    "segments": [_segment()],
+                },
+                {
+                    "id": "eur",
+                    "price": {"amount": 90.0, "currency": "EUR"},
+                    "durationMinutes": 95,
+                    "stops": 0,
+                    "segments": [_segment()],
+                },
+            ]
+        }
+    }
+
+    offers, errors = normalize_payload(payload, _one_way_request())
+
+    assert errors == []
+    assert [offer.offer_id for offer in offers] == [
+        "traveloka:SGN-BKK:2026-07-10:usd",
+        "traveloka:SGN-BKK:2026-07-10:eur",
+    ]
+    assert [offer.rank_within_currency for offer in offers] == [1, 2]
+    assert [offer.global_rank for offer in offers] == [1, 2]
+    assert [offer.comparable for offer in offers] == [True, True]
+
+
 def test_normalize_payload_maps_round_trip_offer() -> None:
     payload = {
         "data": {
