@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+from decimal import Decimal
+
 from cheapy.models import ErrorCode, ErrorV1, FlightOfferV1
 from cheapy.providers.base import (
     ProviderExactOneWayRequest,
     ProviderExactRoundTripRequest,
 )
-from cheapy.providers.traveloka.normalizer import normalize_payload
+from cheapy.providers.traveloka.adapter import TravelokaSelectedRoundTripResult
+from cheapy.providers.traveloka.normalizer import (
+    normalize_payload,
+    normalize_selected_round_trip,
+)
 
 
 def _one_way_request() -> ProviderExactOneWayRequest:
@@ -50,6 +56,12 @@ def _traveloka_search_result(
     amount: str = "29890",
     decimal_points: str = "2",
     flight_number: str = "VJ-801",
+    origin: str = "SGN",
+    destination: str = "BKK",
+    departure_day: str = "10",
+    departure_hour: str = "9",
+    arrival_hour: str = "10",
+    arrival_minute: str = "35",
     return_flight_number: str | None = None,
 ) -> dict[str, object]:
     def route(
@@ -95,10 +107,13 @@ def _traveloka_search_result(
 
     routes = [
         route(
-            origin="SGN",
-            destination="BKK",
-            departure_day="10",
+            origin=origin,
+            destination=destination,
+            departure_day=departure_day,
             flight_number=flight_number,
+            departure_hour=departure_hour,
+            arrival_hour=arrival_hour,
+            arrival_minute=arrival_minute,
         )
     ]
     if return_flight_number is not None:
@@ -130,6 +145,55 @@ def _traveloka_search_result(
     }
 
 
+def _selected_result(
+    *,
+    selected_outbound_key: str | None = "out-1",
+    selected_return_key: str | None = "ret-1",
+    final_total_amount: Decimal = Decimal("321.09"),
+    final_total_currency: str = "USD",
+    return_departure_day: str = "17",
+) -> TravelokaSelectedRoundTripResult:
+    return TravelokaSelectedRoundTripResult(
+        outbound_payload={
+            "data": {
+                "meta": {"searchCompleted": True},
+                "searchResults": [
+                    _traveloka_search_result(
+                        item_id="out-1",
+                        amount="11100",
+                        flight_number="VJ-801",
+                    )
+                ],
+            }
+        },
+        return_payload={
+            "data": {
+                "meta": {"searchCompleted": True},
+                "searchResults": [
+                    _traveloka_search_result(
+                        item_id="ret-1",
+                        amount="22200",
+                        flight_number="VJ-802",
+                        origin="BKK",
+                        destination="SGN",
+                        departure_day=return_departure_day,
+                        departure_hour="11",
+                        arrival_hour="12",
+                    )
+                ],
+            }
+        },
+        selected_outbound_key=selected_outbound_key,
+        selected_return_key=selected_return_key,
+        final_total_amount=final_total_amount,
+        final_total_currency=final_total_currency,
+        source_paths=(
+            "/api/v2/flight/search/initial",
+            "/api/v2/flight/search/poll",
+        ),
+    )
+
+
 def _assert_parse_error(
     offers: list[FlightOfferV1],
     errors: list[ErrorV1],
@@ -149,6 +213,21 @@ def _assert_parse_error(
     assert "exception_type" in error.details
     if secret is not None:
         assert secret not in error.model_dump_json()
+
+
+def _assert_selected_total_unavailable_fallback(amount: Decimal) -> None:
+    offers, errors = normalize_selected_round_trip(
+        _selected_result(final_total_amount=amount),
+        _round_trip_request(),
+    )
+
+    assert len(offers) == 1
+    assert offers[0].comparable is False
+    assert offers[0].actual_return_date is None
+    assert [error.details["failure_type"] for error in errors] == [
+        "return_details_unavailable",
+        "final_round_trip_total_unavailable",
+    ]
 
 
 def test_normalize_payload_maps_one_way_offer() -> None:
@@ -333,6 +412,83 @@ def test_normalize_payload_reports_missing_return_details_per_offer() -> None:
         "return_details_unavailable",
     ]
     assert [error.details["item_index"] for error in errors] == [1, 2]
+
+
+def test_normalize_selected_round_trip_uses_final_total_and_marks_comparable() -> None:
+    offers, errors = normalize_selected_round_trip(
+        _selected_result(),
+        _round_trip_request(),
+    )
+
+    assert errors == []
+    assert len(offers) == 1
+    offer = offers[0]
+    assert offer.offer_id == "traveloka:SGN-BKK:2026-07-10:2026-07-17:selected:out-1:ret-1"
+    assert offer.price_amount == 321.09
+    assert offer.currency == "USD"
+    assert offer.comparable is True
+    assert offer.rank_within_currency == 1
+    assert offer.global_rank == 1
+    assert offer.actual_departure_date == "2026-07-10"
+    assert offer.actual_return_date == "2026-07-17"
+    assert offer.return_offset_days == 0
+    assert [(leg.origin, leg.destination, leg.flight_number) for leg in offer.legs] == [
+        ("SGN", "BKK", "VJ-801"),
+        ("BKK", "SGN", "VJ-802"),
+    ]
+
+
+def test_normalize_selected_round_trip_falls_back_when_return_key_is_missing() -> None:
+    offers, errors = normalize_selected_round_trip(
+        _selected_result(selected_return_key=None),
+        _round_trip_request(),
+    )
+
+    assert len(offers) == 1
+    assert offers[0].comparable is False
+    assert offers[0].actual_return_date is None
+    assert [error.details["failure_type"] for error in errors] == [
+        "return_details_unavailable",
+        "selected_return_binding_unavailable",
+    ]
+
+
+def test_normalize_selected_round_trip_rejects_non_selected_currency() -> None:
+    offers, errors = normalize_selected_round_trip(
+        _selected_result(final_total_currency=""),
+        _round_trip_request(),
+    )
+
+    assert len(offers) == 1
+    assert offers[0].comparable is False
+    assert errors[-1].details["failure_type"] == "final_round_trip_total_unavailable"
+
+
+def test_normalize_selected_round_trip_rejects_negative_final_total() -> None:
+    _assert_selected_total_unavailable_fallback(Decimal("-1"))
+
+
+def test_normalize_selected_round_trip_rejects_nan_final_total() -> None:
+    _assert_selected_total_unavailable_fallback(Decimal("NaN"))
+
+
+def test_normalize_selected_round_trip_rejects_infinite_final_total() -> None:
+    _assert_selected_total_unavailable_fallback(Decimal("Infinity"))
+
+
+def test_normalize_selected_round_trip_falls_back_when_return_date_is_wrong() -> None:
+    offers, errors = normalize_selected_round_trip(
+        _selected_result(return_departure_day="18"),
+        _round_trip_request(),
+    )
+
+    assert len(offers) == 1
+    assert offers[0].comparable is False
+    assert offers[0].actual_return_date is None
+    assert [error.details["failure_type"] for error in errors] == [
+        "return_details_unavailable",
+        "selected_return_binding_unavailable",
+    ]
 
 
 def test_normalize_payload_maps_legacy_round_trip_itinerary_as_unselected_partial() -> None:

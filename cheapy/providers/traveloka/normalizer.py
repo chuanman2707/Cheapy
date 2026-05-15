@@ -16,6 +16,7 @@ from cheapy.models import (
     Severity,
 )
 from cheapy.providers.base import ProviderExactOneWayRequest, ProviderExactRoundTripRequest
+from cheapy.providers.traveloka.adapter import TravelokaSelectedRoundTripResult
 
 
 PROVIDER_NAME = "traveloka"
@@ -47,6 +48,110 @@ def normalize_payload(
         except _ItemNormalizationError as exc:
             errors.append(exc.error)
     return _rank_offers(offers), errors
+
+
+def normalize_selected_round_trip(
+    result: TravelokaSelectedRoundTripResult,
+    request: ProviderExactRoundTripRequest,
+) -> tuple[list[FlightOfferV1], list[ErrorV1]]:
+    currency = _currency_code(result.final_total_currency)
+    if currency is None or not _valid_selected_total(result.final_total_amount):
+        return _selected_failure_fallback(
+            result,
+            request,
+            failure_type="final_round_trip_total_unavailable",
+        )
+    if result.selected_outbound_key is None:
+        return _selected_failure_fallback(
+            result,
+            request,
+            failure_type="selected_outbound_binding_unavailable",
+        )
+    if result.selected_return_key is None:
+        return _selected_failure_fallback(
+            result,
+            request,
+            failure_type="selected_return_binding_unavailable",
+        )
+
+    try:
+        outbound = _selected_leg_item(
+            result.outbound_payload,
+            selected_key=result.selected_outbound_key,
+            start=request.origin,
+            end=request.destination,
+            departure_date=request.departure_date,
+        )
+    except Exception:
+        return _selected_failure_fallback(
+            result,
+            request,
+            failure_type="selected_outbound_binding_unavailable",
+        )
+
+    try:
+        return_leg = _selected_leg_item(
+            result.return_payload,
+            selected_key=result.selected_return_key,
+            start=request.destination,
+            end=request.origin,
+            departure_date=request.return_date,
+        )
+    except Exception:
+        return _selected_failure_fallback(
+            result,
+            request,
+            failure_type="selected_return_binding_unavailable",
+        )
+
+    legs = [*outbound.legs, *return_leg.legs]
+    actual_departure_date = outbound.legs[0].departure_time[:10]
+    actual_return_date = return_leg.legs[0].departure_time[:10]
+    departure_offset_days = _date_offset(
+        actual_departure_date,
+        _requested_departure_date(request),
+    )
+    return_offset_days = _date_offset(actual_return_date, _requested_return_date(request))
+    offer = FlightOfferV1(
+        offer_id=(
+            f"{PROVIDER_NAME}:{request.origin}-{request.destination}:"
+            f"{request.departure_date}:{request.return_date}:selected:"
+            f"{outbound.item_id}:{return_leg.item_id}"
+        ),
+        price_amount=float(result.final_total_amount),
+        currency=currency,
+        comparable=True,
+        rank_within_currency=1,
+        global_rank=1,
+        provider=PROVIDER_NAME,
+        requested_origin=_requested_origin(request),
+        requested_destination=_requested_destination(request),
+        actual_origin=request.origin,
+        actual_destination=request.destination,
+        nearby_origin_distance_km=None,
+        nearby_destination_distance_km=None,
+        requested_departure_date=_requested_departure_date(request),
+        actual_departure_date=actual_departure_date,
+        departure_offset_days=departure_offset_days,
+        requested_return_date=_requested_return_date(request),
+        actual_return_date=actual_return_date,
+        return_offset_days=return_offset_days,
+        legs=legs,
+        total_duration_minutes=(
+            outbound.total_duration_minutes + return_leg.total_duration_minutes
+        ),
+        stops=outbound.stops + return_leg.stops,
+        flags=OfferFlagsV1(
+            uses_flexible_departure_date=departure_offset_days != 0,
+            uses_flexible_return_date=return_offset_days != 0,
+        ),
+        fare_details_status="not_collected",
+    )
+    return [offer], []
+
+
+def _valid_selected_total(amount: Decimal) -> bool:
+    return amount.is_finite() and amount >= Decimal("0")
 
 
 def _rank_offers(offers: list[FlightOfferV1]) -> list[FlightOfferV1]:
@@ -95,6 +200,14 @@ class _TravelokaSearchResultItem:
 class _NormalizedItem:
     offer: FlightOfferV1
     return_details_unavailable: bool = False
+
+
+@dataclass(frozen=True)
+class _SelectedLegItem:
+    item_id: str
+    legs: list[FlightLegV1]
+    total_duration_minutes: int
+    stops: int
 
 
 def _normalize_item(
@@ -241,6 +354,47 @@ def _itinerary_items(payload: object) -> list[object]:
         if items is not None:
             return items
     return list(_recursive_offer_items(payload))
+
+
+def _selected_leg_item(
+    payload: object,
+    *,
+    selected_key: str,
+    start: str,
+    end: str,
+    departure_date: str,
+) -> _SelectedLegItem:
+    for item_index, item in enumerate(_itinerary_items(payload), start=1):
+        raw_item = item.payload if isinstance(item, _TravelokaSearchResultItem) else item
+        if not isinstance(raw_item, Mapping):
+            continue
+        item_id = _item_id(raw_item, item_index)
+        if item_id != selected_key:
+            continue
+        legs = [_normalize_leg(segment) for segment in _raw_segments(raw_item)]
+        end_index = _chain_end_index(legs, start=start, end=end, start_index=0)
+        if end_index is None or end_index != len(legs) - 1:
+            raise ValueError("selected leg route does not match request")
+        if legs[0].departure_time[:10] != departure_date:
+            raise ValueError("selected leg date does not match request")
+        return _SelectedLegItem(
+            item_id=item_id,
+            legs=legs,
+            total_duration_minutes=_total_duration_minutes(raw_item, legs),
+            stops=max(0, len(legs) - 1),
+        )
+    raise ValueError("selected key was not found")
+
+
+def _selected_failure_fallback(
+    result: TravelokaSelectedRoundTripResult,
+    request: ProviderExactRoundTripRequest,
+    *,
+    failure_type: str,
+) -> tuple[list[FlightOfferV1], list[ErrorV1]]:
+    offers, errors = normalize_payload(result.outbound_payload, request)
+    errors.append(_selected_round_trip_error(failure_type, request))
+    return offers, errors
 
 
 def _list_at_path(payload: object, path: tuple[str, ...]) -> list[object] | None:
@@ -761,6 +915,29 @@ def _return_details_unavailable_error(
         failure_type="return_details_unavailable",
         item_index=index,
         capability=_capability_for_request(request),
+    )
+
+
+def _selected_round_trip_error(
+    failure_type: str,
+    request: ProviderExactRoundTripRequest,
+) -> ErrorV1:
+    messages = {
+        "selected_outbound_binding_unavailable": (
+            "Traveloka selected outbound details could not be mapped safely."
+        ),
+        "selected_return_binding_unavailable": (
+            "Traveloka selected return details could not be mapped safely."
+        ),
+        "final_round_trip_total_unavailable": (
+            "Traveloka final selected round-trip total was unavailable."
+        ),
+    }
+    return _error(
+        message_en=messages[failure_type],
+        failure_type=failure_type,
+        item_index=1,
+        capability=EXACT_ROUND_TRIP_CAPABILITY,
     )
 
 
