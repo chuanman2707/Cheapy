@@ -315,7 +315,7 @@ def _response_from_provider_results(
     offers = _deduplicate_offers(
         [offer for result in provider_results for offer in result.offers]
     )
-    returned_offers = _rank_offers(_sort_offers(offers)[: request.max_results])
+    returned_offers = _rank_offers(_select_returned_offers(offers, request.max_results))
     warnings = _response_warnings(
         provider_results=provider_results,
         returned_offers=returned_offers,
@@ -490,6 +490,51 @@ def _sort_offers(offers: list[FlightOfferV1]) -> list[FlightOfferV1]:
             offer.offer_id,
         ),
     )
+
+
+def _select_returned_offers(
+    offers: list[FlightOfferV1],
+    max_results: int,
+) -> list[FlightOfferV1]:
+    sorted_offers = _sort_offers(offers)
+    selected = sorted_offers[:max_results]
+    if max_results <= 1 or len(selected) < max_results:
+        return selected
+    if any(not offer.comparable for offer in selected):
+        return selected
+
+    selected_comparable_currencies = {
+        offer.currency for offer in selected if offer.comparable
+    }
+    if len(selected_comparable_currencies) > 1:
+        return selected
+
+    selected_offer_ids = {offer.offer_id for offer in selected}
+    missing_non_comparable: FlightOfferV1 | None = None
+    for offer in sorted_offers[max_results:]:
+        if offer.comparable or offer.offer_id in selected_offer_ids:
+            continue
+        missing_non_comparable = offer
+        break
+
+    if missing_non_comparable is None:
+        return selected
+    replace_index = _last_comparable_index(selected)
+    if replace_index is None or _comparable_count(selected) <= 1:
+        return selected
+    selected[replace_index] = missing_non_comparable
+    return _sort_offers(selected)
+
+
+def _comparable_count(offers: list[FlightOfferV1]) -> int:
+    return sum(1 for offer in offers if offer.comparable)
+
+
+def _last_comparable_index(offers: list[FlightOfferV1]) -> int | None:
+    for index in range(len(offers) - 1, -1, -1):
+        if offers[index].comparable:
+            return index
+    return None
 
 
 def _rank_offers(offers: list[FlightOfferV1]) -> list[FlightOfferV1]:
