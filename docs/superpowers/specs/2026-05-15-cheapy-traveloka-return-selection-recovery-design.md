@@ -73,9 +73,11 @@ Round-trip selection should become a state-machine flow:
 2. Choose and bind the cheapest visible outbound card as today.
 3. Reset capture state.
 4. Activate the outbound card with the Traveloka-specific DOM event sequence.
-5. Wait for an outbound-selection transition marker before treating the click
-   as successful.
-6. Wait for return capture from the existing supported fare paths.
+5. Wait for an outbound-selection transition marker that does not require
+   return inventory, or treat the first supported return fare capture as proof
+   that outbound selection transitioned.
+6. Wait for return capture from the existing supported fare paths when it has
+   not already arrived while checking transition state.
 7. Choose and bind the cheapest visible return card.
 8. Activate the return card with the same Traveloka-specific event sequence.
 9. Wait for return-selection markers.
@@ -93,9 +95,19 @@ Outbound selection is considered transitioned when at least one stable marker is
 observed after outbound activation:
 
 - URL hash contains the selected outbound key, for example `#SC<key>`
-- the page shows a selected departure summary and return-selection inventory
-- body text includes return-selection state markers such as `Change departure
-  flight` plus the return route/date block
+- the page shows a selected departure summary, such as `Change departure
+  flight`
+- body text includes the requested return route/date block after the selected
+  departure summary is visible
+- a supported first-party return fare payload from `/api/v2/flight/search/poll`
+  arrives after outbound activation
+
+Outbound transition detection must not require visible return inventory. That
+inventory can depend on return fare capture, so requiring it before capture
+would misclassify a real return-capture timeout as an outbound transition
+failure. `return_capture_timeout` is reserved for the case where outbound
+selection transitioned but no supported return fare payload arrived before the
+deadline.
 
 Return selection is considered transitioned when at least one stable marker is
 observed after return activation:
@@ -116,7 +128,7 @@ selection:
 
 - `[data-testid='label_fl_inventory_price']` text containing
   `Total USD <amount>/pax`
-- body or summary text containing `Round-trip price USD <amount>/pax`
+- selected summary/tray text containing `Round-trip price USD <amount>/pax`
 
 When several prices are visible, selected-total parsing must prefer explicit
 `Total` or `Round-trip price` amounts over incremental add-on prices such as
@@ -125,6 +137,12 @@ When several prices are visible, selected-total parsing must prefer explicit
 The final total is accepted only after return-selection markers indicate that
 both legs are selected. A visible return-card price before selection is still
 not a comparable final round-trip total.
+
+Generic body-wide parsing is not acceptable unless it is scoped to a selected
+summary/tray container or covered by a regression test where unselected
+inventory-card prices and add-on prices coexist with the selected total. This
+prevents the reader from accidentally treating an unselected card's
+`Round-trip price` label as the final selected itinerary total.
 
 ## Error Handling
 
@@ -167,6 +185,8 @@ Add focused adapter/provider tests for:
   summary/body text.
 - final-total parsing ignores `+ USD 0.00/pax` when an explicit total is
   present.
+- final-total parsing ignores unselected inventory-card `Round-trip price`
+  labels when a selected summary/tray total is present.
 - provider safe failure handling preserves the new failure type in partial
   results.
 - selected round-trip success still returns exactly one comparable offer using
@@ -192,6 +212,7 @@ Acceptance for the live smoke:
   `return_capture_timeout`
 - ideal result is one comparable selected Traveloka round-trip offer
 - acceptable partial result must identify the later real boundary:
+  `outbound_selection_transition_unavailable`,
   `return_capture_timeout`, `return_selection_unavailable`,
   `selected_return_binding_unavailable`, or
   `final_round_trip_total_unavailable`
