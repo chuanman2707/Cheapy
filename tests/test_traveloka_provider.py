@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from decimal import Decimal
 from time import sleep
 from typing import Any
 
@@ -15,6 +16,7 @@ from cheapy.providers.traveloka import provider as traveloka_provider
 from cheapy.providers.traveloka.adapter import (
     TravelokaCaptureResult,
     TravelokaProviderError,
+    TravelokaSelectedRoundTripResult,
 )
 from cheapy.providers.traveloka.provider import TravelokaProvider
 
@@ -66,27 +68,33 @@ def _capture(
     payload: dict[str, Any],
     *,
     source_path: str = "/api/v2/flight/search/initial",
+    search_completed: bool | None = None,
     timed_out: bool = False,
+    partial_failure_type: str | None = None,
 ) -> TravelokaCaptureResult:
     return TravelokaCaptureResult(
         payload=payload,
         source_path=source_path,
-        search_completed=not timed_out,
+        search_completed=not timed_out if search_completed is None else search_completed,
         timed_out=timed_out,
+        partial_failure_type=partial_failure_type,
     )
 
 
 class FakeAdapter:
     configured_currency = "USD"
 
-    def __init__(self, result: TravelokaCaptureResult | Exception) -> None:
+    def __init__(
+        self,
+        result: TravelokaCaptureResult | TravelokaSelectedRoundTripResult | Exception,
+    ) -> None:
         self.result = result
         self.one_way_calls = 0
         self.round_trip_calls = 0
 
     def search_exact_one_way(
         self, request: ProviderExactOneWayRequest
-    ) -> TravelokaCaptureResult:
+    ) -> TravelokaCaptureResult | TravelokaSelectedRoundTripResult:
         self.one_way_calls += 1
         if isinstance(self.result, Exception):
             raise self.result
@@ -94,11 +102,74 @@ class FakeAdapter:
 
     def search_exact_round_trip(
         self, request: ProviderExactRoundTripRequest
-    ) -> TravelokaCaptureResult:
+    ) -> TravelokaCaptureResult | TravelokaSelectedRoundTripResult:
         self.round_trip_calls += 1
         if isinstance(self.result, Exception):
             raise self.result
         return self.result
+
+
+def _selected_round_trip_result(
+    *,
+    timed_out: bool = False,
+) -> TravelokaSelectedRoundTripResult:
+    return TravelokaSelectedRoundTripResult(
+        outbound_payload={
+            "data": {
+                "itineraries": [
+                    {
+                        "id": "out-1",
+                        "price": {"amount": 111.0, "currency": "USD"},
+                        "durationMinutes": 95,
+                        "stops": 0,
+                        "segments": [
+                            {
+                                "origin": "SGN",
+                                "destination": "BKK",
+                                "departureTime": "2026-07-10T09:00:00",
+                                "arrivalTime": "2026-07-10T10:35:00",
+                                "airlineCode": "VJ",
+                                "flightNumber": "VJ801",
+                                "durationMinutes": 95,
+                            }
+                        ],
+                    }
+                ]
+            }
+        },
+        return_payload={
+            "data": {
+                "itineraries": [
+                    {
+                        "id": "ret-1",
+                        "price": {"amount": 222.0, "currency": "USD"},
+                        "durationMinutes": 95,
+                        "stops": 0,
+                        "segments": [
+                            {
+                                "origin": "BKK",
+                                "destination": "SGN",
+                                "departureTime": "2026-07-17T11:00:00",
+                                "arrivalTime": "2026-07-17T12:35:00",
+                                "airlineCode": "VJ",
+                                "flightNumber": "VJ802",
+                                "durationMinutes": 95,
+                            }
+                        ],
+                    }
+                ]
+            }
+        },
+        selected_outbound_key="out-1",
+        selected_return_key="ret-1",
+        final_total_amount=Decimal("321.09"),
+        final_total_currency="USD",
+        source_paths=(
+            "/api/v2/flight/search/initial",
+            "/api/v2/flight/search/poll",
+        ),
+        timed_out=timed_out,
+    )
 
 
 def test_traveloka_provider_builds_default_adapter_with_provider_timeout(
@@ -129,6 +200,66 @@ def test_traveloka_provider_returns_success_result() -> None:
     assert result.status == ProviderStatusCode.SUCCESS
     assert result.errors == []
     assert [offer.provider for offer in result.offers] == ["traveloka"]
+
+
+def test_traveloka_provider_dispatches_selected_round_trip_result() -> None:
+    adapter = FakeAdapter(_selected_round_trip_result())
+    provider = TravelokaProvider(adapter=adapter, timeout_seconds=1)
+
+    result = asyncio.run(provider.search_exact_round_trip(_round_trip_request()))
+
+    assert adapter.round_trip_calls == 1
+    assert result.status == ProviderStatusCode.SUCCESS
+    assert result.errors == []
+    assert len(result.offers) == 1
+    offer = result.offers[0]
+    assert offer.price_amount == 321.09
+    assert offer.currency == "USD"
+    assert offer.comparable is True
+    assert offer.actual_return_date == "2026-07-17"
+    assert [(leg.origin, leg.destination) for leg in offer.legs] == [
+        ("SGN", "BKK"),
+        ("BKK", "SGN"),
+    ]
+
+
+def test_traveloka_provider_returns_partial_when_selected_round_trip_times_out() -> None:
+    adapter = FakeAdapter(_selected_round_trip_result(timed_out=True))
+    provider = TravelokaProvider(adapter=adapter, timeout_seconds=1)
+
+    result = asyncio.run(provider.search_exact_round_trip(_round_trip_request()))
+
+    assert result.status == ProviderStatusCode.PARTIAL
+    assert len(result.offers) == 1
+    assert result.offers[0].comparable is True
+    assert result.offers[0].price_amount == 321.09
+    assert result.retryable is True
+    assert len(result.errors) == 1
+    assert result.errors[0].code == ErrorCode.PROVIDER_TIMEOUT
+    assert result.errors[0].retryable is True
+    assert result.errors[0].details == {
+        "provider": "traveloka",
+        "capability": "exact_round_trip",
+        "failure_type": "timeout",
+    }
+
+
+def test_traveloka_provider_fails_when_selected_round_trip_reaches_one_way() -> None:
+    adapter = FakeAdapter(_selected_round_trip_result())
+    provider = TravelokaProvider(adapter=adapter, timeout_seconds=1)
+
+    result = asyncio.run(provider.search_exact_one_way(_request()))
+
+    assert adapter.one_way_calls == 1
+    assert result.status == ProviderStatusCode.FAILED
+    assert result.offers == []
+    assert result.retryable is False
+    assert result.errors[0].code == ErrorCode.PROVIDER_FAILED
+    assert result.errors[0].details == {
+        "provider": "traveloka",
+        "capability": "exact_one_way",
+        "failure_type": "unsupported_response",
+    }
 
 
 def test_traveloka_provider_returns_partial_result_for_item_parse_error() -> None:
@@ -246,8 +377,80 @@ def test_traveloka_provider_returns_partial_when_capture_times_out_after_offers(
         "provider": "traveloka",
         "capability": "exact_one_way",
         "failure_type": "timeout",
-        "source_path": "/api/v2/flight/search/poll",
     }
+
+
+def test_traveloka_provider_appends_safe_partial_failure_type() -> None:
+    secret_path = "/api/v2/flight/search/poll?token=sk_live_secret"
+    adapter = FakeAdapter(
+        _capture(
+            _payload(),
+            source_path=secret_path,
+            partial_failure_type="timeout",
+        )
+    )
+    provider = TravelokaProvider(adapter=adapter, timeout_seconds=1)
+
+    result = asyncio.run(provider.search_exact_round_trip(_round_trip_request()))
+
+    assert result.status == ProviderStatusCode.PARTIAL
+    assert len(result.offers) == 1
+    assert result.offers[0].comparable is False
+    assert result.errors[-1].code == ErrorCode.PROVIDER_TIMEOUT
+    assert result.errors[-1].retryable is True
+    assert result.errors[-1].details == {
+        "provider": "traveloka",
+        "capability": "exact_round_trip",
+        "failure_type": "timeout",
+    }
+    assert "sk_live_secret" not in result.errors[-1].model_dump_json()
+
+
+def test_traveloka_provider_maps_return_capture_timeout_to_timeout_error() -> None:
+    adapter = FakeAdapter(
+        _capture(
+            _payload(),
+            partial_failure_type="return_capture_timeout",
+        )
+    )
+    provider = TravelokaProvider(adapter=adapter, timeout_seconds=1)
+
+    result = asyncio.run(provider.search_exact_round_trip(_round_trip_request()))
+
+    assert result.status == ProviderStatusCode.PARTIAL
+    assert len(result.offers) == 1
+    assert result.retryable is True
+    assert result.errors[-1].code == ErrorCode.PROVIDER_TIMEOUT
+    assert result.errors[-1].retryable is True
+    assert result.errors[-1].details == {
+        "provider": "traveloka",
+        "capability": "exact_round_trip",
+        "failure_type": "return_capture_timeout",
+    }
+
+
+def test_traveloka_provider_maps_unknown_partial_failure_type_to_generic() -> None:
+    secret = "sk_live_secret"
+    adapter = FakeAdapter(
+        _capture(
+            _payload(),
+            partial_failure_type=secret,
+        )
+    )
+    provider = TravelokaProvider(adapter=adapter, timeout_seconds=1)
+
+    result = asyncio.run(provider.search_exact_round_trip(_round_trip_request()))
+
+    assert result.status == ProviderStatusCode.PARTIAL
+    assert len(result.offers) == 1
+    assert result.errors[-1].code == ErrorCode.PROVIDER_FAILED
+    assert result.errors[-1].retryable is False
+    assert result.errors[-1].details == {
+        "provider": "traveloka",
+        "capability": "exact_round_trip",
+        "failure_type": "partial_failure",
+    }
+    assert secret not in result.errors[-1].model_dump_json()
 
 
 def test_traveloka_provider_returns_failed_when_empty_capture_times_out() -> None:
@@ -271,7 +474,28 @@ def test_traveloka_provider_returns_failed_when_empty_capture_times_out() -> Non
         "provider": "traveloka",
         "capability": "exact_one_way",
         "failure_type": "timeout",
-        "source_path": "/api/v2/flight/search/initial",
+    }
+
+
+def test_traveloka_provider_fails_when_empty_capture_is_not_successful() -> None:
+    adapter = FakeAdapter(
+        _capture(
+            {"data": {"searchResults": []}},
+            search_completed=False,
+        )
+    )
+    provider = TravelokaProvider(adapter=adapter, timeout_seconds=1)
+
+    result = asyncio.run(provider.search_exact_one_way(_request()))
+
+    assert result.status == ProviderStatusCode.FAILED
+    assert result.offers == []
+    assert result.retryable is False
+    assert result.errors[0].code == ErrorCode.PROVIDER_FAILED
+    assert result.errors[0].details == {
+        "provider": "traveloka",
+        "capability": "exact_one_way",
+        "failure_type": "no_usable_outbound_data",
     }
 
 

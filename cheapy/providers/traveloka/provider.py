@@ -5,7 +5,13 @@ from __future__ import annotations
 import asyncio
 from time import perf_counter
 
-from cheapy.models import ErrorCode, ErrorV1, ProviderStatusCode, Severity
+from cheapy.models import (
+    ErrorCode,
+    ErrorV1,
+    FlightOfferV1,
+    ProviderStatusCode,
+    Severity,
+)
 from cheapy.providers.base import (
     ProviderExactOneWayRequest,
     ProviderExactRoundTripRequest,
@@ -15,8 +21,12 @@ from cheapy.providers.traveloka.adapter import (
     TravelokaAdapter,
     TravelokaCaptureResult,
     TravelokaProviderError,
+    TravelokaSelectedRoundTripResult,
 )
-from cheapy.providers.traveloka.normalizer import normalize_payload
+from cheapy.providers.traveloka.normalizer import (
+    normalize_payload,
+    normalize_selected_round_trip,
+)
 
 
 PROVIDER_NAME = "traveloka"
@@ -24,6 +34,20 @@ EXACT_ONE_WAY_CAPABILITY = "exact_one_way"
 EXACT_ROUND_TRIP_CAPABILITY = "exact_round_trip"
 DEFAULT_TIMEOUT_SECONDS = 45.0
 ProviderRequest = ProviderExactOneWayRequest | ProviderExactRoundTripRequest
+SAFE_PARTIAL_FAILURE_TYPES = frozenset(
+    {
+        "blocked",
+        "final_round_trip_total_unavailable",
+        "outbound_selection_unavailable",
+        "partial_failure",
+        "rate_limited",
+        "return_capture_timeout",
+        "return_selection_unavailable",
+        "selected_outbound_binding_unavailable",
+        "selected_return_binding_unavailable",
+        "timeout",
+    }
+)
 
 
 class TravelokaProvider:
@@ -76,18 +100,22 @@ class TravelokaProvider:
         try:
             search_method = getattr(self._adapter, search_method_name)
             capture = await asyncio.to_thread(search_method, request)
-            offers, errors = normalize_payload(_capture_payload(capture), request)
-            if isinstance(capture, TravelokaCaptureResult) and capture.timed_out:
-                errors.append(
-                    _provider_error(
-                        code=ErrorCode.PROVIDER_TIMEOUT,
-                        message_en="Traveloka search timed out after returning partial fares.",
-                        failure_type="timeout",
-                        retryable=True,
-                        capability=capability,
-                        source_path=capture.source_path,
-                    )
-                )
+            offers, errors = _normalize_capture(capture, request)
+            if isinstance(capture, TravelokaCaptureResult):
+                partial_error = _capture_partial_error(capture, capability)
+                if partial_error is not None:
+                    errors.append(partial_error)
+                if (
+                    not offers
+                    and not errors
+                    and not _is_explicit_successful_empty_capture(capture)
+                ):
+                    errors.append(_no_usable_outbound_data_error(capability))
+            elif (
+                isinstance(capture, TravelokaSelectedRoundTripResult)
+                and capture.timed_out
+            ):
+                errors.append(_partial_failure_error("timeout", capability))
         except TravelokaProviderError as exc:
             return self._failed_result(
                 started,
@@ -154,6 +182,106 @@ class TravelokaProvider:
 
 def create_provider() -> TravelokaProvider:
     return TravelokaProvider()
+
+
+def _normalize_capture(
+    capture: object,
+    request: ProviderRequest,
+) -> tuple[list[FlightOfferV1], list[ErrorV1]]:
+    if isinstance(capture, TravelokaSelectedRoundTripResult) and isinstance(
+        request,
+        ProviderExactRoundTripRequest,
+    ):
+        return normalize_selected_round_trip(capture, request)
+    if isinstance(capture, TravelokaSelectedRoundTripResult):
+        return [], [_unsupported_response_error(EXACT_ONE_WAY_CAPABILITY)]
+    return normalize_payload(_capture_payload(capture), request)
+
+
+def _capture_partial_error(
+    capture: TravelokaCaptureResult,
+    capability: str,
+) -> ErrorV1 | None:
+    failure_type = capture.partial_failure_type
+    if failure_type is None and capture.timed_out:
+        failure_type = "timeout"
+    safe_failure_type = _safe_failure_type(failure_type)
+    if safe_failure_type is None:
+        return None
+
+    return _partial_failure_error(safe_failure_type, capability)
+
+
+def _partial_failure_error(failure_type: str, capability: str) -> ErrorV1:
+    code, message_en, retryable = _partial_failure_metadata(failure_type)
+    return _provider_error(
+        code=code,
+        message_en=message_en,
+        failure_type=failure_type,
+        retryable=retryable,
+        capability=capability,
+    )
+
+
+def _safe_failure_type(failure_type: str | None) -> str | None:
+    if not failure_type:
+        return None
+    value = failure_type.strip().lower()
+    if value in SAFE_PARTIAL_FAILURE_TYPES:
+        return value
+    return "partial_failure"
+
+
+def _partial_failure_metadata(
+    failure_type: str,
+) -> tuple[ErrorCode, str, bool]:
+    if failure_type in {"timeout", "return_capture_timeout"}:
+        return (
+            ErrorCode.PROVIDER_TIMEOUT,
+            "Traveloka search timed out after returning partial fares.",
+            True,
+        )
+    if failure_type == "rate_limited":
+        return (
+            ErrorCode.PROVIDER_RATE_LIMITED,
+            "Traveloka rate limited the request after returning partial fares.",
+            True,
+        )
+    if failure_type == "blocked":
+        return (
+            ErrorCode.PROVIDER_BLOCKED,
+            "Traveloka returned an access challenge after returning partial fares.",
+            False,
+        )
+    return (
+        ErrorCode.PROVIDER_FAILED,
+        "Traveloka returned partial fares with incomplete provider metadata.",
+        False,
+    )
+
+
+def _is_explicit_successful_empty_capture(capture: TravelokaCaptureResult) -> bool:
+    return capture.search_completed and not capture.timed_out
+
+
+def _no_usable_outbound_data_error(capability: str) -> ErrorV1:
+    return _provider_error(
+        code=ErrorCode.PROVIDER_FAILED,
+        message_en="Traveloka did not return usable outbound fare data.",
+        failure_type="no_usable_outbound_data",
+        retryable=False,
+        capability=capability,
+    )
+
+
+def _unsupported_response_error(capability: str) -> ErrorV1:
+    return _provider_error(
+        code=ErrorCode.PROVIDER_FAILED,
+        message_en="Traveloka returned an unsupported response.",
+        failure_type="unsupported_response",
+        retryable=False,
+        capability=capability,
+    )
 
 
 def _provider_error(
