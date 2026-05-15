@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -23,6 +25,23 @@ DEFAULT_LOCALE = "en-en"
 INITIAL_SEARCH_PATH = "/api/v2/flight/search/initial"
 POLL_SEARCH_PATH = "/api/v2/flight/search/poll"
 SUPPORTED_FARE_PATHS = {INITIAL_SEARCH_PATH, POLL_SEARCH_PATH}
+VISIBLE_OPTION_CLICK_TIMEOUT_MS = 10_000
+_USD_PRICE_AFTER_MARKER_RE = re.compile(
+    r"(?:USD|\$)\s*(\d[\d,]*(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+_USD_PRICE_BEFORE_MARKER_RE = re.compile(
+    r"(?<!:)(\d[\d,]*(?:\.\d+)?)\s*USD\b",
+    re.IGNORECASE,
+)
+_VND_PRICE_AFTER_MARKER_RE = re.compile(
+    r"(?:\u20ab|VND)\s*(\d[\d.,]*)",
+    re.IGNORECASE,
+)
+_VND_PRICE_BEFORE_MARKER_RE = re.compile(
+    r"(?<!:)(\d[\d.,]*)\s*(?:\u20ab|VND\b)",
+    re.IGNORECASE,
+)
 
 ProviderRequest = ProviderExactOneWayRequest | ProviderExactRoundTripRequest
 BrowserLauncher = Callable[..., object]
@@ -47,6 +66,18 @@ class TravelokaSelectedRoundTripResult:
     final_total_currency: str
     source_paths: tuple[str, ...]
     timed_out: bool = False
+
+
+@dataclass(frozen=True)
+class TravelokaVisibleOption:
+    key: str | None
+    airline_name: str | None
+    departure_time_text: str | None
+    arrival_time_text: str | None
+    route_text: str | None
+    price_amount: Decimal
+    currency: str | None
+    locator: object
 
 
 class TravelokaProviderError(Exception):
@@ -247,6 +278,71 @@ def build_search_url(request: ProviderRequest, *, base_url: str = DEFAULT_BASE_U
     return build_full_search_url(request, base_url=base_url)
 
 
+def _cheapest_visible_option(
+    options: Iterable[TravelokaVisibleOption],
+) -> TravelokaVisibleOption | None:
+    return min(
+        options,
+        key=lambda option: (
+            option.price_amount,
+            _visible_option_key_rank(option.key),
+            option.key or "",
+            option.airline_name or "",
+        ),
+        default=None,
+    )
+
+
+def _visible_option_key_rank(key: str | None) -> int:
+    if not key:
+        return 2
+    if key.isdecimal():
+        return 1
+    return 0
+
+
+def _parse_visible_price(text: str) -> tuple[Decimal, str]:
+    normalized = " ".join(text.replace("\xa0", " ").split())
+
+    vnd_amount = _price_amount_near_marker(
+        normalized,
+        _VND_PRICE_AFTER_MARKER_RE,
+        _VND_PRICE_BEFORE_MARKER_RE,
+    )
+    if vnd_amount is not None:
+        amount_text = "".join(
+            character for character in vnd_amount if character.isdigit()
+        )
+        return Decimal(amount_text), "VND"
+
+    usd_amount = _price_amount_near_marker(
+        normalized,
+        _USD_PRICE_AFTER_MARKER_RE,
+        _USD_PRICE_BEFORE_MARKER_RE,
+    )
+    if usd_amount is not None:
+        return Decimal(usd_amount.replace(",", "")), "USD"
+
+    raise ValueError("visible price did not include a supported currency")
+
+
+def _bind_visible_option_to_payload(
+    option: TravelokaVisibleOption,
+    payload: dict[str, object],
+) -> str | None:
+    if option.key is not None and option.key in _explicit_payload_item_ids(payload):
+        return option.key
+    return None
+
+
+def _click_visible_option(
+    option: TravelokaVisibleOption,
+    *,
+    timeout_ms: int = VISIBLE_OPTION_CLICK_TIMEOUT_MS,
+) -> None:
+    option.locator.click(timeout=timeout_ms)  # type: ignore[attr-defined]
+
+
 def _traveloka_date(value: str) -> str:
     parsed = date.fromisoformat(value)
     return f"{parsed.day}-{parsed.month}-{parsed.year}"
@@ -301,6 +397,62 @@ def _search_completed(payload: dict[str, object]) -> bool:
     if not isinstance(meta, dict):
         return False
     return meta.get("searchCompleted") is True
+
+
+def _price_amount_near_marker(
+    text: str,
+    after_marker_pattern: re.Pattern[str],
+    before_marker_pattern: re.Pattern[str],
+) -> str | None:
+    after_marker_match = after_marker_pattern.search(text)
+    if after_marker_match is not None:
+        return after_marker_match.group(1)
+    before_marker_match = before_marker_pattern.search(text)
+    if before_marker_match is not None:
+        return before_marker_match.group(1)
+    return None
+
+
+def _explicit_payload_item_ids(payload: object) -> set[str]:
+    ids: set[str] = set()
+    for path in (
+        ("data", "searchResults"),
+        ("data", "itineraries"),
+        ("data", "flightSearchResult", "itineraries"),
+        ("itineraries",),
+        ("flightSearchResult", "itineraries"),
+    ):
+        items = _payload_list_at_path(payload, path)
+        if items is None:
+            continue
+        for item in items:
+            item_id = _explicit_item_id(item)
+            if item_id is not None:
+                ids.add(item_id)
+    return ids
+
+
+def _payload_list_at_path(payload: object, path: tuple[str, ...]) -> list[object] | None:
+    current = payload
+    for key in path:
+        if not isinstance(current, Mapping):
+            return None
+        current = current.get(key)
+    if isinstance(current, list):
+        return list(current)
+    if isinstance(current, tuple):
+        return list(current)
+    return None
+
+
+def _explicit_item_id(item: object) -> str | None:
+    if not isinstance(item, Mapping):
+        return None
+    for key in ("id", "offerId", "itineraryId"):
+        value = item.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
 
 
 def _close_quietly(target: object | None) -> None:

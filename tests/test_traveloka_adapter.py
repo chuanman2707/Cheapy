@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from time import sleep
+from typing import get_type_hints
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -48,6 +49,14 @@ class FakeResponse:
         if isinstance(self._payload, Exception):
             raise self._payload
         return self._payload
+
+
+class FakeLocator:
+    def __init__(self) -> None:
+        self.click_kwargs: list[dict[str, object]] = []
+
+    def click(self, **kwargs: object) -> None:
+        self.click_kwargs.append(kwargs)
 
 
 class FakePage:
@@ -113,6 +122,26 @@ def _completed_payload() -> dict[str, object]:
             "searchResults": [{"id": "tv-1"}],
         }
     }
+
+
+def _visible_option(
+    *,
+    key: str | None,
+    airline_name: str | None = "VietJet Air",
+    price_amount: Decimal = Decimal("100"),
+    currency: str | None = "USD",
+    locator: object | None = None,
+):
+    return traveloka_adapter.TravelokaVisibleOption(
+        key=key,
+        airline_name=airline_name,
+        departure_time_text="09:00",
+        arrival_time_text="10:35",
+        route_text="SGN-BKK",
+        price_amount=price_amount,
+        currency=currency,
+        locator=locator if locator is not None else FakeLocator(),
+    )
 
 
 def test_build_full_search_url_maps_one_way_request_to_traveloka_route() -> None:
@@ -193,6 +222,211 @@ def test_selected_round_trip_result_carries_final_total_and_safe_paths() -> None
     assert result.selected_return_key == "ret-1"
     assert all(path.startswith("/api/") for path in result.source_paths)
     assert all("?" not in path for path in result.source_paths)
+
+
+def test_cheapest_visible_option_returns_none_for_empty_options() -> None:
+    assert traveloka_adapter._cheapest_visible_option([]) is None
+
+
+def test_cheapest_visible_option_uses_lowest_price_then_stable_key_tie_break() -> None:
+    options = [
+        _visible_option(
+            key="b-option",
+            airline_name="Airline B",
+            price_amount=Decimal("90"),
+        ),
+        _visible_option(
+            key="c-option",
+            airline_name="Airline C",
+            price_amount=Decimal("100"),
+        ),
+        _visible_option(
+            key="a-option",
+            airline_name="Airline A",
+            price_amount=Decimal("90"),
+        ),
+    ]
+
+    cheapest = traveloka_adapter._cheapest_visible_option(options)
+
+    assert cheapest is not None
+    assert cheapest.key == "a-option"
+
+
+def test_visible_option_optional_text_fields_accept_none_and_tie_break_safely() -> None:
+    type_hints = get_type_hints(traveloka_adapter.TravelokaVisibleOption)
+    for field_name in (
+        "key",
+        "airline_name",
+        "departure_time_text",
+        "arrival_time_text",
+        "route_text",
+        "currency",
+    ):
+        assert type_hints[field_name] == str | None
+
+    option_with_none_fields = traveloka_adapter.TravelokaVisibleOption(
+        key=None,
+        airline_name=None,
+        departure_time_text=None,
+        arrival_time_text=None,
+        route_text=None,
+        price_amount=Decimal("90"),
+        currency=None,
+        locator=FakeLocator(),
+    )
+    other_option = traveloka_adapter.TravelokaVisibleOption(
+        key="a-option",
+        airline_name=None,
+        departure_time_text="09:00",
+        arrival_time_text="10:35",
+        route_text="SGN-BKK",
+        price_amount=Decimal("90"),
+        currency="USD",
+        locator=FakeLocator(),
+    )
+
+    cheapest = traveloka_adapter._cheapest_visible_option(
+        [other_option, option_with_none_fields]
+    )
+
+    assert cheapest is other_option
+
+
+def test_cheapest_visible_option_prefers_keyed_option_for_same_price() -> None:
+    keyless_option = _visible_option(
+        key=None,
+        airline_name="Airline A",
+        price_amount=Decimal("90"),
+    )
+    empty_key_option = _visible_option(
+        key="",
+        airline_name="Airline B",
+        price_amount=Decimal("90"),
+    )
+    keyed_option = _visible_option(
+        key="bindable-option",
+        airline_name="Airline C",
+        price_amount=Decimal("90"),
+    )
+
+    cheapest = traveloka_adapter._cheapest_visible_option(
+        [keyless_option, keyed_option, empty_key_option]
+    )
+
+    assert cheapest is keyed_option
+
+
+def test_cheapest_visible_option_prefers_non_numeric_key_for_same_price() -> None:
+    numeric_fallback_option = _visible_option(
+        key="1",
+        airline_name="Airline A",
+        price_amount=Decimal("90"),
+    )
+    keyed_option = _visible_option(
+        key="out-1",
+        airline_name="Airline B",
+        price_amount=Decimal("90"),
+    )
+
+    cheapest = traveloka_adapter._cheapest_visible_option(
+        [numeric_fallback_option, keyed_option]
+    )
+
+    assert cheapest is keyed_option
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_amount", "expected_currency"),
+    [
+        ("USD 123.45", Decimal("123.45"), "USD"),
+        ("$1,234.50", Decimal("1234.50"), "USD"),
+        ("\u20ab1.234.000", Decimal("1234000"), "VND"),
+    ],
+)
+def test_parse_visible_price_handles_usd_like_and_vnd_grouped_prices(
+    text: str,
+    expected_amount: Decimal,
+    expected_currency: str,
+) -> None:
+    amount, currency = traveloka_adapter._parse_visible_price(text)
+
+    assert amount == expected_amount
+    assert currency == expected_currency
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_amount", "expected_currency"),
+    [
+        ("09:00 10:35 USD 123.45", Decimal("123.45"), "USD"),
+        ("09:00 10:35 \u20ab1.234.000", Decimal("1234000"), "VND"),
+    ],
+)
+def test_parse_visible_price_uses_amount_near_supported_currency_marker(
+    text: str,
+    expected_amount: Decimal,
+    expected_currency: str,
+) -> None:
+    amount, currency = traveloka_adapter._parse_visible_price(text)
+
+    assert amount == expected_amount
+    assert currency == expected_currency
+
+
+def test_bind_visible_option_to_payload_returns_key_only_for_explicit_payload_id() -> None:
+    payload = {
+        "data": {
+            "searchResults": [
+                {"id": "out-1"},
+                {"offerId": "out-offer-2"},
+                {"itineraryId": "out-itinerary-3"},
+                {"price": {"amount": "99", "currency": "USD"}},
+            ]
+        }
+    }
+
+    assert (
+        traveloka_adapter._bind_visible_option_to_payload(
+            _visible_option(key="out-offer-2"),
+            payload,
+        )
+        == "out-offer-2"
+    )
+    assert (
+        traveloka_adapter._bind_visible_option_to_payload(
+            _visible_option(key="1"),
+            payload,
+        )
+        is None
+    )
+    assert (
+        traveloka_adapter._bind_visible_option_to_payload(
+            _visible_option(key="missing"),
+            payload,
+        )
+        is None
+    )
+
+
+def test_bind_visible_option_to_payload_ignores_numeric_payload_ids() -> None:
+    payload = {"data": {"searchResults": [{"id": 1}]}}
+
+    assert (
+        traveloka_adapter._bind_visible_option_to_payload(
+            _visible_option(key="1"),
+            payload,
+        )
+        is None
+    )
+
+
+def test_click_visible_option_delegates_timeout_to_locator_click() -> None:
+    locator = FakeLocator()
+    option = _visible_option(key="out-1", locator=locator)
+
+    traveloka_adapter._click_visible_option(option, timeout_ms=3210)
+
+    assert locator.click_kwargs == [{"timeout": 3210}]
 
 
 def test_adapter_captures_completed_initial_fare_payload() -> None:
