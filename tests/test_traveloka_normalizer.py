@@ -44,6 +44,92 @@ def _segment(
     }
 
 
+def _traveloka_search_result(
+    *,
+    item_id: str = "tv-search-1",
+    amount: str = "29890",
+    decimal_points: str = "2",
+    flight_number: str = "VJ-801",
+    return_flight_number: str | None = None,
+) -> dict[str, object]:
+    def route(
+        *,
+        origin: str,
+        destination: str,
+        departure_day: str,
+        flight_number: str,
+        departure_hour: str = "9",
+        arrival_hour: str = "10",
+        arrival_minute: str = "35",
+    ) -> dict[str, object]:
+        return {
+            "departureAirport": origin,
+            "arrivalAirport": destination,
+            "totalNumStop": "0",
+            "durationInMinutes": "95",
+            "segments": [
+                {
+                    "departureAirport": origin,
+                    "arrivalAirport": destination,
+                    "flightNumber": flight_number,
+                    "airlineCode": "VJ",
+                    "durationMinutes": "95",
+                    "departureDate": {
+                        "year": "2026",
+                        "month": "7",
+                        "day": departure_day,
+                    },
+                    "departureTime": {"hour": departure_hour, "minute": "0"},
+                    "arrivalDate": {
+                        "year": "2026",
+                        "month": "7",
+                        "day": departure_day,
+                    },
+                    "arrivalTime": {
+                        "hour": arrival_hour,
+                        "minute": arrival_minute,
+                    },
+                }
+            ],
+        }
+
+    routes = [
+        route(
+            origin="SGN",
+            destination="BKK",
+            departure_day="10",
+            flight_number=flight_number,
+        )
+    ]
+    if return_flight_number is not None:
+        routes.append(
+            route(
+                origin="BKK",
+                destination="SGN",
+                departure_day="17",
+                flight_number=return_flight_number,
+                departure_hour="11",
+                arrival_hour="12",
+            )
+        )
+
+    price = {
+        "currencyValue": {"currency": "USD", "amount": amount},
+        "numOfDecimalPoint": decimal_points,
+    }
+    return {
+        "id": item_id,
+        "flightMetadata": {
+            "totalNumStop": "0",
+            "tripDuration": "95",
+            "airlineIds": ["VJ"],
+            "totalCombinedPrice": price,
+        },
+        "fare": {"display": price},
+        "connectingFlightRoutes": routes,
+    }
+
+
 def _assert_parse_error(
     offers: list[FlightOfferV1],
     errors: list[ErrorV1],
@@ -105,6 +191,99 @@ def test_normalize_payload_maps_one_way_offer() -> None:
     assert [(leg.origin, leg.destination, leg.flight_number) for leg in offer.legs] == [
         ("SGN", "BKK", "VJ801")
     ]
+
+
+def test_normalize_payload_maps_traveloka_search_results_offer() -> None:
+    payload = {
+        "data": {
+            "meta": {"searchCompleted": True},
+            "searchResults": [_traveloka_search_result()],
+        }
+    }
+
+    offers, errors = normalize_payload(payload, _one_way_request())
+
+    assert errors == []
+    assert len(offers) == 1
+    offer = offers[0]
+    assert offer.offer_id == "traveloka:SGN-BKK:2026-07-10:tv-search-1"
+    assert offer.provider == "traveloka"
+    assert offer.price_amount == 298.9
+    assert offer.currency == "USD"
+    assert offer.actual_origin == "SGN"
+    assert offer.actual_destination == "BKK"
+    assert offer.actual_departure_date == "2026-07-10"
+    assert offer.total_duration_minutes == 95
+    assert offer.stops == 0
+    assert [(leg.origin, leg.destination, leg.flight_number) for leg in offer.legs] == [
+        ("SGN", "BKK", "VJ-801")
+    ]
+
+
+def test_normalize_payload_accepts_completed_empty_search_results() -> None:
+    payload = {"data": {"meta": {"searchCompleted": True}, "searchResults": []}}
+
+    offers, errors = normalize_payload(payload, _one_way_request())
+
+    assert offers == []
+    assert errors == []
+
+
+def test_normalize_payload_uses_traveloka_metadata_price_fallback() -> None:
+    item = _traveloka_search_result(amount="17600")
+    item.pop("fare")
+    payload = {
+        "data": {
+            "meta": {"searchCompleted": True},
+            "searchResults": [item],
+        }
+    }
+
+    offers, errors = normalize_payload(payload, _one_way_request())
+
+    assert errors == []
+    assert offers[0].price_amount == 176.0
+    assert offers[0].currency == "USD"
+
+
+def test_normalize_payload_maps_traveloka_round_trip_search_result() -> None:
+    payload = {
+        "data": {
+            "meta": {"searchCompleted": True},
+            "searchResults": [
+                _traveloka_search_result(
+                    item_id="tv-rt-1",
+                    amount="17600",
+                    return_flight_number="VJ-802",
+                )
+            ],
+        }
+    }
+
+    offers, errors = normalize_payload(payload, _round_trip_request())
+
+    assert errors == []
+    assert len(offers) == 1
+    offer = offers[0]
+    assert offer.offer_id == "traveloka:SGN-BKK:2026-07-10:2026-07-17:tv-rt-1"
+    assert offer.price_amount == 176.0
+    assert offer.actual_return_date == "2026-07-17"
+    assert [(leg.origin, leg.destination) for leg in offer.legs] == [
+        ("SGN", "BKK"),
+        ("BKK", "SGN"),
+    ]
+
+
+def test_normalize_payload_reports_traveloka_search_result_parse_error() -> None:
+    secret = "sk_live_traveloka_search_result_secret"
+    item = _traveloka_search_result()
+    item["debug"] = secret
+    item.pop("connectingFlightRoutes")
+    payload = {"data": {"meta": {"searchCompleted": True}, "searchResults": [item]}}
+
+    offers, errors = normalize_payload(payload, _one_way_request())
+
+    _assert_parse_error(offers, errors, secret=secret)
 
 
 def test_normalize_payload_ranks_mixed_currency_offers_sequentially() -> None:
