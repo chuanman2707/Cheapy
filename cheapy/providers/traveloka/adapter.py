@@ -72,8 +72,8 @@ class TravelokaAdapter:
     ) -> None:
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be greater than 0")
-        if poll_interval_seconds < 0:
-            raise ValueError("poll_interval_seconds must not be negative")
+        if poll_interval_seconds <= 0:
+            raise ValueError("poll_interval_seconds must be greater than 0")
         self._base_url = base_url
         self._timeout_seconds = timeout_seconds
         self._poll_interval_seconds = poll_interval_seconds
@@ -97,16 +97,20 @@ class TravelokaAdapter:
         browser: object | None = None
         context: object | None = None
         state = _CaptureState()
+        deadline = monotonic() + self._timeout_seconds
         try:
-            browser = self._launch_browser(headless=True)
-        except Exception as exc:
-            raise _browser_unavailable_error(type(exc).__name__) from None
+            try:
+                browser = self._launch_browser(headless=True)
+            except Exception as exc:
+                raise _browser_unavailable_error(type(exc).__name__) from None
 
-        try:
+            _remaining_timeout_ms(deadline)
             context = browser.new_context(locale="en-US")  # type: ignore[attr-defined]
+            _remaining_timeout_ms(deadline)
             page = context.new_page()  # type: ignore[attr-defined]
+            _remaining_timeout_ms(deadline)
             page.on("response", state.handle_response)  # type: ignore[attr-defined]
-            deadline = monotonic() + self._timeout_seconds
+            _remaining_timeout_ms(deadline)
             page.goto(  # type: ignore[attr-defined]
                 build_full_search_url(request, base_url=self._base_url),
                 wait_until="domcontentloaded",
@@ -267,8 +271,11 @@ def _remaining_timeout_ms(deadline: float, *, raise_on_expired: bool = True) -> 
 def _is_timeout_exception(exc: Exception) -> bool:
     if isinstance(exc, TimeoutError):
         return True
-    text = f"{type(exc).__name__} {exc}".lower()
-    return "timeout" in text or "timed out" in text
+    type_name = type(exc).__name__.lower()
+    module_name = type(exc).__module__.lower()
+    return "timeout" in type_name or (
+        "playwright" in module_name and "timeout" in type_name
+    )
 
 
 def _timeout_error(exception_type: str | None = None) -> TravelokaProviderError:

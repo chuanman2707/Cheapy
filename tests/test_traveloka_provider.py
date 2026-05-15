@@ -250,6 +250,31 @@ def test_traveloka_provider_returns_partial_when_capture_times_out_after_offers(
     }
 
 
+def test_traveloka_provider_returns_failed_when_empty_capture_times_out() -> None:
+    adapter = FakeAdapter(
+        _capture(
+            {"data": {"searchResults": []}},
+            source_path="/api/v2/flight/search/initial",
+            timed_out=True,
+        )
+    )
+    provider = TravelokaProvider(adapter=adapter, timeout_seconds=1)
+
+    result = asyncio.run(provider.search_exact_one_way(_request()))
+
+    assert result.status == ProviderStatusCode.FAILED
+    assert result.offers == []
+    assert result.retryable is True
+    assert result.errors[0].code == ErrorCode.PROVIDER_TIMEOUT
+    assert result.errors[0].retryable is True
+    assert result.errors[0].details == {
+        "provider": "traveloka",
+        "capability": "exact_one_way",
+        "failure_type": "timeout",
+        "source_path": "/api/v2/flight/search/initial",
+    }
+
+
 def test_traveloka_provider_routes_round_trip_to_adapter() -> None:
     adapter = FakeAdapter(
         _capture(

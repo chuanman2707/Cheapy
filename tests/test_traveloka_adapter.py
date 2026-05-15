@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from time import sleep
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -233,7 +234,7 @@ def test_adapter_returns_partial_payload_when_timeout_happens_after_offers() -> 
     adapter = TravelokaAdapter(
         launch_browser=lambda **kwargs: FakeBrowser(FakeContext(page)),
         timeout_seconds=0.01,
-        poll_interval_seconds=0,
+        poll_interval_seconds=0.001,
     )
 
     result = adapter.search_exact_one_way(_one_way_request())
@@ -249,7 +250,7 @@ def test_adapter_raises_timeout_when_no_fare_payload_arrives() -> None:
     adapter = TravelokaAdapter(
         launch_browser=lambda **kwargs: FakeBrowser(FakeContext(page)),
         timeout_seconds=0.01,
-        poll_interval_seconds=0,
+        poll_interval_seconds=0.001,
     )
 
     with pytest.raises(TravelokaProviderError) as exc_info:
@@ -273,6 +274,30 @@ def test_adapter_maps_browser_launch_failure_to_browser_unavailable() -> None:
     assert exc_info.value.error_code == ErrorCode.PROVIDER_FAILED
     assert exc_info.value.retryable is True
     assert "raw launch secret" not in str(exc_info.value)
+
+
+def test_adapter_times_out_before_navigation_after_slow_launch() -> None:
+    page = FakePage([])
+    context, browser = _browser_for(page)
+
+    def slow_launch(**kwargs: object) -> FakeBrowser:
+        sleep(0.02)
+        return browser
+
+    adapter = TravelokaAdapter(
+        launch_browser=slow_launch,
+        timeout_seconds=0.001,
+        poll_interval_seconds=0.001,
+    )
+
+    with pytest.raises(TravelokaProviderError) as exc_info:
+        adapter.search_exact_one_way(_one_way_request())
+
+    assert exc_info.value.failure_type == "timeout"
+    assert exc_info.value.error_code == ErrorCode.PROVIDER_TIMEOUT
+    assert page.goto_urls == []
+    assert context.closed is False
+    assert browser.closed is True
 
 
 @pytest.mark.parametrize(
@@ -411,7 +436,7 @@ def test_adapter_blocks_terminal_captcha_page_when_no_payload_arrives() -> None:
     adapter = TravelokaAdapter(
         launch_browser=lambda **kwargs: FakeBrowser(FakeContext(page)),
         timeout_seconds=0.01,
-        poll_interval_seconds=0,
+        poll_interval_seconds=0.001,
     )
 
     with pytest.raises(TravelokaProviderError) as exc_info:
@@ -462,11 +487,32 @@ def test_adapter_maps_navigation_timeout_after_launch() -> None:
     assert browser.closed is True
 
 
+def test_adapter_does_not_classify_runtime_error_message_as_timeout() -> None:
+    class FailingPage(FakePage):
+        def goto(self, url: str, *, wait_until: str, timeout: int) -> None:
+            raise RuntimeError("timeout configuration invalid")
+
+    page = FailingPage([])
+    context, browser = _browser_for(page)
+    adapter = TravelokaAdapter(launch_browser=lambda **kwargs: browser)
+
+    with pytest.raises(TravelokaProviderError) as exc_info:
+        adapter.search_exact_one_way(_one_way_request())
+
+    assert exc_info.value.failure_type == "navigation_failed"
+    assert exc_info.value.error_code == ErrorCode.PROVIDER_FAILED
+    assert context.closed is True
+    assert browser.closed is True
+
+
 def test_adapter_rejects_invalid_timeout_seconds() -> None:
     with pytest.raises(ValueError, match="timeout_seconds"):
         TravelokaAdapter(timeout_seconds=0)
 
 
-def test_adapter_rejects_negative_poll_interval_seconds() -> None:
+@pytest.mark.parametrize("poll_interval_seconds", [0, -0.01])
+def test_adapter_rejects_invalid_poll_interval_seconds(
+    poll_interval_seconds: float,
+) -> None:
     with pytest.raises(ValueError, match="poll_interval_seconds"):
-        TravelokaAdapter(poll_interval_seconds=-0.01)
+        TravelokaAdapter(poll_interval_seconds=poll_interval_seconds)

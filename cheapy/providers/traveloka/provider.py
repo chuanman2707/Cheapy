@@ -77,7 +77,7 @@ class TravelokaProvider:
             search_method = getattr(self._adapter, search_method_name)
             capture = await asyncio.to_thread(search_method, request)
             offers, errors = normalize_payload(_capture_payload(capture), request)
-            if isinstance(capture, TravelokaCaptureResult) and capture.timed_out and offers:
+            if isinstance(capture, TravelokaCaptureResult) and capture.timed_out:
                 errors.append(
                     _provider_error(
                         code=ErrorCode.PROVIDER_TIMEOUT,
