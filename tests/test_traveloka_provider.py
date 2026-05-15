@@ -318,5 +318,12 @@ def test_traveloka_provider_routes_round_trip_to_adapter() -> None:
 
     assert adapter.round_trip_calls == 1
     assert result.capability == "exact_round_trip"
-    assert result.status == ProviderStatusCode.SUCCESS
-    assert result.offers[0].actual_return_date == "2026-07-17"
+    assert result.status == ProviderStatusCode.PARTIAL
+    assert len(result.offers) == 1
+    offer = result.offers[0]
+    assert offer.comparable is False
+    assert offer.actual_return_date is None
+    assert offer.return_offset_days is None
+    assert [(leg.origin, leg.destination) for leg in offer.legs] == [("SGN", "BKK")]
+    assert len(result.errors) == 1
+    assert result.errors[0].details["failure_type"] == "return_details_unavailable"

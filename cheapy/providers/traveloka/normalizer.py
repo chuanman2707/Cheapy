@@ -122,11 +122,24 @@ def _normalize_item(
         if not legs:
             raise ValueError("itinerary item has no legs")
 
-        route = _validate_route(
+        force_raw_round_trip_partial = isinstance(
             request,
-            legs,
-            allow_priced_round_trip_outbound_only=is_traveloka_search_result,
+            ProviderExactRoundTripRequest,
         )
+        if force_raw_round_trip_partial:
+            legs = _raw_round_trip_outbound_legs(request, legs)
+            route = _ValidatedRoute(
+                outbound_end_index=len(legs) - 1,
+                return_start_index=None,
+                return_departure_date=None,
+                return_details_unavailable=True,
+            )
+        else:
+            route = _validate_route(
+                request,
+                legs,
+                allow_priced_round_trip_outbound_only=is_traveloka_search_result,
+            )
         actual_departure_date = legs[0].departure_time[:10]
         actual_return_date = route.return_departure_date
         _validate_exact_candidate_dates(
@@ -189,8 +202,16 @@ def _normalize_item(
                 actual_return_date=actual_return_date,
                 return_offset_days=return_offset_days,
                 legs=legs,
-                total_duration_minutes=_total_duration_minutes(raw_item, legs),
-                stops=_stops(raw_item, route, leg_count=len(legs)),
+                total_duration_minutes=(
+                    sum(leg.duration_minutes for leg in legs)
+                    if route.return_details_unavailable
+                    else _total_duration_minutes(raw_item, legs)
+                ),
+                stops=(
+                    route.outbound_end_index
+                    if route.return_details_unavailable
+                    else _stops(raw_item, route, leg_count=len(legs))
+                ),
                 flags=OfferFlagsV1(
                     uses_flexible_departure_date=departure_offset_days != 0,
                     uses_flexible_return_date=return_offset_days not in (None, 0),
@@ -593,6 +614,21 @@ def _validate_route(
         return_start_index=return_start_index,
         return_departure_date=legs[return_start_index].departure_time[:10],
     )
+
+
+def _raw_round_trip_outbound_legs(
+    request: ProviderExactRoundTripRequest,
+    legs: list[FlightLegV1],
+) -> list[FlightLegV1]:
+    outbound_end_index = _chain_end_index(
+        legs,
+        start=request.origin,
+        end=request.destination,
+        start_index=0,
+    )
+    if outbound_end_index is None:
+        raise ValueError("outbound legs do not match request")
+    return legs[: outbound_end_index + 1]
 
 
 def _validate_exact_candidate_dates(

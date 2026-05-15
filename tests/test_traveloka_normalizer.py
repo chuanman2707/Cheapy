@@ -246,7 +246,7 @@ def test_normalize_payload_uses_traveloka_metadata_price_fallback() -> None:
     assert offers[0].currency == "USD"
 
 
-def test_normalize_payload_maps_traveloka_round_trip_search_result() -> None:
+def test_normalize_payload_maps_traveloka_round_trip_search_result_as_unselected_partial() -> None:
     payload = {
         "data": {
             "meta": {"searchCompleted": True},
@@ -262,15 +262,21 @@ def test_normalize_payload_maps_traveloka_round_trip_search_result() -> None:
 
     offers, errors = normalize_payload(payload, _round_trip_request())
 
-    assert errors == []
     assert len(offers) == 1
     offer = offers[0]
     assert offer.offer_id == "traveloka:SGN-BKK:2026-07-10:2026-07-17:tv-rt-1"
     assert offer.price_amount == 176.0
-    assert offer.actual_return_date == "2026-07-17"
-    assert [(leg.origin, leg.destination) for leg in offer.legs] == [
-        ("SGN", "BKK"),
-        ("BKK", "SGN"),
+    assert offer.comparable is False
+    assert offer.rank_within_currency is None
+    assert offer.global_rank is None
+    assert offer.actual_return_date is None
+    assert offer.return_offset_days is None
+    assert offer.total_duration_minutes == 95
+    assert offer.stops == 0
+    assert [(leg.origin, leg.destination) for leg in offer.legs] == [("SGN", "BKK")]
+    assert len(errors) == 1
+    assert [error.details["failure_type"] for error in errors] == [
+        "return_details_unavailable"
     ]
 
 
@@ -329,13 +335,54 @@ def test_normalize_payload_reports_missing_return_details_per_offer() -> None:
     assert [error.details["item_index"] for error in errors] == [1, 2]
 
 
-def test_normalize_payload_does_not_trust_search_result_marker_from_itinerary() -> None:
+def test_normalize_payload_maps_legacy_round_trip_itinerary_as_unselected_partial() -> None:
+    payload = {
+        "data": {
+            "itineraries": [
+                {
+                    "id": "legacy-rt",
+                    "price": {"amount": 240.0, "currency": "USD"},
+                    "durationMinutes": 190,
+                    "stops": 1,
+                    "segments": [
+                        _segment(),
+                        _segment(
+                            origin="BKK",
+                            destination="SGN",
+                            departure_time="2026-07-17T11:00:00",
+                            arrival_time="2026-07-17T12:35:00",
+                            flight_number="VJ802",
+                        ),
+                    ],
+                }
+            ]
+        }
+    }
+
+    offers, errors = normalize_payload(payload, _round_trip_request())
+
+    assert len(offers) == 1
+    offer = offers[0]
+    assert offer.offer_id == "traveloka:SGN-BKK:2026-07-10:2026-07-17:legacy-rt"
+    assert offer.comparable is False
+    assert offer.rank_within_currency is None
+    assert offer.global_rank is None
+    assert offer.actual_return_date is None
+    assert offer.return_offset_days is None
+    assert offer.total_duration_minutes == 95
+    assert offer.stops == 0
+    assert [(leg.origin, leg.destination) for leg in offer.legs] == [("SGN", "BKK")]
+    assert len(errors) == 1
+    assert errors[0].details["failure_type"] == "return_details_unavailable"
+
+
+def test_normalize_payload_maps_outbound_only_legacy_itinerary_as_unselected_partial() -> None:
     payload = {
         "data": {
             "itineraries": [
                 {
                     "_traveloka_search_result": True,
-                    "id": "spoofed-marker",
+                    "id": "legacy-outbound-only",
                     "price": {"amount": 187.78, "currency": "USD"},
                     "durationMinutes": 95,
                     "stops": 0,
@@ -347,7 +394,17 @@ def test_normalize_payload_does_not_trust_search_result_marker_from_itinerary() 
 
     offers, errors = normalize_payload(payload, _round_trip_request())
 
-    _assert_parse_error(offers, errors, capability="exact_round_trip")
+    assert len(offers) == 1
+    offer = offers[0]
+    assert offer.offer_id == (
+        "traveloka:SGN-BKK:2026-07-10:2026-07-17:legacy-outbound-only"
+    )
+    assert offer.comparable is False
+    assert offer.actual_return_date is None
+    assert offer.return_offset_days is None
+    assert [(leg.origin, leg.destination) for leg in offer.legs] == [("SGN", "BKK")]
+    assert len(errors) == 1
+    assert errors[0].details["failure_type"] == "return_details_unavailable"
 
 
 def test_normalize_payload_reports_traveloka_search_result_parse_error() -> None:
@@ -528,7 +585,7 @@ def test_normalize_payload_rejects_malformed_datetime_without_leaking_value() ->
     _assert_parse_error(offers, errors, secret=invalid_datetime)
 
 
-def test_normalize_payload_maps_round_trip_offer() -> None:
+def test_normalize_payload_maps_legacy_round_trip_offer_as_unselected_partial() -> None:
     payload = {
         "data": {
             "itineraries": [
@@ -554,21 +611,25 @@ def test_normalize_payload_maps_round_trip_offer() -> None:
 
     offers, errors = normalize_payload(payload, _round_trip_request())
 
-    assert errors == []
+    assert len(offers) == 1
     offer = offers[0]
+    assert len(errors) == 1
+    assert errors[0].details["failure_type"] == "return_details_unavailable"
     assert offer.offer_id == "traveloka:SGN-BKK:2026-07-10:2026-07-17:tv-rt-1"
     assert offer.requested_return_date == "2026-07-17"
     assert offer.actual_origin == "SGN"
     assert offer.actual_destination == "BKK"
-    assert offer.actual_return_date == "2026-07-17"
-    assert offer.return_offset_days == 0
+    assert offer.actual_return_date is None
+    assert offer.return_offset_days is None
+    assert offer.total_duration_minutes == 95
+    assert offer.stops == 0
+    assert offer.comparable is False
+    assert offer.rank_within_currency is None
+    assert offer.global_rank is None
     assert offer.flags.uses_flexible_departure_date is False
     assert offer.flags.uses_flexible_return_date is False
     assert offer.fare_details_status == "not_collected"
-    assert [(leg.origin, leg.destination) for leg in offer.legs] == [
-        ("SGN", "BKK"),
-        ("BKK", "SGN"),
-    ]
+    assert [(leg.origin, leg.destination) for leg in offer.legs] == [("SGN", "BKK")]
 
 
 def test_normalize_payload_rejects_round_trip_wrong_outbound_date() -> None:
@@ -603,7 +664,7 @@ def test_normalize_payload_rejects_round_trip_wrong_outbound_date() -> None:
     _assert_parse_error(offers, errors, capability="exact_round_trip")
 
 
-def test_normalize_payload_rejects_round_trip_wrong_return_date() -> None:
+def test_normalize_payload_ignores_unselected_return_date_mismatch_for_partial() -> None:
     payload = {
         "data": {
             "itineraries": [
@@ -629,10 +690,15 @@ def test_normalize_payload_rejects_round_trip_wrong_return_date() -> None:
 
     offers, errors = normalize_payload(payload, _round_trip_request())
 
-    _assert_parse_error(offers, errors, capability="exact_round_trip")
+    assert len(offers) == 1
+    assert offers[0].actual_return_date is None
+    assert offers[0].return_offset_days is None
+    assert offers[0].comparable is False
+    assert len(errors) == 1
+    assert errors[0].details["failure_type"] == "return_details_unavailable"
 
 
-def test_normalize_payload_rejects_round_trip_without_valid_return_chain() -> None:
+def test_normalize_payload_maps_missing_return_chain_as_unselected_partial() -> None:
     secret = "sk_live_traveloka_missing_return_secret"
     payload = {
         "data": {
@@ -651,12 +717,14 @@ def test_normalize_payload_rejects_round_trip_without_valid_return_chain() -> No
 
     offers, errors = normalize_payload(payload, _round_trip_request())
 
-    _assert_parse_error(
-        offers,
-        errors,
-        capability="exact_round_trip",
-        secret=secret,
+    assert len(offers) == 1
+    assert offers[0].offer_id == (
+        "traveloka:SGN-BKK:2026-07-10:2026-07-17:missing-return"
     )
+    assert offers[0].comparable is False
+    assert len(errors) == 1
+    assert secret not in errors[0].model_dump_json()
+    assert errors[0].details["failure_type"] == "return_details_unavailable"
 
 
 def test_normalize_payload_empty_result_returns_no_errors() -> None:
