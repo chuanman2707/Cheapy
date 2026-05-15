@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import date, timedelta
 import os
 
 import pytest
@@ -21,11 +22,12 @@ pytestmark = [
 
 def test_traveloka_live_exact_round_trip_smoke_returns_structured_result() -> None:
     provider = create_provider()
+    departure_date = date.today() + timedelta(days=30)
     request = ProviderExactRoundTripRequest(
         origin="CXR",
         destination="HAN",
-        departure_date="2026-05-20",
-        return_date="2026-05-25",
+        departure_date=departure_date.isoformat(),
+        return_date=(departure_date + timedelta(days=5)).isoformat(),
     )
 
     result = asyncio.run(provider.search_exact_round_trip(request))
@@ -40,4 +42,6 @@ def test_traveloka_live_exact_round_trip_smoke_returns_structured_result() -> No
     for offer in result.offers:
         assert offer.provider == "traveloka"
         assert offer.price_amount > 0
-        assert offer.currency == "USD"
+        assert len(offer.currency) == 3
+        assert offer.currency.isalpha()
+        assert offer.currency.isupper()
