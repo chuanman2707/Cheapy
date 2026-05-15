@@ -44,8 +44,48 @@ def test_built_wheel_can_load_packaged_airport_and_provider_data(tmp_path: Path)
     subprocess.run([sys.executable, "-m", "venv", str(venv_dir)], check=True)
 
     python = venv_dir / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+    requirements_path = tmp_path / "runtime-requirements.txt"
     subprocess.run(
-        ["uv", "pip", "install", "--python", str(python), "--offline", str(wheel)],
+        [
+            "uv",
+            "export",
+            "--no-dev",
+            "--no-emit-project",
+            "--format",
+            "requirements-txt",
+            "--output-file",
+            str(requirements_path),
+        ],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    subprocess.run(
+        [
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            str(python),
+            "--offline",
+            "--requirement",
+            str(requirements_path),
+        ],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    subprocess.run(
+        [
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            str(python),
+            "--offline",
+            "--no-deps",
+            str(wheel),
+        ],
         check=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
