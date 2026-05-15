@@ -33,30 +33,49 @@ def normalize_payload(
     errors: list[ErrorV1] = []
     for item_index, item in enumerate(_itinerary_items(payload), start=1):
         try:
-            offers.append(
-                _normalize_item(
-                    item,
-                    request,
-                    item_index=item_index,
-                    rank=len(offers) + 1,
-                )
+            normalized = _normalize_item(
+                item,
+                request,
+                item_index=item_index,
+                rank=len(offers) + 1,
             )
+            offers.append(normalized.offer)
+            if normalized.return_details_unavailable:
+                errors.append(
+                    _return_details_unavailable_error(item_index, request)
+                )
         except _ItemNormalizationError as exc:
             errors.append(exc.error)
     return _rank_offers(offers), errors
 
 
 def _rank_offers(offers: list[FlightOfferV1]) -> list[FlightOfferV1]:
-    return [
-        offer.model_copy(
-            update={
-                "comparable": True,
-                "rank_within_currency": rank,
-                "global_rank": rank,
-            }
+    ranked: list[FlightOfferV1] = []
+    comparable_rank = 0
+    for offer in offers:
+        if not offer.comparable:
+            ranked.append(
+                offer.model_copy(
+                    update={
+                        "comparable": False,
+                        "rank_within_currency": None,
+                        "global_rank": None,
+                    }
+                )
+            )
+            continue
+
+        comparable_rank += 1
+        ranked.append(
+            offer.model_copy(
+                update={
+                    "comparable": True,
+                    "rank_within_currency": comparable_rank,
+                    "global_rank": comparable_rank,
+                }
+            )
         )
-        for rank, offer in enumerate(offers, start=1)
-    ]
+    return ranked
 
 
 class _ItemNormalizationError(Exception):
@@ -67,35 +86,54 @@ class _ItemNormalizationError(Exception):
         self.error = error
 
 
+@dataclass(frozen=True)
+class _TravelokaSearchResultItem:
+    payload: Mapping[str, object]
+
+
+@dataclass(frozen=True)
+class _NormalizedItem:
+    offer: FlightOfferV1
+    return_details_unavailable: bool = False
+
+
 def _normalize_item(
     item: object,
     request: ProviderRequest,
     *,
     item_index: int,
     rank: int,
-) -> FlightOfferV1:
+) -> _NormalizedItem:
     try:
-        if not isinstance(item, Mapping):
+        is_traveloka_search_result = isinstance(item, _TravelokaSearchResultItem)
+        raw_item = item.payload if is_traveloka_search_result else item
+
+        if not isinstance(raw_item, Mapping):
             raise ValueError("itinerary item must be a mapping")
 
-        price = _price_mapping(item)
-        currency = _currency(price, item)
+        price = _price_mapping(raw_item)
+        currency = _currency(price, raw_item)
         if currency is None:
             raise _ItemNormalizationError(
                 _currency_unavailable_error(item_index, request)
             )
 
-        legs = [_normalize_leg(segment) for segment in _raw_segments(item)]
+        legs = [_normalize_leg(segment) for segment in _raw_segments(raw_item)]
         if not legs:
             raise ValueError("itinerary item has no legs")
 
-        route = _validate_route(request, legs)
+        route = _validate_route(
+            request,
+            legs,
+            allow_priced_round_trip_outbound_only=is_traveloka_search_result,
+        )
         actual_departure_date = legs[0].departure_time[:10]
         actual_return_date = route.return_departure_date
         _validate_exact_candidate_dates(
             request,
             actual_departure_date=actual_departure_date,
             actual_return_date=actual_return_date,
+            allow_missing_return_details=route.return_details_unavailable,
         )
         departure_offset_days = _date_offset(
             actual_departure_date,
@@ -112,50 +150,54 @@ def _normalize_item(
             if isinstance(request, ProviderExactRoundTripRequest)
             else ""
         )
+        is_comparable = not route.return_details_unavailable
 
-        return FlightOfferV1(
-            offer_id=(
-                f"{PROVIDER_NAME}:{request.origin}-{request.destination}:"
-                f"{request.departure_date}{return_suffix}:{_item_id(item, item_index)}"
+        return _NormalizedItem(
+            offer=FlightOfferV1(
+                offer_id=(
+                    f"{PROVIDER_NAME}:{request.origin}-{request.destination}:"
+                    f"{request.departure_date}{return_suffix}:{_item_id(raw_item, item_index)}"
+                ),
+                price_amount=_price_amount(price),
+                currency=currency,
+                comparable=is_comparable,
+                rank_within_currency=rank if is_comparable else None,
+                global_rank=rank if is_comparable else None,
+                provider=PROVIDER_NAME,
+                requested_origin=_requested_origin(request),
+                requested_destination=_requested_destination(request),
+                actual_origin=(
+                    request.origin
+                    if isinstance(request, ProviderExactRoundTripRequest)
+                    else legs[0].origin
+                ),
+                actual_destination=(
+                    request.destination
+                    if isinstance(request, ProviderExactRoundTripRequest)
+                    else legs[-1].destination
+                ),
+                nearby_origin_distance_km=None,
+                nearby_destination_distance_km=None,
+                requested_departure_date=_requested_departure_date(request),
+                actual_departure_date=actual_departure_date,
+                departure_offset_days=departure_offset_days,
+                requested_return_date=(
+                    _requested_return_date(request)
+                    if isinstance(request, ProviderExactRoundTripRequest)
+                    else None
+                ),
+                actual_return_date=actual_return_date,
+                return_offset_days=return_offset_days,
+                legs=legs,
+                total_duration_minutes=_total_duration_minutes(raw_item, legs),
+                stops=_stops(raw_item, route, leg_count=len(legs)),
+                flags=OfferFlagsV1(
+                    uses_flexible_departure_date=departure_offset_days != 0,
+                    uses_flexible_return_date=return_offset_days not in (None, 0),
+                ),
+                fare_details_status="not_collected",
             ),
-            price_amount=_price_amount(price),
-            currency=currency,
-            comparable=True,
-            rank_within_currency=rank,
-            global_rank=rank,
-            provider=PROVIDER_NAME,
-            requested_origin=_requested_origin(request),
-            requested_destination=_requested_destination(request),
-            actual_origin=(
-                request.origin
-                if isinstance(request, ProviderExactRoundTripRequest)
-                else legs[0].origin
-            ),
-            actual_destination=(
-                request.destination
-                if isinstance(request, ProviderExactRoundTripRequest)
-                else legs[-1].destination
-            ),
-            nearby_origin_distance_km=None,
-            nearby_destination_distance_km=None,
-            requested_departure_date=_requested_departure_date(request),
-            actual_departure_date=actual_departure_date,
-            departure_offset_days=departure_offset_days,
-            requested_return_date=(
-                _requested_return_date(request)
-                if isinstance(request, ProviderExactRoundTripRequest)
-                else None
-            ),
-            actual_return_date=actual_return_date,
-            return_offset_days=return_offset_days,
-            legs=legs,
-            total_duration_minutes=_total_duration_minutes(item, legs),
-            stops=_stops(item, route, leg_count=len(legs)),
-            flags=OfferFlagsV1(
-                uses_flexible_departure_date=departure_offset_days != 0,
-                uses_flexible_return_date=return_offset_days not in (None, 0),
-            ),
-            fare_details_status="not_collected",
+            return_details_unavailable=route.return_details_unavailable,
         )
     except _ItemNormalizationError:
         raise
@@ -216,7 +258,7 @@ def _canonical_search_result(item: object) -> object:
     if segments is not None:
         canonical["segments"] = segments
 
-    return canonical
+    return _TravelokaSearchResultItem(canonical)
 
 
 def _traveloka_search_result_price(item: Mapping[str, object]) -> dict[str, object]:
@@ -501,7 +543,12 @@ def _iso_datetime(value: object) -> str:
     return str(value)
 
 
-def _validate_route(request: ProviderRequest, legs: list[FlightLegV1]) -> "_ValidatedRoute":
+def _validate_route(
+    request: ProviderRequest,
+    legs: list[FlightLegV1],
+    *,
+    allow_priced_round_trip_outbound_only: bool = False,
+) -> "_ValidatedRoute":
     outbound_end_index = _chain_end_index(
         legs,
         start=request.origin,
@@ -528,6 +575,16 @@ def _validate_route(request: ProviderRequest, legs: list[FlightLegV1]) -> "_Vali
         start_index=return_start_index,
     )
     if return_end_index is None:
+        if (
+            allow_priced_round_trip_outbound_only
+            and outbound_end_index == len(legs) - 1
+        ):
+            return _ValidatedRoute(
+                outbound_end_index=outbound_end_index,
+                return_start_index=None,
+                return_departure_date=None,
+                return_details_unavailable=True,
+            )
         raise ValueError("round-trip return legs do not match request")
     if return_end_index != len(legs) - 1:
         raise ValueError("round-trip result has unexpected trailing legs")
@@ -543,10 +600,13 @@ def _validate_exact_candidate_dates(
     *,
     actual_departure_date: str,
     actual_return_date: str | None,
+    allow_missing_return_details: bool = False,
 ) -> None:
     if actual_departure_date != request.departure_date:
         raise ValueError("outbound departure date does not match exact request")
     if not isinstance(request, ProviderExactRoundTripRequest):
+        return
+    if allow_missing_return_details and actual_return_date is None:
         return
     if actual_return_date != request.return_date:
         raise ValueError("return departure date does not match exact request")
@@ -557,6 +617,7 @@ class _ValidatedRoute:
     outbound_end_index: int
     return_start_index: int | None
     return_departure_date: str | None
+    return_details_unavailable: bool = False
 
 
 def _chain_end_index(
@@ -647,6 +708,21 @@ def _currency_unavailable_error(index: int, request: ProviderRequest) -> ErrorV1
     return _error(
         message_en="Provider result did not include a reliable currency.",
         failure_type="currency_unavailable",
+        item_index=index,
+        capability=_capability_for_request(request),
+    )
+
+
+def _return_details_unavailable_error(
+    index: int,
+    request: ProviderRequest,
+) -> ErrorV1:
+    return _error(
+        message_en=(
+            "Traveloka priced the round trip but did not include return flight "
+            "details in the captured payload."
+        ),
+        failure_type="return_details_unavailable",
         item_index=index,
         capability=_capability_for_request(request),
     )

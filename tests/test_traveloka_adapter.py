@@ -216,6 +216,84 @@ def test_adapter_captures_completed_poll_fare_payload() -> None:
     )
 
 
+def test_adapter_keeps_non_empty_payload_when_completion_frame_is_empty() -> None:
+    non_empty_payload = {
+        "data": {
+            "meta": {"searchCompleted": False},
+            "searchResults": [{"id": "tv-1"}],
+        }
+    }
+    empty_completed_payload = {
+        "data": {
+            "meta": {"searchCompleted": True},
+            "searchResults": [],
+        }
+    }
+    page = FakePage(
+        [
+            FakeResponse(
+                url="https://www.traveloka.com/api/v2/flight/search/initial",
+                payload=non_empty_payload,
+            ),
+            FakeResponse(
+                url="https://www.traveloka.com/api/v2/flight/search/poll",
+                payload=empty_completed_payload,
+            ),
+        ]
+    )
+    adapter = TravelokaAdapter(
+        launch_browser=lambda **kwargs: FakeBrowser(FakeContext(page))
+    )
+
+    result = adapter.search_exact_round_trip(_round_trip_request())
+
+    assert result == traveloka_adapter.TravelokaCaptureResult(
+        payload=non_empty_payload,
+        source_path="/api/v2/flight/search/initial",
+        search_completed=True,
+        timed_out=False,
+    )
+
+
+def test_adapter_uses_empty_completion_payload_when_no_offers_were_seen() -> None:
+    empty_incomplete_payload = {
+        "data": {
+            "meta": {"searchCompleted": False},
+            "searchResults": [],
+        }
+    }
+    empty_completed_payload = {
+        "data": {
+            "meta": {"searchCompleted": True},
+            "searchResults": [],
+        }
+    }
+    page = FakePage(
+        [
+            FakeResponse(
+                url="https://www.traveloka.com/api/v2/flight/search/initial",
+                payload=empty_incomplete_payload,
+            ),
+            FakeResponse(
+                url="https://www.traveloka.com/api/v2/flight/search/poll",
+                payload=empty_completed_payload,
+            ),
+        ]
+    )
+    adapter = TravelokaAdapter(
+        launch_browser=lambda **kwargs: FakeBrowser(FakeContext(page))
+    )
+
+    result = adapter.search_exact_round_trip(_round_trip_request())
+
+    assert result == traveloka_adapter.TravelokaCaptureResult(
+        payload=empty_completed_payload,
+        source_path="/api/v2/flight/search/poll",
+        search_completed=True,
+        timed_out=False,
+    )
+
+
 def test_adapter_returns_partial_payload_when_timeout_happens_after_offers() -> None:
     payload = {
         "data": {

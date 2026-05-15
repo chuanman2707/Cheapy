@@ -183,13 +183,25 @@ class _CaptureState:
             raise _unsupported_response_error()
 
         search_completed = _search_completed(payload)
-        self.best_result = TravelokaCaptureResult(
+        new_result = TravelokaCaptureResult(
             payload=payload,
             source_path=path,
             search_completed=search_completed,
             timed_out=False,
         )
-        self.completed = search_completed
+        result_count = _search_result_count(payload)
+        if self.best_result is None or result_count > 0:
+            self.best_result = new_result
+        elif search_completed and _search_result_count(self.best_result.payload) > 0:
+            self.best_result = TravelokaCaptureResult(
+                payload=self.best_result.payload,
+                source_path=self.best_result.source_path,
+                search_completed=True,
+                timed_out=False,
+            )
+        elif search_completed:
+            self.best_result = new_result
+        self.completed = self.completed or search_completed
 
 
 def build_full_search_url(
@@ -240,6 +252,16 @@ def _is_supported_fare_payload(payload: dict[str, object]) -> bool:
     if not isinstance(data, dict):
         return False
     return isinstance(data.get("searchResults"), list)
+
+
+def _search_result_count(payload: dict[str, object]) -> int:
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return 0
+    search_results = data.get("searchResults")
+    if not isinstance(search_results, list):
+        return 0
+    return len(search_results)
 
 
 def _search_completed(payload: dict[str, object]) -> bool:

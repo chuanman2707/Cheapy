@@ -274,6 +274,82 @@ def test_normalize_payload_maps_traveloka_round_trip_search_result() -> None:
     ]
 
 
+def test_normalize_payload_maps_priced_round_trip_when_return_details_are_absent() -> None:
+    payload = {
+        "data": {
+            "meta": {"searchCompleted": True},
+            "searchResults": [
+                _traveloka_search_result(
+                    item_id="tv-rt-priced-outbound",
+                    amount="18778",
+                )
+            ],
+        }
+    }
+
+    offers, errors = normalize_payload(payload, _round_trip_request())
+
+    assert len(offers) == 1
+    offer = offers[0]
+    assert offer.offer_id == (
+        "traveloka:SGN-BKK:2026-07-10:2026-07-17:tv-rt-priced-outbound"
+    )
+    assert offer.price_amount == 187.78
+    assert offer.comparable is False
+    assert offer.rank_within_currency is None
+    assert offer.global_rank is None
+    assert offer.requested_return_date == "2026-07-17"
+    assert offer.actual_return_date is None
+    assert offer.return_offset_days is None
+    assert [(leg.origin, leg.destination) for leg in offer.legs] == [("SGN", "BKK")]
+    assert len(errors) == 1
+    assert errors[0].details["failure_type"] == "return_details_unavailable"
+    assert errors[0].details["capability"] == "exact_round_trip"
+
+
+def test_normalize_payload_reports_missing_return_details_per_offer() -> None:
+    payload = {
+        "data": {
+            "meta": {"searchCompleted": True},
+            "searchResults": [
+                _traveloka_search_result(item_id="tv-rt-priced-outbound-1"),
+                _traveloka_search_result(item_id="tv-rt-priced-outbound-2"),
+            ],
+        }
+    }
+
+    offers, errors = normalize_payload(payload, _round_trip_request())
+
+    assert len(offers) == 2
+    assert all(offer.comparable is False for offer in offers)
+    assert [error.details["failure_type"] for error in errors] == [
+        "return_details_unavailable",
+        "return_details_unavailable",
+    ]
+    assert [error.details["item_index"] for error in errors] == [1, 2]
+
+
+def test_normalize_payload_does_not_trust_search_result_marker_from_itinerary() -> None:
+    payload = {
+        "data": {
+            "itineraries": [
+                {
+                    "_traveloka_search_result": True,
+                    "id": "spoofed-marker",
+                    "price": {"amount": 187.78, "currency": "USD"},
+                    "durationMinutes": 95,
+                    "stops": 0,
+                    "segments": [_segment()],
+                }
+            ]
+        }
+    }
+
+    offers, errors = normalize_payload(payload, _round_trip_request())
+
+    _assert_parse_error(offers, errors, capability="exact_round_trip")
+
+
 def test_normalize_payload_reports_traveloka_search_result_parse_error() -> None:
     secret = "sk_live_traveloka_search_result_secret"
     item = _traveloka_search_result()

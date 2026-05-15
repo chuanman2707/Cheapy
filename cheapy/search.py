@@ -473,30 +473,70 @@ def _same_provider_itinerary_signature(offer: FlightOfferV1) -> tuple[object, ..
 def _sort_offers(offers: list[FlightOfferV1]) -> list[FlightOfferV1]:
     currencies = {offer.currency for offer in offers}
     if len(currencies) <= 1:
-        return sorted(offers, key=lambda offer: (offer.price_amount, offer.offer_id))
+        return sorted(
+            offers,
+            key=lambda offer: (
+                not offer.comparable,
+                offer.price_amount,
+                offer.offer_id,
+            ),
+        )
     return sorted(
         offers,
-        key=lambda offer: (offer.currency, offer.price_amount, offer.offer_id),
+        key=lambda offer: (
+            not offer.comparable,
+            offer.currency,
+            offer.price_amount,
+            offer.offer_id,
+        ),
     )
 
 
 def _rank_offers(offers: list[FlightOfferV1]) -> list[FlightOfferV1]:
-    currencies = {offer.currency for offer in offers}
+    currencies = {offer.currency for offer in offers if offer.comparable}
     if len(currencies) <= 1:
-        return [
-            offer.model_copy(
-                update={
-                    "comparable": True,
-                    "rank_within_currency": index,
-                    "global_rank": index,
-                }
+        ranked: list[FlightOfferV1] = []
+        comparable_rank = 0
+        for offer in offers:
+            if not offer.comparable:
+                ranked.append(
+                    offer.model_copy(
+                        update={
+                            "comparable": False,
+                            "rank_within_currency": None,
+                            "global_rank": None,
+                        }
+                    )
+                )
+                continue
+
+            comparable_rank += 1
+            ranked.append(
+                offer.model_copy(
+                    update={
+                        "comparable": True,
+                        "rank_within_currency": comparable_rank,
+                        "global_rank": comparable_rank,
+                    }
+                )
             )
-            for index, offer in enumerate(offers, start=1)
-        ]
+        return ranked
 
     currency_rank_counts: dict[str, int] = {}
     ranked: list[FlightOfferV1] = []
     for offer in offers:
+        if not offer.comparable:
+            ranked.append(
+                offer.model_copy(
+                    update={
+                        "comparable": False,
+                        "rank_within_currency": None,
+                        "global_rank": None,
+                    }
+                )
+            )
+            continue
+
         rank = currency_rank_counts.get(offer.currency, 0) + 1
         currency_rank_counts[offer.currency] = rank
         ranked.append(

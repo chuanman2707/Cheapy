@@ -924,6 +924,57 @@ def test_search_exact_reassigns_global_ranks_after_sorting_and_truncation(
     assert response.offers[0].global_rank == 1
 
 
+def test_search_exact_keeps_non_comparable_offers_out_of_global_ranking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    non_comparable_offer = _offer(
+        offer_id="traveloka:partial",
+        provider="traveloka",
+        currency="USD",
+        price_amount=50.0,
+    ).model_copy(
+        update={
+            "comparable": False,
+            "rank_within_currency": None,
+            "global_rank": None,
+        }
+    )
+    comparable_offer = _offer(
+        offer_id="google_fli:complete",
+        provider="google_fli",
+        currency="USD",
+        price_amount=200.0,
+    )
+    result = ProviderResult(
+        provider_name="traveloka",
+        capability="exact_one_way",
+        status=ProviderStatusCode.PARTIAL,
+        offers=[non_comparable_offer, comparable_offer],
+        warnings=[],
+        errors=[],
+        duration_ms=1,
+        retryable=False,
+    )
+
+    monkeypatch.setattr(
+        "cheapy.search.load_search_providers",
+        lambda: [_ProviderFromResult(result)],
+    )
+
+    response = search_exact(_request(max_results=2))
+
+    assert [offer.offer_id for offer in response.offers] == [
+        "google_fli:complete",
+        "traveloka:partial",
+    ]
+    assert response.offers[0].comparable is True
+    assert response.offers[0].rank_within_currency == 1
+    assert response.offers[0].global_rank == 1
+    assert response.offers[1].comparable is False
+    assert response.offers[1].rank_within_currency is None
+    assert response.offers[1].global_rank is None
+
+
 def test_search_exact_mixed_currency_ranks_within_currency_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
