@@ -100,8 +100,13 @@ class TravelokaAdapter:
         deadline = monotonic() + self._timeout_seconds
         try:
             try:
-                browser = self._launch_browser(headless=True)
+                browser = self._launch_browser(
+                    headless=True,
+                    timeout=_remaining_timeout_ms(deadline),
+                )
             except Exception as exc:
+                if _is_timeout_exception(exc):
+                    raise _timeout_error(type(exc).__name__) from None
                 raise _browser_unavailable_error(type(exc).__name__) from None
 
             _remaining_timeout_ms(deadline)

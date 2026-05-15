@@ -276,7 +276,51 @@ def test_adapter_maps_browser_launch_failure_to_browser_unavailable() -> None:
     assert "raw launch secret" not in str(exc_info.value)
 
 
-def test_adapter_times_out_before_navigation_after_slow_launch() -> None:
+def test_adapter_maps_browser_launch_timeout_to_timeout() -> None:
+    def fail_launch(**kwargs: object) -> object:
+        raise TimeoutError("raw launch timeout secret")
+
+    adapter = TravelokaAdapter(launch_browser=fail_launch)
+
+    with pytest.raises(TravelokaProviderError) as exc_info:
+        adapter.search_exact_one_way(_one_way_request())
+
+    assert exc_info.value.failure_type == "timeout"
+    assert exc_info.value.error_code == ErrorCode.PROVIDER_TIMEOUT
+    assert exc_info.value.retryable is True
+    assert "raw launch timeout secret" not in str(exc_info.value)
+
+
+def test_adapter_passes_timeout_to_browser_launch() -> None:
+    payload = _completed_payload()
+    page = FakePage(
+        [
+            FakeResponse(
+                url="https://www.traveloka.com/api/v2/flight/search/initial",
+                payload=payload,
+            )
+        ]
+    )
+    captured_kwargs: list[dict[str, object]] = []
+
+    def launch(**kwargs: object) -> FakeBrowser:
+        captured_kwargs.append(kwargs)
+        return FakeBrowser(FakeContext(page))
+
+    adapter = TravelokaAdapter(
+        launch_browser=launch,
+        timeout_seconds=2,
+    )
+
+    adapter.search_exact_one_way(_one_way_request())
+
+    assert len(captured_kwargs) == 1
+    assert captured_kwargs[0]["headless"] is True
+    assert isinstance(captured_kwargs[0]["timeout"], int | float)
+    assert 0 < captured_kwargs[0]["timeout"] <= 2000
+
+
+def test_adapter_checks_deadline_after_launch_before_navigation() -> None:
     page = FakePage([])
     context, browser = _browser_for(page)
 
@@ -484,6 +528,27 @@ def test_adapter_maps_navigation_timeout_after_launch() -> None:
     assert exc_info.value.retryable is True
     assert "raw navigation timeout secret" not in str(exc_info.value)
     assert context.closed is True
+    assert browser.closed is True
+
+
+def test_adapter_maps_context_timeout_after_launch() -> None:
+    class TimeoutBrowser(FakeBrowser):
+        def new_context(self, **kwargs: object) -> FakeContext:
+            raise TimeoutError("raw context timeout secret")
+
+    page = FakePage([])
+    context = FakeContext(page)
+    browser = TimeoutBrowser(context)
+    adapter = TravelokaAdapter(launch_browser=lambda **kwargs: browser)
+
+    with pytest.raises(TravelokaProviderError) as exc_info:
+        adapter.search_exact_one_way(_one_way_request())
+
+    assert exc_info.value.failure_type == "timeout"
+    assert exc_info.value.error_code == ErrorCode.PROVIDER_TIMEOUT
+    assert exc_info.value.retryable is True
+    assert "raw context timeout secret" not in str(exc_info.value)
+    assert context.closed is False
     assert browser.closed is True
 
 
