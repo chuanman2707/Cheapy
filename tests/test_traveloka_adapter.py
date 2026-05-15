@@ -16,7 +16,6 @@ from cheapy.providers.traveloka.adapter import (
     TravelokaAdapter,
     TravelokaHTTPResponse,
     TravelokaProviderError,
-    build_search_url,
 )
 
 
@@ -37,41 +36,49 @@ def _round_trip_request() -> ProviderExactRoundTripRequest:
     )
 
 
-def test_build_search_url_maps_one_way_request_to_safe_query() -> None:
-    url = build_search_url(
+def test_build_full_search_url_maps_one_way_request_to_traveloka_route() -> None:
+    url = traveloka_adapter.build_full_search_url(
         _one_way_request(),
-        base_url="https://www.traveloka.com/en-en/flight",
+        base_url="https://www.traveloka.com/en-en/flight/fulltwosearch",
     )
 
     parsed = urlparse(url)
     params = parse_qs(parsed.query)
     assert parsed.scheme == "https"
     assert parsed.netloc == "www.traveloka.com"
-    assert parsed.path == "/en-en/flight"
-    assert params["trip"] == ["oneway"]
-    assert params["origin"] == ["SGN"]
-    assert params["destination"] == ["BKK"]
-    assert params["departureDate"] == ["2026-07-10"]
-    assert params["currency"] == ["USD"]
-    assert params["locale"] == ["en-en"]
-    assert params["cabin"] == ["ECONOMY"]
-    assert params["adults"] == ["1"]
-    assert "returnDate" not in params
+    assert parsed.path == "/en-en/flight/fulltwosearch"
+    assert params["ap"] == ["SGN.BKK"]
+    assert params["dt"] == ["10-7-2026"]
+    assert params["ps"] == ["1.0.0"]
+    assert params["sc"] == ["ECONOMY"]
+    assert params["funnelSource"] == ["SEO-Homepage-SearchForm"]
 
 
-def test_build_search_url_maps_round_trip_request_to_safe_query() -> None:
-    url = build_search_url(
+def test_build_full_search_url_maps_round_trip_request_to_traveloka_route() -> None:
+    url = traveloka_adapter.build_full_search_url(
         _round_trip_request(),
-        base_url="https://www.traveloka.com/en-en/flight",
+        base_url="https://www.traveloka.com/en-en/flight/fulltwosearch",
     )
 
     params = parse_qs(urlparse(url).query)
-    assert params["trip"] == ["roundtrip"]
-    assert params["origin"] == ["SGN"]
-    assert params["destination"] == ["BKK"]
-    assert params["departureDate"] == ["2026-07-10"]
-    assert params["returnDate"] == ["2026-07-17"]
-    assert params["currency"] == ["USD"]
+    assert params["ap"] == ["SGN.BKK"]
+    assert params["dt"] == ["10-7-2026.17-7-2026"]
+    assert params["ps"] == ["1.0.0"]
+    assert params["sc"] == ["ECONOMY"]
+
+
+def test_capture_result_carries_completion_and_timeout_state() -> None:
+    result = traveloka_adapter.TravelokaCaptureResult(
+        payload={"data": {"searchResults": []}},
+        source_path="/api/v2/flight/search/initial",
+        search_completed=False,
+        timed_out=True,
+    )
+
+    assert result.payload == {"data": {"searchResults": []}}
+    assert result.source_path == "/api/v2/flight/search/initial"
+    assert result.search_completed is False
+    assert result.timed_out is True
 
 
 def test_stdlib_http_get_reads_success_response_once_with_limit(

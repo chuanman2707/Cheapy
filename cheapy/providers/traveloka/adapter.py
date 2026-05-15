@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 import json
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
@@ -16,10 +17,13 @@ from cheapy.providers.base import (
 )
 
 
-DEFAULT_BASE_URL = "https://www.traveloka.com/en-en/flight"
-DEFAULT_LOCALE = "en-en"
+DEFAULT_BASE_URL = "https://www.traveloka.com/en-en/flight/fulltwosearch"
+DEFAULT_TIMEOUT_SECONDS = 45.0
 DEFAULT_CURRENCY = "USD"
-DEFAULT_TIMEOUT_SECONDS = 20.0
+DEFAULT_LOCALE = "en-en"
+INITIAL_SEARCH_PATH = "/api/v2/flight/search/initial"
+POLL_SEARCH_PATH = "/api/v2/flight/search/poll"
+SUPPORTED_FARE_PATHS = {INITIAL_SEARCH_PATH, POLL_SEARCH_PATH}
 DEFAULT_MAX_RESPONSE_BYTES = 1_000_000
 USER_AGENT = "Cheapy/0.1 TravelokaResearchProvider"
 
@@ -34,6 +38,14 @@ class TravelokaHTTPResponse:
     content_type: str
     final_url: str
     request_count: int = 1
+
+
+@dataclass(frozen=True)
+class TravelokaCaptureResult:
+    payload: dict[str, object]
+    source_path: str
+    search_completed: bool
+    timed_out: bool = False
 
 
 class TravelokaProviderError(Exception):
@@ -118,24 +130,41 @@ class TravelokaAdapter:
         return _parse_body(response)
 
 
-def build_search_url(request: ProviderRequest, *, base_url: str = DEFAULT_BASE_URL) -> str:
-    trip = "roundtrip" if isinstance(request, ProviderExactRoundTripRequest) else "oneway"
-    params = {
-        "trip": trip,
-        "origin": request.origin,
-        "destination": request.destination,
-        "departureDate": request.departure_date,
-        "currency": DEFAULT_CURRENCY,
-        "locale": DEFAULT_LOCALE,
-        "cabin": "ECONOMY",
-        "adults": str(request.passengers.adults),
-        "children": str(request.passengers.children),
-        "infantsInSeat": str(request.passengers.infants_in_seat),
-        "infantsOnLap": str(request.passengers.infants_on_lap),
-    }
+def build_full_search_url(
+    request: ProviderRequest,
+    *,
+    base_url: str = DEFAULT_BASE_URL,
+) -> str:
+    date_part = _traveloka_date(request.departure_date)
     if isinstance(request, ProviderExactRoundTripRequest):
-        params["returnDate"] = request.return_date
+        date_part = f"{date_part}.{_traveloka_date(request.return_date)}"
+    params = {
+        "ap": f"{request.origin}.{request.destination}",
+        "dt": date_part,
+        "ps": _passenger_spec(request),
+        "sc": "ECONOMY",
+        "funnelSource": "SEO-Homepage-SearchForm",
+    }
     return f"{base_url}?{urlencode(params)}"
+
+
+def build_search_url(request: ProviderRequest, *, base_url: str = DEFAULT_BASE_URL) -> str:
+    """Legacy wrapper retained until the HTTP-only adapter is removed."""
+    return build_full_search_url(request, base_url=base_url)
+
+
+def _traveloka_date(value: str) -> str:
+    parsed = date.fromisoformat(value)
+    return f"{parsed.day}-{parsed.month}-{parsed.year}"
+
+
+def _passenger_spec(request: ProviderRequest) -> str:
+    passengers = request.passengers
+    return (
+        f"{passengers.adults}."
+        f"{passengers.children}."
+        f"{passengers.infants_on_lap + passengers.infants_in_seat}"
+    )
 
 
 def _headers() -> dict[str, str]:
