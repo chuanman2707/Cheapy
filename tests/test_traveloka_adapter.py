@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from time import sleep
 from urllib.parse import parse_qs, urlparse
 
@@ -159,6 +160,41 @@ def test_capture_result_carries_completion_and_timeout_state() -> None:
     assert result.timed_out is True
 
 
+def test_capture_result_carries_safe_partial_failure_metadata() -> None:
+    result = traveloka_adapter.TravelokaCaptureResult(
+        payload={"data": {"searchResults": []}},
+        source_path="/api/v2/flight/search/initial",
+        search_completed=False,
+        timed_out=False,
+        partial_failure_type="final_round_trip_total_unavailable",
+    )
+
+    assert result.partial_failure_type == "final_round_trip_total_unavailable"
+    assert "http" not in result.partial_failure_type
+
+
+def test_selected_round_trip_result_carries_final_total_and_safe_paths() -> None:
+    result = traveloka_adapter.TravelokaSelectedRoundTripResult(
+        outbound_payload={"data": {"searchResults": [{"id": "out-1"}]}},
+        return_payload={"data": {"searchResults": [{"id": "ret-1"}]}},
+        selected_outbound_key="out-1",
+        selected_return_key="ret-1",
+        final_total_amount=Decimal("321.09"),
+        final_total_currency="USD",
+        source_paths=(
+            "/api/v2/flight/search/initial",
+            "/api/v2/flight/search/poll",
+        ),
+    )
+
+    assert result.final_total_amount == Decimal("321.09")
+    assert result.final_total_currency == "USD"
+    assert result.selected_outbound_key == "out-1"
+    assert result.selected_return_key == "ret-1"
+    assert all(path.startswith("/api/") for path in result.source_paths)
+    assert all("?" not in path for path in result.source_paths)
+
+
 def test_adapter_captures_completed_initial_fare_payload() -> None:
     payload = _completed_payload()
     page = FakePage(
@@ -255,6 +291,41 @@ def test_adapter_keeps_non_empty_payload_when_completion_frame_is_empty() -> Non
     )
 
 
+def test_capture_state_preserves_partial_failure_type_when_completion_upgrades_prior_result() -> None:
+    partial_failure_type = "final_round_trip_total_unavailable"
+    non_empty_payload = {
+        "data": {
+            "meta": {"searchCompleted": False},
+            "searchResults": [{"id": "tv-1"}],
+        }
+    }
+    empty_completed_payload = {
+        "data": {
+            "meta": {"searchCompleted": True},
+            "searchResults": [],
+        }
+    }
+    state = traveloka_adapter._CaptureState()
+    state.best_result = traveloka_adapter.TravelokaCaptureResult(
+        payload=non_empty_payload,
+        source_path="/api/v2/flight/search/initial",
+        search_completed=False,
+        timed_out=False,
+        partial_failure_type=partial_failure_type,
+    )
+
+    state.handle_response(
+        FakeResponse(
+            url="https://www.traveloka.com/api/v2/flight/search/poll",
+            payload=empty_completed_payload,
+        )
+    )
+
+    assert state.best_result is not None
+    assert state.best_result.search_completed is True
+    assert state.best_result.partial_failure_type == partial_failure_type
+
+
 def test_adapter_uses_empty_completion_payload_when_no_offers_were_seen() -> None:
     empty_incomplete_payload = {
         "data": {
@@ -321,6 +392,46 @@ def test_adapter_returns_partial_payload_when_timeout_happens_after_offers() -> 
     assert result.search_completed is False
     assert result.timed_out is True
     assert page.wait_calls > 0
+
+
+def test_adapter_preserves_partial_failure_type_when_returning_timed_out_partial_copy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    partial_failure_type = "final_round_trip_total_unavailable"
+    payload = {
+        "data": {
+            "meta": {"searchCompleted": False},
+            "searchResults": [{"id": "tv-1"}],
+        }
+    }
+
+    class SeededCaptureState:
+        def __init__(self) -> None:
+            self.best_result = traveloka_adapter.TravelokaCaptureResult(
+                payload=payload,
+                source_path="/api/v2/flight/search/initial",
+                search_completed=False,
+                timed_out=False,
+                partial_failure_type=partial_failure_type,
+            )
+            self.completed = False
+
+        def handle_response(self, response: object) -> None:
+            return
+
+    monkeypatch.setattr(traveloka_adapter, "_CaptureState", SeededCaptureState)
+    page = FakePage([])
+    adapter = TravelokaAdapter(
+        launch_browser=lambda **kwargs: FakeBrowser(FakeContext(page)),
+        timeout_seconds=0.01,
+        poll_interval_seconds=0.001,
+    )
+
+    result = adapter.search_exact_one_way(_one_way_request())
+
+    assert result.payload == payload
+    assert result.timed_out is True
+    assert result.partial_failure_type == partial_failure_type
 
 
 def test_adapter_raises_timeout_when_no_fare_payload_arrives() -> None:
@@ -449,6 +560,28 @@ def test_adapter_ignores_non_fare_endpoints(ignored_url: str) -> None:
     result = adapter.search_exact_one_way(_one_way_request())
 
     assert result.payload == payload
+
+
+def test_adapter_ignores_supported_path_from_non_traveloka_host() -> None:
+    page = FakePage(
+        [
+            FakeResponse(
+                url="https://not-traveloka.example/api/v2/flight/search/initial",
+                payload=_completed_payload(),
+            )
+        ]
+    )
+    adapter = TravelokaAdapter(
+        launch_browser=lambda **kwargs: FakeBrowser(FakeContext(page)),
+        timeout_seconds=0.01,
+        poll_interval_seconds=0.001,
+    )
+
+    with pytest.raises(TravelokaProviderError) as exc_info:
+        adapter.search_exact_one_way(_one_way_request())
+
+    assert exc_info.value.failure_type == "timeout"
+    assert exc_info.value.error_code == ErrorCode.PROVIDER_TIMEOUT
 
 
 def test_adapter_rejects_unsupported_json_on_fare_endpoint() -> None:

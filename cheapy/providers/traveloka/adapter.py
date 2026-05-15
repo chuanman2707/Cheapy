@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal
 from time import monotonic
 from typing import Callable
 from urllib.parse import urlencode, urlparse
@@ -32,6 +33,19 @@ class TravelokaCaptureResult:
     payload: dict[str, object]
     source_path: str
     search_completed: bool
+    timed_out: bool = False
+    partial_failure_type: str | None = None
+
+
+@dataclass(frozen=True)
+class TravelokaSelectedRoundTripResult:
+    outbound_payload: dict[str, object]
+    return_payload: dict[str, object]
+    selected_outbound_key: str | None
+    selected_return_key: str | None
+    final_total_amount: Decimal
+    final_total_currency: str
+    source_paths: tuple[str, ...]
     timed_out: bool = False
 
 
@@ -140,6 +154,7 @@ class TravelokaAdapter:
                     source_path=state.best_result.source_path,
                     search_completed=state.best_result.search_completed,
                     timed_out=True,
+                    partial_failure_type=state.best_result.partial_failure_type,
                 )
 
             _raise_blocked_if_terminal_page(page.content())  # type: ignore[attr-defined]
@@ -161,7 +176,11 @@ class _CaptureState:
         self.completed = False
 
     def handle_response(self, response: object) -> None:
-        path = urlparse(str(getattr(response, "url", ""))).path
+        response_url = str(getattr(response, "url", ""))
+        if not _is_traveloka_first_party_url(response_url):
+            return
+
+        path = urlparse(response_url).path
         if path not in SUPPORTED_FARE_PATHS:
             return
 
@@ -198,6 +217,7 @@ class _CaptureState:
                 source_path=self.best_result.source_path,
                 search_completed=True,
                 timed_out=False,
+                partial_failure_type=self.best_result.partial_failure_type,
             )
         elif search_completed:
             self.best_result = new_result
@@ -252,6 +272,15 @@ def _is_supported_fare_payload(payload: dict[str, object]) -> bool:
     if not isinstance(data, dict):
         return False
     return isinstance(data.get("searchResults"), list)
+
+
+def _is_traveloka_first_party_url(url: str) -> bool:
+    parsed = urlparse(url)
+    host = parsed.hostname
+    if host is None:
+        return False
+    host = host.lower().rstrip(".")
+    return host == "traveloka.com" or host.endswith(".traveloka.com")
 
 
 def _search_result_count(payload: dict[str, object]) -> int:
