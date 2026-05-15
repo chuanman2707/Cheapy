@@ -385,6 +385,27 @@ def test_adapter_maps_fare_endpoint_http_status(
     assert exc_info.value.http_status_code == status
 
 
+def test_adapter_closes_browser_when_response_handler_raises_provider_error() -> None:
+    page = FakePage(
+        [
+            FakeResponse(
+                url="https://www.traveloka.com/api/v2/flight/search/initial",
+                status=403,
+                payload={"raw": "body"},
+            )
+        ]
+    )
+    context, browser = _browser_for(page)
+    adapter = TravelokaAdapter(launch_browser=lambda **kwargs: browser)
+
+    with pytest.raises(TravelokaProviderError) as exc_info:
+        adapter.search_exact_one_way(_one_way_request())
+
+    assert exc_info.value.failure_type == "blocked"
+    assert context.closed is True
+    assert browser.closed is True
+
+
 def test_adapter_blocks_terminal_captcha_page_when_no_payload_arrives() -> None:
     page = FakePage([], content="<html><body>captcha required</body></html>")
     adapter = TravelokaAdapter(
@@ -417,6 +438,26 @@ def test_adapter_maps_navigation_failure_after_launch() -> None:
     assert exc_info.value.error_code == ErrorCode.PROVIDER_FAILED
     assert exc_info.value.retryable is True
     assert "raw navigation secret" not in str(exc_info.value)
+    assert context.closed is True
+    assert browser.closed is True
+
+
+def test_adapter_maps_navigation_timeout_after_launch() -> None:
+    class TimeoutPage(FakePage):
+        def goto(self, url: str, *, wait_until: str, timeout: int) -> None:
+            raise TimeoutError("raw navigation timeout secret")
+
+    page = TimeoutPage([])
+    context, browser = _browser_for(page)
+    adapter = TravelokaAdapter(launch_browser=lambda **kwargs: browser)
+
+    with pytest.raises(TravelokaProviderError) as exc_info:
+        adapter.search_exact_one_way(_one_way_request())
+
+    assert exc_info.value.failure_type == "timeout"
+    assert exc_info.value.error_code == ErrorCode.PROVIDER_TIMEOUT
+    assert exc_info.value.retryable is True
+    assert "raw navigation timeout secret" not in str(exc_info.value)
     assert context.closed is True
     assert browser.closed is True
 

@@ -13,6 +13,7 @@ from cheapy.providers.base import (
 )
 from cheapy.providers.traveloka.adapter import (
     TravelokaAdapter,
+    TravelokaCaptureResult,
     TravelokaProviderError,
 )
 from cheapy.providers.traveloka.normalizer import normalize_payload
@@ -21,12 +22,12 @@ from cheapy.providers.traveloka.normalizer import normalize_payload
 PROVIDER_NAME = "traveloka"
 EXACT_ONE_WAY_CAPABILITY = "exact_one_way"
 EXACT_ROUND_TRIP_CAPABILITY = "exact_round_trip"
-DEFAULT_TIMEOUT_SECONDS = 20.0
+DEFAULT_TIMEOUT_SECONDS = 45.0
 ProviderRequest = ProviderExactOneWayRequest | ProviderExactRoundTripRequest
 
 
 class TravelokaProvider:
-    """Live provider backed by a conservative Traveloka HTTP research adapter."""
+    """Live provider backed by a conservative Traveloka browser adapter."""
 
     name = PROVIDER_NAME
     capabilities = (EXACT_ONE_WAY_CAPABILITY, EXACT_ROUND_TRIP_CAPABILITY)
@@ -37,7 +38,11 @@ class TravelokaProvider:
         adapter: object | None = None,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     ) -> None:
-        self._adapter = adapter if adapter is not None else TravelokaAdapter()
+        self._adapter = (
+            adapter
+            if adapter is not None
+            else TravelokaAdapter(timeout_seconds=timeout_seconds)
+        )
         self._timeout_seconds = timeout_seconds
 
     async def search_exact_one_way(
@@ -70,23 +75,19 @@ class TravelokaProvider:
         started = perf_counter()
         try:
             search_method = getattr(self._adapter, search_method_name)
-            payload = await asyncio.wait_for(
-                asyncio.to_thread(search_method, request),
-                timeout=self._timeout_seconds,
-            )
-            offers, errors = normalize_payload(payload, request)
-        except TimeoutError:
-            return self._failed_result(
-                started,
-                capability,
-                _provider_error(
-                    code=ErrorCode.PROVIDER_TIMEOUT,
-                    message_en="Traveloka provider timed out.",
-                    failure_type="timeout",
-                    retryable=True,
-                    capability=capability,
-                ),
-            )
+            capture = await asyncio.to_thread(search_method, request)
+            offers, errors = normalize_payload(_capture_payload(capture), request)
+            if isinstance(capture, TravelokaCaptureResult) and capture.timed_out and offers:
+                errors.append(
+                    _provider_error(
+                        code=ErrorCode.PROVIDER_TIMEOUT,
+                        message_en="Traveloka search timed out after returning partial fares.",
+                        failure_type="timeout",
+                        retryable=True,
+                        capability=capability,
+                        source_path=capture.source_path,
+                    )
+                )
         except TravelokaProviderError as exc:
             return self._failed_result(
                 started,
@@ -164,6 +165,7 @@ def _provider_error(
     capability: str,
     http_status_code: int | None = None,
     exception_type: str | None = None,
+    source_path: str | None = None,
 ) -> ErrorV1:
     details: dict[str, object] = {
         "provider": PROVIDER_NAME,
@@ -174,6 +176,8 @@ def _provider_error(
         details["http_status_code"] = http_status_code
     if exception_type is not None:
         details["exception_type"] = exception_type
+    if source_path is not None:
+        details["source_path"] = source_path
     return ErrorV1(
         code=code,
         severity=Severity.ERROR,
@@ -181,6 +185,12 @@ def _provider_error(
         details=details,
         retryable=retryable,
     )
+
+
+def _capture_payload(capture: object) -> dict[str, object]:
+    if isinstance(capture, TravelokaCaptureResult):
+        return capture.payload
+    return capture  # type: ignore[return-value]
 
 
 def _duration_ms(started: float) -> int:

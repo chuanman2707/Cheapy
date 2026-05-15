@@ -97,7 +97,6 @@ class TravelokaAdapter:
         browser: object | None = None
         context: object | None = None
         state = _CaptureState()
-        timeout_ms = round(self._timeout_seconds * 1000)
         try:
             browser = self._launch_browser(headless=True)
         except Exception as exc:
@@ -107,15 +106,21 @@ class TravelokaAdapter:
             context = browser.new_context(locale="en-US")  # type: ignore[attr-defined]
             page = context.new_page()  # type: ignore[attr-defined]
             page.on("response", state.handle_response)  # type: ignore[attr-defined]
+            deadline = monotonic() + self._timeout_seconds
             page.goto(  # type: ignore[attr-defined]
                 build_full_search_url(request, base_url=self._base_url),
                 wait_until="domcontentloaded",
-                timeout=timeout_ms,
+                timeout=_remaining_timeout_ms(deadline),
             )
 
-            deadline = monotonic() + self._timeout_seconds
             while not state.completed and monotonic() < deadline:
-                wait_ms = round(self._poll_interval_seconds * 1000)
+                remaining_ms = _remaining_timeout_ms(deadline, raise_on_expired=False)
+                if remaining_ms <= 0:
+                    break
+                wait_ms = min(
+                    round(self._poll_interval_seconds * 1000),
+                    remaining_ms,
+                )
                 page.wait_for_timeout(wait_ms)  # type: ignore[attr-defined]
 
             if state.best_result is not None:
@@ -133,6 +138,8 @@ class TravelokaAdapter:
         except TravelokaProviderError:
             raise
         except Exception as exc:
+            if _is_timeout_exception(exc):
+                raise _timeout_error(type(exc).__name__) from None
             raise _navigation_failed_error(type(exc).__name__) from None
         finally:
             _close_quietly(context)
@@ -246,6 +253,22 @@ def _close_quietly(target: object | None) -> None:
         close()
     except Exception:
         return
+
+
+def _remaining_timeout_ms(deadline: float, *, raise_on_expired: bool = True) -> int:
+    remaining_seconds = deadline - monotonic()
+    if remaining_seconds <= 0:
+        if not raise_on_expired:
+            return 0
+        raise _timeout_error()
+    return max(1, round(remaining_seconds * 1000))
+
+
+def _is_timeout_exception(exc: Exception) -> bool:
+    if isinstance(exc, TimeoutError):
+        return True
+    text = f"{type(exc).__name__} {exc}".lower()
+    return "timeout" in text or "timed out" in text
 
 
 def _timeout_error(exception_type: str | None = None) -> TravelokaProviderError:
