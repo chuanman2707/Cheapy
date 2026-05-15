@@ -119,6 +119,30 @@ class _ProviderFromResult:
         raise AssertionError("one-way provider must not receive round-trip calls")
 
 
+class _RoundTripProviderFromResult:
+    capabilities = ("exact_round_trip",)
+
+    def __init__(self, result: ProviderResult) -> None:
+        self.name = result.provider_name
+        self._result = result
+
+    async def search_exact_one_way(
+        self,
+        request: ProviderExactOneWayRequest,
+    ) -> ProviderResult:
+        raise AssertionError("round-trip provider must not receive one-way calls")
+
+    async def search_exact_round_trip(
+        self,
+        request: ProviderExactRoundTripRequest,
+    ) -> ProviderResult:
+        assert request.origin == "CXR"
+        assert request.destination == "SGN"
+        assert request.departure_date == "2026-07-10"
+        assert request.return_date == "2026-07-17"
+        return self._result
+
+
 class _FailingTravelokaProvider:
     name = "traveloka"
     capabilities = ("exact_one_way", "exact_round_trip")
@@ -973,6 +997,84 @@ def test_search_exact_keeps_non_comparable_offers_out_of_global_ranking(
     assert response.offers[1].comparable is False
     assert response.offers[1].rank_within_currency is None
     assert response.offers[1].global_rank is None
+
+
+def test_search_exact_round_trip_ranks_selected_traveloka_and_keeps_partial_unranked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected_traveloka = _offer(
+        offer_id="traveloka:selected",
+        provider="traveloka",
+        currency="USD",
+        price_amount=150.0,
+        requested_return_date="2026-07-17",
+        actual_return_date="2026-07-17",
+        return_offset_days=0,
+    )
+    partial_traveloka = _offer(
+        offer_id="traveloka:partial",
+        provider="traveloka",
+        currency="USD",
+        price_amount=50.0,
+        requested_return_date="2026-07-17",
+        actual_return_date=None,
+        return_offset_days=None,
+    ).model_copy(
+        update={
+            "comparable": False,
+            "rank_within_currency": None,
+            "global_rank": None,
+        }
+    )
+    google_complete = _offer(
+        offer_id="google_fli:complete",
+        provider="google_fli",
+        currency="USD",
+        price_amount=200.0,
+        requested_return_date="2026-07-17",
+        actual_return_date="2026-07-17",
+        return_offset_days=0,
+        departure_time="2026-07-10T10:15:00",
+        arrival_time="2026-07-10T11:25:00",
+    )
+    result = ProviderResult(
+        provider_name="traveloka",
+        capability="exact_round_trip",
+        status=ProviderStatusCode.PARTIAL,
+        offers=[partial_traveloka, selected_traveloka, google_complete],
+        warnings=[],
+        errors=[
+            ErrorV1(
+                code=ErrorCode.PROVIDER_FAILED,
+                severity=Severity.ERROR,
+                message_en="Traveloka final selected round-trip total was unavailable.",
+                details={
+                    "provider": "traveloka",
+                    "capability": "exact_round_trip",
+                    "failure_type": "final_round_trip_total_unavailable",
+                },
+                retryable=True,
+            )
+        ],
+        duration_ms=1,
+        retryable=True,
+    )
+    monkeypatch.setattr(
+        "cheapy.search.load_search_providers",
+        lambda: [_RoundTripProviderFromResult(result)],
+    )
+
+    response = search_exact(_request(return_date="2026-07-17", max_results=3))
+
+    assert response.status == SearchStatus.PARTIAL
+    assert [offer.offer_id for offer in response.offers] == [
+        "traveloka:selected",
+        "google_fli:complete",
+        "traveloka:partial",
+    ]
+    assert [offer.global_rank for offer in response.offers] == [1, 2, None]
+    assert [offer.rank_within_currency for offer in response.offers] == [1, 2, None]
+    assert [offer.comparable for offer in response.offers] == [True, True, False]
 
 
 def test_search_exact_keeps_visible_non_comparable_offer_when_results_are_capped(
