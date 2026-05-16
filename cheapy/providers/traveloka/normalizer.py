@@ -47,7 +47,10 @@ def normalize_payload(
                 )
         except _ItemNormalizationError as exc:
             errors.append(exc.error)
-    return _rank_offers(offers), errors
+    return _rank_offers(
+        offers,
+        sort_non_comparable=isinstance(request, ProviderExactRoundTripRequest),
+    ), errors
 
 
 def normalize_selected_round_trip(
@@ -154,7 +157,17 @@ def _valid_selected_total(amount: Decimal) -> bool:
     return amount.is_finite() and amount >= Decimal("0")
 
 
-def _rank_offers(offers: list[FlightOfferV1]) -> list[FlightOfferV1]:
+def _rank_offers(
+    offers: list[FlightOfferV1],
+    *,
+    sort_non_comparable: bool = False,
+) -> list[FlightOfferV1]:
+    if sort_non_comparable and all(not offer.comparable for offer in offers):
+        offers = sorted(
+            offers,
+            key=lambda offer: (offer.currency, offer.price_amount, offer.offer_id),
+        )
+
     ranked: list[FlightOfferV1] = []
     comparable_rank = 0
     for offer in offers:

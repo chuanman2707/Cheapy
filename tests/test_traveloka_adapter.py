@@ -14,6 +14,7 @@ from cheapy.providers.base import (
 )
 from cheapy.providers.traveloka import adapter as traveloka_adapter
 from cheapy.providers.traveloka.adapter import TravelokaAdapter, TravelokaProviderError
+from cheapy.providers.traveloka.timing import TravelokaPhaseRecorder
 
 
 def _one_way_request() -> ProviderExactOneWayRequest:
@@ -54,11 +55,27 @@ class FakeResponse:
 class FakeLocator:
     def __init__(self) -> None:
         self.click_kwargs: list[dict[str, object]] = []
+        self.evaluate_calls: list[dict[str, object]] = []
+        self.evaluate_scripts: list[str] = []
         self.clicked = False
 
     def click(self, **kwargs: object) -> None:
         self.clicked = True
         self.click_kwargs.append(kwargs)
+
+    def evaluate(self, script: str, **kwargs: object) -> None:
+        self.clicked = True
+        self.evaluate_scripts.append(script)
+        self.evaluate_calls.append(kwargs)
+
+
+class ScrollableFakeLocator(FakeLocator):
+    def __init__(self) -> None:
+        super().__init__()
+        self.scroll_kwargs: list[dict[str, object]] = []
+
+    def scroll_into_view_if_needed(self, **kwargs: object) -> None:
+        self.scroll_kwargs.append(kwargs)
 
 
 class EmittingFakeLocator(FakeLocator):
@@ -68,6 +85,11 @@ class EmittingFakeLocator(FakeLocator):
 
     def click(self, **kwargs: object) -> None:
         super().click(**kwargs)
+        if callable(self._on_click):
+            self._on_click()
+
+    def evaluate(self, script: str, **kwargs: object) -> None:
+        super().evaluate(script, **kwargs)
         if callable(self._on_click):
             self._on_click()
 
@@ -101,6 +123,33 @@ class TextFakeLocator(EmittingFakeLocator):
         return self
 
 
+class LiveTravelokaCardLocator(TextFakeLocator):
+    def __init__(
+        self,
+        *,
+        container_id: str,
+        text: str,
+        button: TextFakeLocator | None = None,
+    ) -> None:
+        super().__init__(
+            text=text,
+            attrs={"data-testid": f"flight-inventory-card-container-{container_id}"},
+        )
+        self.button = button or TextFakeLocator(
+            text="Choose\nChoose",
+            attrs={"data-testid": "flight-inventory-card-button", "role": "button"},
+        )
+
+    def locator(self, selector: str) -> object:
+        if (
+            "flight-inventory-card-button" in selector
+            or "[role='button']" in selector
+            or '[role="button"]' in selector
+        ):
+            return FakeLocatorCollection([self.button])
+        return super().locator(selector)
+
+
 class EmptyFakeLocator:
     def first(self) -> EmptyFakeLocator:
         return self
@@ -119,6 +168,9 @@ class FakeLocatorCollection:
     def nth(self, index: int) -> TextFakeLocator:
         return self.locators[index]
 
+    def first(self) -> TextFakeLocator:
+        return self.nth(0)
+
 
 class FakePage:
     def __init__(self, responses: list[FakeResponse], content: str | None = None) -> None:
@@ -126,12 +178,14 @@ class FakePage:
         self.handlers: dict[str, object] = {}
         self.goto_urls: list[str] = []
         self.wait_calls = 0
+        self.url = ""
         self._content = content or "<html><body>flight search</body></html>"
 
     def on(self, event_name: str, handler: object) -> None:
         self.handlers[event_name] = handler
 
     def goto(self, url: str, *, wait_until: str, timeout: int) -> None:
+        self.url = url
         self.goto_urls.append(url)
         handler = self.handlers["response"]
         for response in self.responses:
@@ -154,7 +208,7 @@ class LocatorFakePage(FakePage):
         responses: list[FakeResponse],
         *,
         option_groups: list[list[TextFakeLocator]] | None = None,
-        selector_locators: dict[str, TextFakeLocator] | None = None,
+        selector_locators: dict[str, object] | None = None,
     ) -> None:
         super().__init__(responses)
         self.option_groups = option_groups or []
@@ -167,7 +221,24 @@ class LocatorFakePage(FakePage):
             if not self.option_groups:
                 return FakeLocatorCollection([])
             return FakeLocatorCollection(self.option_groups.pop(0))
-        return self.selector_locators.get(selector, EmptyFakeLocator())
+        if selector in self.selector_locators:
+            return self.selector_locators[selector]
+        return EmptyFakeLocator()
+
+
+class LiveTravelokaInventoryPage(FakePage):
+    def __init__(self, cards: list[LiveTravelokaCardLocator]) -> None:
+        super().__init__([])
+        self.cards = cards
+        self.locator_calls: list[str] = []
+
+    def locator(self, selector: str) -> object:
+        self.locator_calls.append(selector)
+        if selector == "[data-testid^='flight-inventory-card-container-']":
+            return FakeLocatorCollection(self.cards)
+        if selector.startswith("button:has-text"):
+            return FakeLocatorCollection([])
+        return EmptyFakeLocator()
 
 
 class FakeContext:
@@ -309,6 +380,89 @@ def test_selected_round_trip_result_carries_final_total_and_safe_paths() -> None
     assert result.selected_return_key == "ret-1"
     assert all(path.startswith("/api/") for path in result.source_paths)
     assert all("?" not in path for path in result.source_paths)
+
+
+def test_phase_recorder_records_safe_phase_without_sensitive_metadata() -> None:
+    now_values = iter([10.0, 10.125])
+    recorder = TravelokaPhaseRecorder(clock=lambda: next(now_values))
+
+    with recorder.phase("initial_navigation"):
+        pass
+
+    assert len(recorder.records) == 1
+    record = recorder.records[0]
+    assert record.phase == "initial_navigation"
+    assert record.duration_ms == 125
+    assert record.success is True
+    assert record.failure_type is None
+    assert record.count is None
+    assert not hasattr(record, "url")
+    assert not hasattr(record, "headers")
+    assert not hasattr(record, "payload")
+    assert not hasattr(record, "cookies")
+
+
+def test_phase_recorder_records_safe_failure_type() -> None:
+    now_values = iter([20.0, 20.25])
+    recorder = TravelokaPhaseRecorder(clock=lambda: next(now_values))
+    error = traveloka_adapter.TravelokaProviderError(
+        failure_type="navigation_failed",
+        message_en="Traveloka navigation failed at https://example.invalid/path",
+        error_code=ErrorCode.PROVIDER_FAILED,
+        retryable=True,
+    )
+
+    with pytest.raises(traveloka_adapter.TravelokaProviderError):
+        with recorder.phase("initial_navigation"):
+            raise error
+
+    assert len(recorder.records) == 1
+    record = recorder.records[0]
+    assert record.phase == "initial_navigation"
+    assert record.duration_ms == 250
+    assert record.success is False
+    assert record.failure_type == "navigation_failed"
+    assert "example.invalid" not in str(record)
+
+
+def test_phase_recorder_uses_safe_exception_type_without_message() -> None:
+    now_values = iter([30.0, 30.5])
+    recorder = TravelokaPhaseRecorder(clock=lambda: next(now_values))
+
+    with pytest.raises(RuntimeError):
+        with recorder.phase("context_page_setup"):
+            raise RuntimeError("failed at https://example.invalid/private")
+
+    assert len(recorder.records) == 1
+    record = recorder.records[0]
+    assert record.phase == "context_page_setup"
+    assert record.duration_ms == 500
+    assert record.success is False
+    assert record.failure_type == "runtimeerror"
+    assert "example.invalid" not in str(record)
+    assert "private" not in str(record)
+
+
+def test_adapter_phase_timings_exposes_recorder_without_response_mutation() -> None:
+    adapter = TravelokaAdapter(launch_browser=lambda **kwargs: object())
+    result = traveloka_adapter.TravelokaCaptureResult(
+        payload={"data": {"searchResults": []}},
+        source_path="/api/v2/flight/search/initial",
+        search_completed=True,
+    )
+
+    assert adapter.phase_timings == ()
+
+    with adapter._phase_recorder.phase("context_page_setup"):
+        pass
+
+    assert adapter.phase_timings[0].phase == "context_page_setup"
+    assert result == traveloka_adapter.TravelokaCaptureResult(
+        payload={"data": {"searchResults": []}},
+        source_path="/api/v2/flight/search/initial",
+        search_completed=True,
+    )
+    assert not hasattr(result, "phase_timings")
 
 
 def test_cheapest_visible_option_returns_none_for_empty_options() -> None:
@@ -507,6 +661,54 @@ def test_bind_visible_option_to_payload_ignores_numeric_payload_ids() -> None:
     )
 
 
+def test_visible_options_from_page_discovers_live_inventory_cards() -> None:
+    expensive = LiveTravelokaCardLocator(
+        container_id="eva-expensive",
+        text=(
+            "EVA Air\n"
+            "21:40\n"
+            "AMS\n"
+            "35h 15m\n"
+            "SGN\n"
+            "USD 4,307.31/pax\n"
+            "Round-trip price\n"
+            "Choose\n"
+            "Choose"
+        ),
+    )
+    cheapest = LiveTravelokaCardLocator(
+        container_id="qatar-cheapest",
+        text=(
+            "Qatar Airways\n"
+            "16:15\n"
+            "AMS\n"
+            "42h 25m\n"
+            "SGN\n"
+            "USD 1,663.60/pax\n"
+            "Round-trip price\n"
+            "Choose\n"
+            "Choose"
+        ),
+    )
+    page = LiveTravelokaInventoryPage([expensive, cheapest])
+
+    options = traveloka_adapter._visible_options_from_page(page, timeout_ms=123)
+
+    assert [option.key for option in options] == [
+        "eva-expensive",
+        "qatar-cheapest",
+    ]
+    assert [option.price_amount for option in options] == [
+        Decimal("4307.31"),
+        Decimal("1663.60"),
+    ]
+    assert [option.currency for option in options] == ["USD", "USD"]
+    assert traveloka_adapter._cheapest_visible_option(options) == options[1]
+    assert expensive.inner_text_kwargs == [{"timeout": 123}]
+    assert cheapest.inner_text_kwargs == [{"timeout": 123}]
+    assert page.locator_calls[0] == "[data-testid^='flight-inventory-card-container-']"
+
+
 def test_visible_options_from_page_uses_bounded_timeouts_for_text_and_attributes() -> None:
     locator = TextFakeLocator(
         text="VietJet Air\nSGN - BKK\nUSD 120.00",
@@ -518,6 +720,27 @@ def test_visible_options_from_page_uses_bounded_timeouts_for_text_and_attributes
 
     assert len(options) == 1
     assert options[0].key == "out-1"
+    assert locator.inner_text_kwargs == [{"timeout": 123}]
+    assert all(call["timeout"] == 123 for call in locator.get_attribute_kwargs)
+
+
+def test_visible_options_from_page_caps_far_future_deadline_to_local_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    locator = TextFakeLocator(
+        text="VietJet Air\nSGN - BKK\nUSD 120.00",
+        attrs={"data-testid": "out-1"},
+    )
+    page = LocatorFakePage([], option_groups=[[locator]])
+    monkeypatch.setattr(traveloka_adapter, "monotonic", lambda: 0.0)
+
+    options = traveloka_adapter._visible_options_from_page(
+        page,
+        timeout_ms=123,
+        deadline=999.0,
+    )
+
+    assert len(options) == 1
     assert locator.inner_text_kwargs == [{"timeout": 123}]
     assert all(call["timeout"] == 123 for call in locator.get_attribute_kwargs)
 
@@ -576,7 +799,7 @@ def test_read_final_total_uses_fresh_remaining_deadline_for_each_read(
             "[data-testid*='final'][data-testid*='total']": final_total,
         },
     )
-    now_values = iter([9.0, 9.2])
+    now_values = iter([9.0, 9.0, 9.2, 9.2, 9.2, 9.2])
     monkeypatch.setattr(traveloka_adapter, "monotonic", lambda: next(now_values))
 
     result = traveloka_adapter._read_final_total(page, deadline=10.0)
@@ -584,6 +807,545 @@ def test_read_final_total_uses_fresh_remaining_deadline_for_each_read(
     assert result == (Decimal("321.09"), "USD")
     assert selected_total.inner_text_kwargs == [{"timeout": 1000}]
     assert final_total.inner_text_kwargs == [{"timeout": 800}]
+
+
+def test_read_final_total_reads_explicit_final_total_after_addon() -> None:
+    selected_total = TextFakeLocator(text="Addon USD 12.00\nFinal total USD 321.09")
+    page = LocatorFakePage(
+        [],
+        selector_locators={
+            "[data-testid*='selected'][data-testid*='total']": selected_total,
+        },
+    )
+
+    assert traveloka_adapter._read_final_total(page, timeout_ms=456) == (
+        Decimal("321.09"),
+        "USD",
+    )
+
+
+def test_read_final_total_reads_scoped_price_only_total() -> None:
+    checkout_total = TextFakeLocator(text="USD 321.09")
+    page = LocatorFakePage(
+        [],
+        selector_locators={
+            "[data-testid*='checkout'][data-testid*='total']": checkout_total,
+        },
+    )
+
+    assert traveloka_adapter._read_final_total(page, timeout_ms=456) == (
+        Decimal("321.09"),
+        "USD",
+    )
+
+
+def test_read_final_total_reads_usd_symbol_final_total() -> None:
+    final_total = TextFakeLocator(text="Final total US$ 321.09")
+    page = LocatorFakePage(
+        [],
+        selector_locators={
+            "[data-testid*='final'][data-testid*='total']": final_total,
+        },
+    )
+
+    assert traveloka_adapter._read_final_total(page, timeout_ms=456) == (
+        Decimal("321.09"),
+        "USD",
+    )
+
+
+def test_read_final_total_prefers_final_total_over_addon_total() -> None:
+    selected_total = TextFakeLocator(text="Addon total USD 12.00\nFinal total USD 321.09")
+    page = LocatorFakePage(
+        [],
+        selector_locators={
+            "[data-testid*='checkout'][data-testid*='total']": selected_total,
+        },
+    )
+
+    assert traveloka_adapter._read_final_total(page, timeout_ms=456) == (
+        Decimal("321.09"),
+        "USD",
+    )
+
+
+def test_read_final_total_ignores_selected_addon_total_before_checkout() -> None:
+    selected_addon = TextFakeLocator(text="Addon total USD 12.00")
+    checkout_total = TextFakeLocator(text="Checkout total USD 321.09")
+    page = LocatorFakePage(
+        [],
+        selector_locators={
+            "[data-testid*='selected'][data-testid*='total']": selected_addon,
+            "[data-testid*='checkout'][data-testid*='total']": checkout_total,
+        },
+    )
+
+    assert traveloka_adapter._read_final_total(page, timeout_ms=456) == (
+        Decimal("321.09"),
+        "USD",
+    )
+
+
+def test_read_final_total_ignores_selected_price_only_before_checkout() -> None:
+    selected_addon = TextFakeLocator(text="USD 12.00")
+    checkout_total = TextFakeLocator(text="Checkout total USD 321.09")
+    page = LocatorFakePage(
+        [],
+        selector_locators={
+            "[data-testid*='selected'][data-testid*='total']": selected_addon,
+            "[data-testid*='checkout'][data-testid*='total']": checkout_total,
+        },
+    )
+
+    assert traveloka_adapter._read_final_total(page, timeout_ms=456) == (
+        Decimal("321.09"),
+        "USD",
+    )
+
+
+def test_read_final_total_prefers_checkout_total_over_summary_and_label() -> None:
+    checkout_total = TextFakeLocator(text="Addon USD 12.00\nCheckout total USD 321.09")
+    selected_summary = TextFakeLocator(text="Round-trip price USD 239.68/pax")
+    label_total = TextFakeLocator(text="Total USD 111.00/pax")
+    page = LocatorFakePage(
+        [],
+        selector_locators={
+            "[data-testid*='checkout'][data-testid*='total']": checkout_total,
+            "[data-testid='bundle-summary-tray']": selected_summary,
+            "[data-testid='label_fl_inventory_price']": FakeLocatorCollection(
+                [label_total]
+            ),
+        },
+    )
+
+    assert traveloka_adapter._read_final_total(page, timeout_ms=456) == (
+        Decimal("321.09"),
+        "USD",
+    )
+    assert checkout_total.inner_text_kwargs == [{"timeout": 456}]
+    assert selected_summary.inner_text_kwargs == []
+    assert label_total.inner_text_kwargs == []
+
+
+def test_read_final_total_cached_summary_selector_cannot_outrank_selected_total() -> None:
+    selected_total = TextFakeLocator(text="Selected final total USD 321.09")
+    summary_total = TextFakeLocator(text="Round-trip price USD 239.68/pax")
+    cache = traveloka_adapter._FinalTotalSelectorCache(
+        tier="summary",
+        selector="#flight-search-result",
+    )
+    page = LocatorFakePage(
+        [],
+        selector_locators={
+            "[data-testid*='selected'][data-testid*='total']": selected_total,
+            "#flight-search-result": summary_total,
+        },
+    )
+
+    result = traveloka_adapter._read_final_total(
+        page,
+        timeout_ms=456,
+        selector_cache=cache,
+    )
+
+    assert result == (Decimal("321.09"), "USD")
+    assert selected_total.inner_text_kwargs == [{"timeout": 456}]
+    assert summary_total.inner_text_kwargs == []
+    assert cache.tier == "selected_total"
+    assert cache.selector == "[data-testid*='selected'][data-testid*='total']"
+
+
+def test_read_final_total_cached_label_selector_cannot_outrank_summary_total() -> None:
+    summary_total = TextFakeLocator(text="Round-trip price USD 239.68/pax")
+    label_total = TextFakeLocator(text="Total USD 111.00/pax")
+    cache = traveloka_adapter._FinalTotalSelectorCache(
+        tier="global_label",
+        selector="[data-testid='label_fl_inventory_price']",
+    )
+    page = LocatorFakePage(
+        [],
+        selector_locators={
+            "[data-testid='bundle-summary-tray']": summary_total,
+            "[data-testid='label_fl_inventory_price']": FakeLocatorCollection(
+                [label_total]
+            ),
+        },
+    )
+
+    result = traveloka_adapter._read_final_total(
+        page,
+        timeout_ms=456,
+        selector_cache=cache,
+    )
+
+    assert result == (Decimal("239.68"), "USD")
+    assert summary_total.inner_text_kwargs == [{"timeout": 456}]
+    assert label_total.inner_text_kwargs == []
+    assert cache.tier == "summary"
+    assert cache.selector == "[data-testid='bundle-summary-tray']"
+
+
+def test_read_final_total_cached_selector_reorders_only_inside_same_tier() -> None:
+    final_total = TextFakeLocator(text="Final total USD 321.09")
+    selected_total = TextFakeLocator(text="Selected total unavailable")
+    cache = traveloka_adapter._FinalTotalSelectorCache(
+        tier="selected_total",
+        selector="[data-testid*='final'][data-testid*='total']",
+    )
+    page = LocatorFakePage(
+        [],
+        selector_locators={
+            "[data-testid*='selected'][data-testid*='total']": selected_total,
+            "[data-testid*='final'][data-testid*='total']": final_total,
+        },
+    )
+
+    result = traveloka_adapter._read_final_total(
+        page,
+        timeout_ms=456,
+        selector_cache=cache,
+    )
+
+    assert result == (Decimal("321.09"), "USD")
+    assert final_total.inner_text_kwargs == [{"timeout": 456}]
+    assert selected_total.inner_text_kwargs == []
+
+
+def test_read_final_total_prefers_summary_round_trip_price_over_addon_total() -> None:
+    selected_summary = TextFakeLocator(
+        text="Addon total USD 12.00\nRound-trip price USD 239.68/pax"
+    )
+    page = LocatorFakePage(
+        [],
+        selector_locators={"[data-testid='bundle-summary-tray']": selected_summary},
+    )
+
+    assert traveloka_adapter._read_final_total(page, timeout_ms=456) == (
+        Decimal("239.68"),
+        "USD",
+    )
+
+
+def test_read_final_total_prefers_later_summary_round_trip_price_over_addon_total() -> None:
+    addon_summary = TextFakeLocator(text="Addon total USD 12.00")
+    selected_summary = TextFakeLocator(text="Round-trip price USD 239.68/pax")
+    page = LocatorFakePage(
+        [],
+        selector_locators={
+            "[data-testid='bundle-summary-tray']": FakeLocatorCollection(
+                [addon_summary, selected_summary]
+            )
+        },
+    )
+
+    assert traveloka_adapter._read_final_total(page, timeout_ms=456) == (
+        Decimal("239.68"),
+        "USD",
+    )
+
+
+def test_read_final_total_prefers_round_trip_price_across_summary_selectors() -> None:
+    addon_summary = TextFakeLocator(text="Addon total USD 12.00")
+    selected_summary = TextFakeLocator(text="Round-trip price USD 239.68/pax")
+    page = LocatorFakePage(
+        [],
+        selector_locators={
+            "[data-testid='bundle-summary-tray']": addon_summary,
+            "[data-testid*='selected'][data-testid*='summary']": selected_summary,
+        },
+    )
+
+    assert traveloka_adapter._read_final_total(page, timeout_ms=456) == (
+        Decimal("239.68"),
+        "USD",
+    )
+
+
+def test_locator_texts_waits_on_first_locator_before_counting() -> None:
+    first_price = TextFakeLocator(text="Total USD 123.00/pax")
+    second_price = TextFakeLocator(text="Total USD 239.68/pax")
+
+    class FirstThenCountCollection:
+        def first(self) -> TextFakeLocator:
+            return first_price
+
+        def count(self) -> int:
+            if not first_price.inner_text_kwargs:
+                raise AssertionError("count called before first locator read")
+            return 2
+
+        def nth(self, index: int) -> TextFakeLocator:
+            return [first_price, second_price][index]
+
+    page = LocatorFakePage(
+        [],
+        selector_locators={"[data-testid='prices']": FirstThenCountCollection()},
+    )
+
+    assert traveloka_adapter._locator_texts(
+        page,
+        "[data-testid='prices']",
+        timeout_ms=456,
+        deadline=None,
+    ) == ["Total USD 123.00/pax", "Total USD 239.68/pax"]
+
+
+def test_locator_texts_caps_far_future_deadline_to_local_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    price = TextFakeLocator(text="Total USD 239.68/pax")
+    page = LocatorFakePage(
+        [],
+        selector_locators={"[data-testid='prices']": price},
+    )
+    monkeypatch.setattr(traveloka_adapter, "monotonic", lambda: 0.0)
+
+    assert traveloka_adapter._locator_texts(
+        page,
+        "[data-testid='prices']",
+        timeout_ms=456,
+        deadline=999.0,
+    ) == ["Total USD 239.68/pax"]
+    assert price.inner_text_kwargs == [{"timeout": 456}]
+
+
+def test_locator_texts_decrements_local_budget_with_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_price = TextFakeLocator(text="Total USD 123.00/pax")
+    second_price = TextFakeLocator(text="Total USD 239.68/pax")
+    page = LocatorFakePage(
+        [],
+        selector_locators={
+            "[data-testid='prices']": FakeLocatorCollection([first_price, second_price])
+        },
+    )
+    now_values = iter([0.0, 0.0, 0.2, 0.2, 0.2, 0.2])
+    monkeypatch.setattr(traveloka_adapter, "monotonic", lambda: next(now_values))
+
+    assert traveloka_adapter._locator_texts(
+        page,
+        "[data-testid='prices']",
+        timeout_ms=456,
+        deadline=999.0,
+    ) == ["Total USD 123.00/pax", "Total USD 239.68/pax"]
+    assert first_price.inner_text_kwargs == [{"timeout": 456}]
+    assert second_price.inner_text_kwargs == [{"timeout": 256}]
+
+
+def test_read_final_total_reads_live_label_total_and_ignores_addon() -> None:
+    price_label = TextFakeLocator(text="+ USD 0.00/pax\nTotal USD 239.68/pax")
+    page = LocatorFakePage(
+        [],
+        selector_locators={
+            "[data-testid='label_fl_inventory_price']": FakeLocatorCollection(
+                [price_label]
+            )
+        },
+    )
+
+    result = traveloka_adapter._read_final_total(page, timeout_ms=456)
+
+    assert result == (Decimal("239.68"), "USD")
+    assert price_label.inner_text_kwargs == [{"timeout": 456}]
+
+
+@pytest.mark.parametrize(
+    "addon_total_text",
+    [
+        "Addon total USD 12.00",
+        "Add-on total USD 12.00",
+        "Add-ons total USD 12.00",
+    ],
+)
+def test_read_final_total_reads_live_label_total_after_addon_total(
+    addon_total_text: str,
+) -> None:
+    price_label = TextFakeLocator(text=f"{addon_total_text}\nTotal USD 239.68/pax")
+    page = LocatorFakePage(
+        [],
+        selector_locators={
+            "[data-testid='label_fl_inventory_price']": FakeLocatorCollection(
+                [price_label]
+            )
+        },
+    )
+
+    assert traveloka_adapter._read_final_total(page, timeout_ms=456) == (
+        Decimal("239.68"),
+        "USD",
+    )
+
+
+def test_read_final_total_reads_live_label_dotted_vnd_total() -> None:
+    price_label = TextFakeLocator(text="+ VND 0/pax\nTotal VND 1.234.567/pax")
+    page = LocatorFakePage(
+        [],
+        selector_locators={
+            "[data-testid='label_fl_inventory_price']": FakeLocatorCollection(
+                [price_label]
+            )
+        },
+    )
+
+    assert traveloka_adapter._read_final_total(page, timeout_ms=456) == (
+        Decimal("1234567"),
+        "VND",
+    )
+
+
+def test_read_final_total_reads_selected_summary_round_trip_price() -> None:
+    selected_summary = TextFakeLocator(
+        text=(
+            "Departure SGN to BKK\n"
+            "Return BKK to SGN\n"
+            "Round-trip price USD 239.68/pax"
+        )
+    )
+    page = LocatorFakePage(
+        [],
+        selector_locators={"[data-testid='bundle-summary-tray']": selected_summary},
+    )
+
+    assert traveloka_adapter._read_final_total(page, timeout_ms=456) == (
+        Decimal("239.68"),
+        "USD",
+    )
+
+
+def test_read_final_total_reads_selected_summary_usd_symbol_round_trip_price() -> None:
+    selected_summary = TextFakeLocator(text="Round-trip price US$ 239.68/pax")
+    page = LocatorFakePage(
+        [],
+        selector_locators={"[data-testid='bundle-summary-tray']": selected_summary},
+    )
+
+    assert traveloka_adapter._read_final_total(page, timeout_ms=456) == (
+        Decimal("239.68"),
+        "USD",
+    )
+
+
+@pytest.mark.parametrize(
+    "addon_total_text",
+    [
+        "Addon total USD 12.00",
+        "Add-on total USD 12.00",
+        "Add-ons total USD 12.00",
+    ],
+)
+def test_read_final_total_ignores_summary_addon_total_without_round_trip_price(
+    addon_total_text: str,
+) -> None:
+    selected_summary = TextFakeLocator(text=addon_total_text)
+    page = LocatorFakePage(
+        [],
+        selector_locators={"[data-testid='bundle-summary-tray']": selected_summary},
+    )
+
+    assert traveloka_adapter._read_final_total(page, timeout_ms=456) is None
+
+
+def test_read_final_total_prefers_selected_summary_over_global_label_total() -> None:
+    unselected_label = TextFakeLocator(text="Total USD 999.00/pax")
+    selected_summary = TextFakeLocator(text="Round-trip price USD 239.68/pax")
+    page = LocatorFakePage(
+        [],
+        selector_locators={
+            "[data-testid='label_fl_inventory_price']": FakeLocatorCollection(
+                [unselected_label]
+            ),
+            "[data-testid='bundle-summary-tray']": selected_summary,
+        },
+    )
+
+    assert traveloka_adapter._read_final_total(page, timeout_ms=456) == (
+        Decimal("239.68"),
+        "USD",
+    )
+
+
+def test_read_final_total_ignores_conflicting_global_label_totals() -> None:
+    unselected_label = TextFakeLocator(text="Total USD 999.00/pax")
+    selected_label = TextFakeLocator(text="Total USD 239.68/pax")
+    page = LocatorFakePage(
+        [],
+        selector_locators={
+            "[data-testid='label_fl_inventory_price']": FakeLocatorCollection(
+                [unselected_label, selected_label]
+            )
+        },
+    )
+
+    assert traveloka_adapter._read_final_total(page, timeout_ms=456) is None
+
+
+def test_read_final_total_ignores_duplicate_global_label_totals() -> None:
+    first_label = TextFakeLocator(text="Total USD 239.68/pax")
+    second_label = TextFakeLocator(text="Total USD 239.68/pax")
+    page = LocatorFakePage(
+        [],
+        selector_locators={
+            "[data-testid='label_fl_inventory_price']": FakeLocatorCollection(
+                [first_label, second_label]
+            )
+        },
+    )
+
+    assert traveloka_adapter._read_final_total(page, timeout_ms=456) is None
+
+
+def test_read_final_total_ignores_duplicate_label_totals_in_same_text() -> None:
+    price_label = TextFakeLocator(
+        text="Total USD 239.68/pax\nTotal USD 239.68/pax"
+    )
+    page = LocatorFakePage(
+        [],
+        selector_locators={
+            "[data-testid='label_fl_inventory_price']": FakeLocatorCollection(
+                [price_label]
+            )
+        },
+    )
+
+    assert traveloka_adapter._read_final_total(page, timeout_ms=456) is None
+
+
+def test_read_final_total_ignores_unselected_round_trip_card_price() -> None:
+    unselected_card_price = TextFakeLocator(
+        text="Round-trip price USD 999.00/pax\nChoose\nChoose"
+    )
+    selected_price = TextFakeLocator(text="+ USD 0.00/pax\nTotal USD 239.68/pax")
+    page = LocatorFakePage(
+        [],
+        selector_locators={
+            "[data-testid='label_fl_inventory_price']": FakeLocatorCollection(
+                [unselected_card_price, selected_price]
+            )
+        },
+    )
+
+    assert traveloka_adapter._read_final_total(page, timeout_ms=456) == (
+        Decimal("239.68"),
+        "USD",
+    )
+
+
+def test_read_body_text_caps_timeout_when_deadline_is_far_future(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    body = TextFakeLocator(text="Your Flights")
+    page = LocatorFakePage([], selector_locators={"body": body})
+    monkeypatch.setattr(traveloka_adapter, "monotonic", lambda: 10.0)
+
+    result = traveloka_adapter._read_body_text(
+        page,
+        timeout_ms=250,
+        deadline=999.0,
+    )
+
+    assert result == "Your Flights"
+    assert body.inner_text_kwargs == [{"timeout": 250}]
 
 
 def test_read_final_total_ignores_ambiguous_generic_total() -> None:
@@ -595,13 +1357,104 @@ def test_read_final_total_ignores_ambiguous_generic_total() -> None:
     assert traveloka_adapter._read_final_total(page, timeout_ms=456) is None
 
 
-def test_click_visible_option_delegates_timeout_to_locator_click() -> None:
+def test_wait_for_return_selection_transition_recognizes_selected_summary() -> None:
+    page = LocatorFakePage(
+        [],
+        selector_locators={
+            "[data-testid='flight-summary-container-1_selected']": TextFakeLocator(
+                text="Return BKK to SGN\nChange return flight"
+            )
+        },
+    )
+
+    assert (
+        traveloka_adapter._wait_for_return_selection_transition(
+            page,
+            deadline=traveloka_adapter.monotonic() + 1,
+            poll_interval_seconds=0.001,
+        )
+        is True
+    )
+
+
+def test_wait_for_return_selection_transition_times_out_without_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = LocatorFakePage([], selector_locators={"body": TextFakeLocator(text="Choose")})
+    monkeypatch.setattr(
+        traveloka_adapter,
+        "SELECTION_TRANSITION_TIMEOUT_MS",
+        1,
+        raising=False,
+    )
+
+    assert (
+        traveloka_adapter._wait_for_return_selection_transition(
+            page,
+            deadline=traveloka_adapter.monotonic() + 1,
+            poll_interval_seconds=0.001,
+        )
+        is False
+    )
+
+
+def test_wait_for_return_selection_transition_ignores_preexisting_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker_text = "Return BKK to SGN\nChange return flight"
+    page = LocatorFakePage(
+        [],
+        selector_locators={
+            "[data-testid='flight-summary-container-1_selected']": TextFakeLocator(
+                text=marker_text
+            ),
+            "body": TextFakeLocator(text=f"Choose\n{marker_text}"),
+        },
+    )
+    monkeypatch.setattr(
+        traveloka_adapter,
+        "SELECTION_TRANSITION_TIMEOUT_MS",
+        1,
+        raising=False,
+    )
+
+    assert (
+        traveloka_adapter._wait_for_return_selection_transition(
+            page,
+            deadline=traveloka_adapter.monotonic() + 1,
+            poll_interval_seconds=0.001,
+            before_marker_texts=(marker_text,),
+            before_body_text=f"Choose\n{marker_text}",
+        )
+        is False
+    )
+
+
+def test_click_visible_option_dispatches_traveloka_activation_sequence() -> None:
     locator = FakeLocator()
     option = _visible_option(key="out-1", locator=locator)
 
     traveloka_adapter._click_visible_option(option, timeout_ms=3210)
 
-    assert locator.click_kwargs == [{"timeout": 3210}]
+    assert locator.click_kwargs == []
+    assert locator.evaluate_calls == [{"timeout": 3210}]
+    script = locator.evaluate_scripts[0]
+    for event_name in ("pointerdown", "mousedown", "pointerup", "mouseup", "click"):
+        assert event_name in script
+
+
+def test_click_visible_option_scrolls_and_caps_live_activation_timeout() -> None:
+    locator = ScrollableFakeLocator()
+    option = _visible_option(key="out-1", locator=locator)
+
+    traveloka_adapter._click_visible_option(option, timeout_ms=45_000)
+
+    assert locator.scroll_kwargs == [{"timeout": 10_000}]
+    assert locator.evaluate_calls == [{"timeout": 10_000}]
+    assert locator.click_kwargs == []
+    script = locator.evaluate_scripts[0]
+    for event_name in ("pointerdown", "mousedown", "pointerup", "mouseup", "click"):
+        assert event_name in script
 
 
 def test_adapter_captures_completed_initial_fare_payload() -> None:
@@ -635,6 +1488,169 @@ def test_adapter_captures_completed_initial_fare_payload() -> None:
     assert context.context_kwargs == {"locale": "en-US"}
     assert context.closed is True
     assert browser.closed is True
+
+
+def test_round_trip_default_waits_conservatively_for_capture_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = FakePage([])
+    captures = [
+        traveloka_adapter.TravelokaCaptureResult(
+            payload={
+                "data": {
+                    "meta": {"searchCompleted": True},
+                    "searchResults": [{"id": "out-1"}],
+                }
+            },
+            source_path="/api/v2/flight/search/initial",
+            search_completed=True,
+        ),
+        traveloka_adapter.TravelokaCaptureResult(
+            payload={
+                "data": {
+                    "meta": {"searchCompleted": True},
+                    "searchResults": [{"id": "ret-1"}],
+                }
+            },
+            source_path="/api/v2/flight/search/poll",
+            search_completed=True,
+        ),
+    ]
+    capture_calls = 0
+    options = [
+        [_visible_option(key="out-1")],
+        [_visible_option(key="ret-1")],
+    ]
+
+    def wait_for_capture(
+        state: object,
+        page_arg: object,
+        deadline: float,
+        *,
+        poll_interval_seconds: float,
+    ) -> object:
+        nonlocal capture_calls
+        capture_calls += 1
+        return captures.pop(0)
+
+    monkeypatch.setattr(
+        traveloka_adapter,
+        "_wait_for_capture",
+        wait_for_capture,
+    )
+    monkeypatch.setattr(
+        traveloka_adapter,
+        "_visible_options_from_page",
+        lambda page_arg, **kwargs: options.pop(0),
+    )
+    monkeypatch.setattr(
+        traveloka_adapter,
+        "_wait_for_outbound_selection_transition",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        traveloka_adapter,
+        "_wait_for_return_selection_transition",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        traveloka_adapter,
+        "_read_final_total",
+        lambda page_arg, **kwargs: (Decimal("321.09"), "USD"),
+    )
+    adapter = TravelokaAdapter(
+        launch_browser=lambda **kwargs: FakeBrowser(FakeContext(page)),
+        timeout_seconds=1,
+        poll_interval_seconds=0.001,
+    )
+
+    result = adapter.search_exact_round_trip(_round_trip_request())
+
+    assert isinstance(result, traveloka_adapter.TravelokaSelectedRoundTripResult)
+    assert capture_calls == 2
+
+
+def test_round_trip_fast_env_is_ignored_and_uses_conservative_capture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = FakePage([])
+    captures = [
+        traveloka_adapter.TravelokaCaptureResult(
+            payload={
+                "data": {
+                    "meta": {"searchCompleted": True},
+                    "searchResults": [{"id": "out-1"}],
+                }
+            },
+            source_path="/api/v2/flight/search/initial",
+            search_completed=True,
+        ),
+        traveloka_adapter.TravelokaCaptureResult(
+            payload={
+                "data": {
+                    "meta": {"searchCompleted": True},
+                    "searchResults": [{"id": "ret-1"}],
+                }
+            },
+            source_path="/api/v2/flight/search/poll",
+            search_completed=True,
+        ),
+    ]
+    capture_calls = 0
+    options = [
+        [_visible_option(key="out-1")],
+        [_visible_option(key="ret-1")],
+    ]
+
+    def wait_for_capture(
+        state: object,
+        page_arg: object,
+        deadline: float,
+        *,
+        poll_interval_seconds: float,
+    ) -> object:
+        nonlocal capture_calls
+        capture_calls += 1
+        return captures.pop(0)
+
+    monkeypatch.setenv("TRAVELOKA_FAST_STABLE_OPTIONS", "1")
+    monkeypatch.setattr(
+        traveloka_adapter,
+        "_wait_for_capture",
+        wait_for_capture,
+    )
+    monkeypatch.setattr(
+        traveloka_adapter,
+        "_visible_options_from_page",
+        lambda page_arg, **kwargs: options.pop(0),
+    )
+    monkeypatch.setattr(
+        traveloka_adapter,
+        "_wait_for_outbound_selection_transition",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        traveloka_adapter,
+        "_wait_for_return_selection_transition",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        traveloka_adapter,
+        "_read_final_total",
+        lambda page_arg, **kwargs: (Decimal("321.09"), "USD"),
+    )
+    adapter = TravelokaAdapter(
+        launch_browser=lambda **kwargs: FakeBrowser(FakeContext(page)),
+        timeout_seconds=1,
+        poll_interval_seconds=0.001,
+    )
+
+    result = adapter.search_exact_round_trip(_round_trip_request())
+
+    assert isinstance(result, traveloka_adapter.TravelokaSelectedRoundTripResult)
+    assert result.selected_outbound_key == "out-1"
+    assert result.selected_return_key == "ret-1"
+    assert capture_calls == 2
 
 
 def test_round_trip_selects_cheapest_visible_outbound_and_return(
@@ -717,8 +1733,16 @@ def test_round_trip_selects_cheapest_visible_outbound_and_return(
         lambda page_arg, **kwargs: (Decimal("321.09"), "USD"),
         raising=False,
     )
+    monkeypatch.setattr(
+        traveloka_adapter,
+        "_wait_for_return_selection_transition",
+        lambda page_arg, deadline, **kwargs: True,
+        raising=False,
+    )
     adapter = TravelokaAdapter(
-        launch_browser=lambda **kwargs: FakeBrowser(FakeContext(page))
+        launch_browser=lambda **kwargs: FakeBrowser(FakeContext(page)),
+        timeout_seconds=0.01,
+        poll_interval_seconds=0.001,
     )
 
     result = adapter.search_exact_round_trip(_round_trip_request())
@@ -738,6 +1762,368 @@ def test_round_trip_selects_cheapest_visible_outbound_and_return(
     assert outbound_cheap_click.clicked is True
     assert return_expensive_click.clicked is False
     assert return_cheap_click.clicked is True
+
+
+def test_round_trip_uses_bounded_timeout_for_final_total_reader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    outbound_payload = {
+        "data": {"meta": {"searchCompleted": True}, "searchResults": [{"id": "out-1"}]}
+    }
+    return_payload = {
+        "data": {"meta": {"searchCompleted": True}, "searchResults": [{"id": "ret-1"}]}
+    }
+    page = FakePage([])
+    captures = [
+        traveloka_adapter.TravelokaCaptureResult(
+            payload=outbound_payload,
+            source_path="/api/v2/flight/search/initial",
+            search_completed=True,
+        ),
+        traveloka_adapter.TravelokaCaptureResult(
+            payload=return_payload,
+            source_path="/api/v2/flight/search/poll",
+            search_completed=True,
+        ),
+    ]
+    options = [
+        [_visible_option(key="out-1", locator=EmittingFakeLocator())],
+        [_visible_option(key="ret-1", locator=EmittingFakeLocator())],
+    ]
+    final_total_kwargs: list[dict[str, object]] = []
+
+    def wait_for_capture(
+        state: object,
+        page_arg: object,
+        deadline: float,
+        *,
+        poll_interval_seconds: float,
+    ) -> traveloka_adapter.TravelokaCaptureResult:
+        return captures.pop(0)
+
+    def read_final_total(
+        page_arg: object,
+        **kwargs: object,
+    ) -> tuple[Decimal, str]:
+        final_total_kwargs.append(kwargs)
+        return Decimal("321.09"), "USD"
+
+    monkeypatch.setattr(
+        traveloka_adapter,
+        "_wait_for_capture",
+        wait_for_capture,
+    )
+    monkeypatch.setattr(
+        traveloka_adapter,
+        "_wait_for_outbound_selection_transition",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        traveloka_adapter,
+        "_wait_for_return_selection_transition",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        traveloka_adapter,
+        "_visible_options_from_page",
+        lambda page_arg, **kwargs: options.pop(0),
+        raising=False,
+    )
+    monkeypatch.setattr(traveloka_adapter, "_read_final_total", read_final_total)
+    adapter = TravelokaAdapter(
+        launch_browser=lambda **kwargs: FakeBrowser(FakeContext(page)),
+        timeout_seconds=3,
+        poll_interval_seconds=0.001,
+    )
+
+    result = adapter.search_exact_round_trip(_round_trip_request())
+
+    assert isinstance(result, traveloka_adapter.TravelokaSelectedRoundTripResult)
+    assert final_total_kwargs
+    assert final_total_kwargs[0]["timeout_ms"] <= 250
+
+
+def test_round_trip_polls_until_final_total_is_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    outbound_payload = {
+        "data": {"meta": {"searchCompleted": True}, "searchResults": [{"id": "out-1"}]}
+    }
+    return_payload = {
+        "data": {"meta": {"searchCompleted": True}, "searchResults": [{"id": "ret-1"}]}
+    }
+    page = FakePage([])
+    captures = [
+        traveloka_adapter.TravelokaCaptureResult(
+            payload=outbound_payload,
+            source_path="/api/v2/flight/search/initial",
+            search_completed=True,
+        ),
+        traveloka_adapter.TravelokaCaptureResult(
+            payload=return_payload,
+            source_path="/api/v2/flight/search/poll",
+            search_completed=True,
+        ),
+    ]
+    options = [
+        [_visible_option(key="out-1", locator=EmittingFakeLocator())],
+        [_visible_option(key="ret-1", locator=EmittingFakeLocator())],
+    ]
+    final_total_results: list[tuple[Decimal, str] | None] = [
+        None,
+        (Decimal("321.09"), "USD"),
+    ]
+
+    def wait_for_capture(
+        state: object,
+        page_arg: object,
+        deadline: float,
+        *,
+        poll_interval_seconds: float,
+    ) -> traveloka_adapter.TravelokaCaptureResult:
+        return captures.pop(0)
+
+    def read_final_total(
+        page_arg: object,
+        **kwargs: object,
+    ) -> tuple[Decimal, str] | None:
+        return final_total_results.pop(0)
+
+    monkeypatch.setattr(
+        traveloka_adapter,
+        "_wait_for_capture",
+        wait_for_capture,
+    )
+    monkeypatch.setattr(
+        traveloka_adapter,
+        "_wait_for_outbound_selection_transition",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        traveloka_adapter,
+        "_wait_for_return_selection_transition",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        traveloka_adapter,
+        "_visible_options_from_page",
+        lambda page_arg, **kwargs: options.pop(0),
+        raising=False,
+    )
+    monkeypatch.setattr(traveloka_adapter, "_read_final_total", read_final_total)
+    adapter = TravelokaAdapter(
+        launch_browser=lambda **kwargs: FakeBrowser(FakeContext(page)),
+        timeout_seconds=3,
+        poll_interval_seconds=0.001,
+    )
+
+    result = adapter.search_exact_round_trip(_round_trip_request())
+
+    assert isinstance(result, traveloka_adapter.TravelokaSelectedRoundTripResult)
+    assert page.wait_calls >= 1
+
+
+def test_round_trip_rejects_preexisting_return_marker_without_transition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    outbound_payload = {
+        "data": {"meta": {"searchCompleted": True}, "searchResults": [{"id": "out-1"}]}
+    }
+    return_payload = {
+        "data": {"meta": {"searchCompleted": True}, "searchResults": [{"id": "ret-1"}]}
+    }
+    marker_text = "Return BKK to SGN\nChange return flight"
+    page = LocatorFakePage(
+        [
+            FakeResponse(
+                url="https://www.traveloka.com/api/v2/flight/search/initial",
+                payload=outbound_payload,
+            )
+        ],
+        option_groups=[
+            [
+                TextFakeLocator(
+                    text="VietJet Air\nSGN - BKK\nUSD 120.00",
+                    attrs={"data-testid": "out-1"},
+                    on_click=lambda: page.emit_response(
+                        FakeResponse(
+                            url="https://www.traveloka.com/api/v2/flight/search/poll",
+                            payload=return_payload,
+                        )
+                    ),
+                )
+            ],
+            [
+                TextFakeLocator(
+                    text="VietJet Air\nBKK - SGN\nUSD 110.00",
+                    attrs={"data-testid": "ret-1"},
+                )
+            ],
+        ],
+        selector_locators={
+            "[data-testid='flight-summary-container-1_selected']": TextFakeLocator(
+                text=marker_text
+            ),
+            "[data-testid*='selected'][data-testid*='total']": TextFakeLocator(
+                text="Selected final total USD 321.09"
+            ),
+        },
+    )
+    adapter = TravelokaAdapter(
+        launch_browser=lambda **kwargs: FakeBrowser(FakeContext(page)),
+        timeout_seconds=1,
+        poll_interval_seconds=0.001,
+    )
+    monkeypatch.setattr(
+        traveloka_adapter,
+        "SELECTION_TRANSITION_TIMEOUT_MS",
+        1,
+        raising=False,
+    )
+
+    result = adapter.search_exact_round_trip(_round_trip_request())
+
+    assert isinstance(result, traveloka_adapter.TravelokaCaptureResult)
+    assert result.payload == outbound_payload
+    assert result.partial_failure_type == "final_round_trip_total_unavailable"
+
+
+def test_round_trip_rejects_stale_summary_total_after_return_transition() -> None:
+    outbound_payload = {
+        "data": {"meta": {"searchCompleted": True}, "searchResults": [{"id": "out-1"}]}
+    }
+    return_payload = {
+        "data": {"meta": {"searchCompleted": True}, "searchResults": [{"id": "ret-1"}]}
+    }
+    body = TextFakeLocator(text="Choose")
+    page = LocatorFakePage(
+        [
+            FakeResponse(
+                url="https://www.traveloka.com/api/v2/flight/search/initial",
+                payload=outbound_payload,
+            )
+        ],
+        option_groups=[
+            [
+                TextFakeLocator(
+                    text="VietJet Air\nSGN - BKK\nUSD 120.00",
+                    attrs={"data-testid": "out-1"},
+                    on_click=lambda: page.emit_response(
+                        FakeResponse(
+                            url="https://www.traveloka.com/api/v2/flight/search/poll",
+                            payload=return_payload,
+                        )
+                    ),
+                )
+            ],
+            [
+                TextFakeLocator(
+                    text="VietJet Air\nBKK - SGN\nUSD 110.00",
+                    attrs={"data-testid": "ret-1"},
+                    on_click=lambda: setattr(
+                        body,
+                        "text",
+                        "Choose\nChange return flight",
+                    ),
+                )
+            ],
+        ],
+        selector_locators={
+            "body": body,
+            "[data-testid='bundle-summary-tray']": TextFakeLocator(
+                text="Round-trip price USD 999.00/pax"
+            ),
+        },
+    )
+    adapter = TravelokaAdapter(
+        launch_browser=lambda **kwargs: FakeBrowser(FakeContext(page)),
+        timeout_seconds=1,
+        poll_interval_seconds=0.001,
+    )
+
+    result = adapter.search_exact_round_trip(_round_trip_request())
+
+    assert isinstance(result, traveloka_adapter.TravelokaCaptureResult)
+    assert result.payload == outbound_payload
+    assert result.partial_failure_type == "final_round_trip_total_unavailable"
+
+
+def test_round_trip_reads_live_flight_search_result_summary_total() -> None:
+    outbound_payload = {
+        "data": {"meta": {"searchCompleted": True}, "searchResults": [{"id": "out-1"}]}
+    }
+    return_payload = {
+        "data": {"meta": {"searchCompleted": True}, "searchResults": [{"id": "ret-1"}]}
+    }
+    body = TextFakeLocator(text="Choose")
+    page = LocatorFakePage(
+        [
+            FakeResponse(
+                url="https://www.traveloka.com/api/v2/flight/search/initial",
+                payload=outbound_payload,
+            )
+        ],
+        option_groups=[
+            [
+                TextFakeLocator(
+                    text="Vietnam Airlines\nSGN - BKK\nUSD 120.00",
+                    attrs={"data-testid": "out-1"},
+                    on_click=lambda: page.emit_response(
+                        FakeResponse(
+                            url="https://www.traveloka.com/api/v2/flight/search/poll",
+                            payload=return_payload,
+                        )
+                    ),
+                )
+            ],
+            [
+                TextFakeLocator(
+                    text="Vietnam Airlines\nBKK - SGN\nUSD 110.00",
+                    attrs={"data-testid": "ret-1"},
+                    on_click=lambda: (
+                        setattr(
+                            body,
+                            "text",
+                            (
+                                "Change return flight\n"
+                                "Round-trip price USD 250.86/pax\n"
+                                "SGN - BKK USD 250.86/pax\n"
+                                "BKK - SGN USD 0.00/pax"
+                            ),
+                        ),
+                        page.selector_locators.update(
+                            {
+                                "#flight-search-result": TextFakeLocator(
+                                    text=(
+                                        "Your Flights\n"
+                                        "Change departure flight\n"
+                                        "Change return flight\n"
+                                        "Round-trip price USD 250.86/pax\n"
+                                        "SGN - BKK USD 250.86/pax\n"
+                                        "BKK - SGN USD 0.00/pax"
+                                    )
+                                )
+                            }
+                        ),
+                    ),
+                )
+            ],
+        ],
+        selector_locators={"body": body},
+    )
+    adapter = TravelokaAdapter(
+        launch_browser=lambda **kwargs: FakeBrowser(FakeContext(page)),
+        timeout_seconds=1,
+        poll_interval_seconds=0.001,
+    )
+
+    result = adapter.search_exact_round_trip(_round_trip_request())
+
+    assert isinstance(result, traveloka_adapter.TravelokaSelectedRoundTripResult)
+    assert result.selected_outbound_key == "out-1"
+    assert result.selected_return_key == "ret-1"
+    assert result.final_total_amount == Decimal("250.86")
+    assert result.final_total_currency == "USD"
 
 
 def test_round_trip_default_helpers_bind_locator_attributes_and_select_final_total() -> None:
@@ -785,17 +2171,24 @@ def test_round_trip_default_helpers_bind_locator_attributes_and_select_final_tot
                 TextFakeLocator(
                     text="VietJet Air\nBKK - SGN\nUSD 110.00",
                     attrs={"data-testid": "ret-cheap"},
+                    on_click=lambda: page.selector_locators.update(
+                        {
+                            "[data-testid='flight-summary-container-1_selected']": TextFakeLocator(
+                                text="Return BKK to SGN\nChange return flight"
+                            ),
+                            "[data-testid*='selected'][data-testid*='total']": TextFakeLocator(
+                                text="Selected final total USD 321.09"
+                            ),
+                        }
+                    ),
                 ),
             ],
         ],
-        selector_locators={
-            "[data-testid*='selected'][data-testid*='total']": TextFakeLocator(
-                text="Selected final total USD 321.09"
-            )
-        },
     )
     adapter = TravelokaAdapter(
-        launch_browser=lambda **kwargs: FakeBrowser(FakeContext(page))
+        launch_browser=lambda **kwargs: FakeBrowser(FakeContext(page)),
+        timeout_seconds=0.01,
+        poll_interval_seconds=0.001,
     )
 
     result = adapter.search_exact_round_trip(_round_trip_request())
@@ -833,14 +2226,20 @@ def test_round_trip_returns_timeout_partial_when_outbound_capture_is_timed_out(
             timed_out=True,
         )
 
-    monkeypatch.setattr(traveloka_adapter, "_wait_for_capture", wait_for_capture)
+    monkeypatch.setattr(
+        traveloka_adapter,
+        "_wait_for_capture",
+        wait_for_capture,
+    )
     monkeypatch.setattr(
         traveloka_adapter,
         "_visible_options_from_page",
         lambda page_arg, **kwargs: [_visible_option(key="out-1", locator=outbound_click)],
     )
     adapter = TravelokaAdapter(
-        launch_browser=lambda **kwargs: FakeBrowser(FakeContext(page))
+        launch_browser=lambda **kwargs: FakeBrowser(FakeContext(page)),
+        timeout_seconds=0.01,
+        poll_interval_seconds=0.001,
     )
 
     result = adapter.search_exact_round_trip(_round_trip_request())
@@ -861,8 +2260,14 @@ def test_round_trip_returns_return_capture_partial_when_return_capture_is_timed_
     return_payload = {
         "data": {"meta": {"searchCompleted": False}, "searchResults": [{"id": "ret-1"}]}
     }
-    page = FakePage([])
-    outbound_click = EmittingFakeLocator()
+    body = TextFakeLocator(text="Your Flights")
+    page = LocatorFakePage(
+        [],
+        selector_locators={"body": body},
+    )
+    outbound_click = EmittingFakeLocator(
+        lambda: setattr(body, "text", "Your Flights\nChange departure flight")
+    )
     return_click = EmittingFakeLocator()
     captures = [
         traveloka_adapter.TravelokaCaptureResult(
@@ -892,7 +2297,11 @@ def test_round_trip_returns_return_capture_partial_when_return_capture_is_timed_
     ) -> traveloka_adapter.TravelokaCaptureResult:
         return captures.pop(0)
 
-    monkeypatch.setattr(traveloka_adapter, "_wait_for_capture", wait_for_capture)
+    monkeypatch.setattr(
+        traveloka_adapter,
+        "_wait_for_capture",
+        wait_for_capture,
+    )
     monkeypatch.setattr(
         traveloka_adapter,
         "_visible_options_from_page",
@@ -986,15 +2395,19 @@ def test_round_trip_returns_partial_when_return_capture_times_out(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     payload = _completed_payload()
-    page = FakePage(
+    body = TextFakeLocator(text="Your Flights")
+    page = LocatorFakePage(
         [
             FakeResponse(
                 url="https://www.traveloka.com/api/v2/flight/search/initial",
                 payload=payload,
             )
-        ]
+        ],
+        selector_locators={"body": body},
     )
-    outbound_click = EmittingFakeLocator()
+    outbound_click = EmittingFakeLocator(
+        lambda: setattr(body, "text", "Your Flights\nChange departure flight")
+    )
     monkeypatch.setattr(
         traveloka_adapter,
         "_visible_options_from_page",
@@ -1019,6 +2432,241 @@ def test_round_trip_returns_partial_when_return_capture_times_out(
     assert result.payload == payload
     assert result.partial_failure_type == "return_capture_timeout"
     assert outbound_click.clicked is True
+
+
+def test_round_trip_returns_partial_when_outbound_activation_does_not_transition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = _completed_payload()
+    page = LocatorFakePage(
+        [
+            FakeResponse(
+                url="https://www.traveloka.com/api/v2/flight/search/initial",
+                payload=payload,
+            )
+        ],
+        selector_locators={"body": TextFakeLocator(text="Your Flights")},
+    )
+    outbound_click = EmittingFakeLocator()
+    monkeypatch.setattr(
+        traveloka_adapter,
+        "SELECTION_TRANSITION_TIMEOUT_MS",
+        1,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        traveloka_adapter,
+        "_visible_options_from_page",
+        lambda page_arg, **kwargs: [
+            _visible_option(
+                key="tv-1",
+                price_amount=Decimal("120.00"),
+                locator=outbound_click,
+            )
+        ],
+        raising=False,
+    )
+    adapter = TravelokaAdapter(
+        launch_browser=lambda **kwargs: FakeBrowser(FakeContext(page)),
+        timeout_seconds=1,
+        poll_interval_seconds=0.001,
+    )
+
+    result = adapter.search_exact_round_trip(_round_trip_request())
+
+    assert isinstance(result, traveloka_adapter.TravelokaCaptureResult)
+    assert result.payload == payload
+    assert result.partial_failure_type == "outbound_selection_transition_unavailable"
+    assert outbound_click.clicked is True
+
+
+def test_round_trip_keeps_return_capture_timeout_after_outbound_transition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = _completed_payload()
+    body = TextFakeLocator(text="Your Flights")
+    page = LocatorFakePage(
+        [
+            FakeResponse(
+                url="https://www.traveloka.com/api/v2/flight/search/initial",
+                payload=payload,
+            )
+        ],
+        selector_locators={"body": body},
+    )
+    outbound_click = EmittingFakeLocator(
+        lambda: setattr(body, "text", "Your Flights\nChange departure flight")
+    )
+    monkeypatch.setattr(
+        traveloka_adapter,
+        "_visible_options_from_page",
+        lambda page_arg, **kwargs: [
+            _visible_option(
+                key="tv-1",
+                price_amount=Decimal("120.00"),
+                locator=outbound_click,
+            )
+        ],
+        raising=False,
+    )
+    adapter = TravelokaAdapter(
+        launch_browser=lambda **kwargs: FakeBrowser(FakeContext(page)),
+        timeout_seconds=0.1,
+        poll_interval_seconds=0.001,
+    )
+
+    result = adapter.search_exact_round_trip(_round_trip_request())
+
+    assert isinstance(result, traveloka_adapter.TravelokaCaptureResult)
+    assert result.payload == payload
+    assert result.partial_failure_type == "return_capture_timeout"
+    assert outbound_click.clicked is True
+
+
+def test_round_trip_ignores_duplicate_outbound_payload_after_noop_activation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = _completed_payload()
+    page = LocatorFakePage(
+        [
+            FakeResponse(
+                url="https://www.traveloka.com/api/v2/flight/search/initial",
+                payload=payload,
+            )
+        ],
+        selector_locators={"body": TextFakeLocator(text="Your Flights")},
+    )
+    outbound_click = EmittingFakeLocator(
+        lambda: page.emit_response(
+            FakeResponse(
+                url="https://www.traveloka.com/api/v2/flight/search/poll",
+                payload=payload,
+            )
+        )
+    )
+    monkeypatch.setattr(
+        traveloka_adapter,
+        "SELECTION_TRANSITION_TIMEOUT_MS",
+        1,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        traveloka_adapter,
+        "_visible_options_from_page",
+        lambda page_arg, **kwargs: [
+            _visible_option(
+                key="tv-1",
+                price_amount=Decimal("120.00"),
+                locator=outbound_click,
+            )
+        ],
+        raising=False,
+    )
+    adapter = TravelokaAdapter(
+        launch_browser=lambda **kwargs: FakeBrowser(FakeContext(page)),
+        timeout_seconds=1,
+        poll_interval_seconds=0.001,
+    )
+
+    result = adapter.search_exact_round_trip(_round_trip_request())
+
+    assert isinstance(result, traveloka_adapter.TravelokaCaptureResult)
+    assert result.payload == payload
+    assert result.partial_failure_type == "outbound_selection_transition_unavailable"
+    assert outbound_click.clicked is True
+
+
+def test_round_trip_ignores_preexisting_selected_hash_after_noop_activation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = _completed_payload()
+    page = LocatorFakePage(
+        [
+            FakeResponse(
+                url="https://www.traveloka.com/api/v2/flight/search/initial",
+                payload=payload,
+            )
+        ],
+        selector_locators={"body": TextFakeLocator(text="Your Flights")},
+    )
+    outbound_click = EmittingFakeLocator(
+        lambda: setattr(
+            page,
+            "url",
+            "https://www.traveloka.com/en-en/flight/fulltwosearch?noop=1#SCtv-1",
+        )
+    )
+    monkeypatch.setattr(
+        traveloka_adapter,
+        "SELECTION_TRANSITION_TIMEOUT_MS",
+        1,
+        raising=False,
+    )
+
+    def visible_options(page_arg: object, **kwargs: object) -> list[object]:
+        page.url = "https://www.traveloka.com/en-en/flight/fulltwosearch#SCtv-1"
+        return [
+            _visible_option(
+                key="tv-1",
+                price_amount=Decimal("120.00"),
+                locator=outbound_click,
+            )
+        ]
+
+    monkeypatch.setattr(
+        traveloka_adapter,
+        "_visible_options_from_page",
+        visible_options,
+        raising=False,
+    )
+    adapter = TravelokaAdapter(
+        launch_browser=lambda **kwargs: FakeBrowser(FakeContext(page)),
+        timeout_seconds=1,
+        poll_interval_seconds=0.001,
+    )
+
+    result = adapter.search_exact_round_trip(_round_trip_request())
+
+    assert isinstance(result, traveloka_adapter.TravelokaCaptureResult)
+    assert result.payload == payload
+    assert result.partial_failure_type == "outbound_selection_transition_unavailable"
+    assert outbound_click.clicked is True
+
+
+def test_outbound_transition_requires_exact_selected_url_fragment() -> None:
+    page = LocatorFakePage(
+        [],
+        selector_locators={"body": TextFakeLocator(text="Your Flights")},
+    )
+    page.url = "https://www.traveloka.com/en-en/flight/fulltwosearch#SCtv-10"
+
+    assert (
+        traveloka_adapter._outbound_selection_transitioned(
+            page,
+            "tv-1",
+            before_url="https://www.traveloka.com/en-en/flight/fulltwosearch",
+            before_body_text="Your Flights",
+        )
+        is False
+    )
+
+
+def test_outbound_transition_accepts_exact_selected_fragment_from_different_baseline() -> None:
+    page = LocatorFakePage(
+        [],
+        selector_locators={"body": TextFakeLocator(text="Your Flights")},
+    )
+    page.url = "https://www.traveloka.com/en-en/flight/fulltwosearch#SCtv-1"
+
+    assert (
+        traveloka_adapter._outbound_selection_transitioned(
+            page,
+            "tv-1",
+            before_url="https://www.traveloka.com/en-en/flight/fulltwosearch#SCtv-10",
+            before_body_text="Your Flights",
+        )
+        is True
+    )
 
 
 def test_round_trip_returns_partial_when_return_selection_is_unavailable(
@@ -1161,8 +2809,16 @@ def test_round_trip_returns_partial_when_final_total_is_unavailable(
         lambda page_arg, **kwargs: None,
         raising=False,
     )
+    monkeypatch.setattr(
+        traveloka_adapter,
+        "_wait_for_return_selection_transition",
+        lambda page_arg, deadline, **kwargs: True,
+        raising=False,
+    )
     adapter = TravelokaAdapter(
-        launch_browser=lambda **kwargs: FakeBrowser(FakeContext(page))
+        launch_browser=lambda **kwargs: FakeBrowser(FakeContext(page)),
+        timeout_seconds=0.01,
+        poll_interval_seconds=0.001,
     )
 
     result = adapter.search_exact_round_trip(_round_trip_request())

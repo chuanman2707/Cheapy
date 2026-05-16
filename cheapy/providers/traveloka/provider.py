@@ -39,6 +39,7 @@ SAFE_PARTIAL_FAILURE_TYPES = frozenset(
         "blocked",
         "final_round_trip_total_unavailable",
         "outbound_selection_unavailable",
+        "outbound_selection_transition_unavailable",
         "partial_failure",
         "rate_limited",
         "return_capture_timeout",
@@ -104,6 +105,11 @@ class TravelokaProvider:
             if isinstance(capture, TravelokaCaptureResult):
                 partial_error = _capture_partial_error(capture, capability)
                 if partial_error is not None:
+                    if (
+                        _safe_failure_type(capture.partial_failure_type)
+                        == "outbound_selection_transition_unavailable"
+                    ):
+                        errors = _without_return_details_unavailable(errors)
                     errors.append(partial_error)
                 if (
                     not offers
@@ -221,6 +227,14 @@ def _partial_failure_error(failure_type: str, capability: str) -> ErrorV1:
         retryable=retryable,
         capability=capability,
     )
+
+
+def _without_return_details_unavailable(errors: list[ErrorV1]) -> list[ErrorV1]:
+    return [
+        error
+        for error in errors
+        if error.details.get("failure_type") != "return_details_unavailable"
+    ]
 
 
 def _safe_failure_type(failure_type: str | None) -> str | None:

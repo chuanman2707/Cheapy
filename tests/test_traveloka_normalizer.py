@@ -414,6 +414,44 @@ def test_normalize_payload_reports_missing_return_details_per_offer() -> None:
     assert [error.details["item_index"] for error in errors] == [1, 2]
 
 
+def test_normalize_payload_sorts_raw_round_trip_partials_by_price() -> None:
+    payload = {
+        "data": {
+            "meta": {"searchCompleted": True},
+            "searchResults": [
+                _traveloka_search_result(
+                    item_id="eva-expensive",
+                    amount="430731",
+                    flight_number="BR-76",
+                ),
+                _traveloka_search_result(
+                    item_id="qatar-cheapest",
+                    amount="166360",
+                    flight_number="QR-274",
+                ),
+                _traveloka_search_result(
+                    item_id="qatar-middle",
+                    amount="172840",
+                    flight_number="QR-284",
+                ),
+            ],
+        }
+    }
+
+    offers, errors = normalize_payload(payload, _round_trip_request())
+
+    assert [offer.offer_id for offer in offers] == [
+        "traveloka:SGN-BKK:2026-07-10:2026-07-17:qatar-cheapest",
+        "traveloka:SGN-BKK:2026-07-10:2026-07-17:qatar-middle",
+        "traveloka:SGN-BKK:2026-07-10:2026-07-17:eva-expensive",
+    ]
+    assert [offer.price_amount for offer in offers] == [1663.6, 1728.4, 4307.31]
+    assert all(offer.comparable is False for offer in offers)
+    assert all(offer.rank_within_currency is None for offer in offers)
+    assert all(offer.global_rank is None for offer in offers)
+    assert [error.details["item_index"] for error in errors] == [1, 2, 3]
+
+
 def test_normalize_selected_round_trip_uses_final_total_and_marks_comparable() -> None:
     offers, errors = normalize_selected_round_trip(
         _selected_result(),

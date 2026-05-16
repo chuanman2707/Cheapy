@@ -16,6 +16,10 @@ from cheapy.providers.base import (
     ProviderExactOneWayRequest,
     ProviderExactRoundTripRequest,
 )
+from cheapy.providers.traveloka.timing import (
+    TravelokaPhaseRecorder,
+    TravelokaPhaseTiming,
+)
 
 
 DEFAULT_BASE_URL = "https://www.traveloka.com/en-en/flight/fulltwosearch"
@@ -26,12 +30,79 @@ INITIAL_SEARCH_PATH = "/api/v2/flight/search/initial"
 POLL_SEARCH_PATH = "/api/v2/flight/search/poll"
 SUPPORTED_FARE_PATHS = {INITIAL_SEARCH_PATH, POLL_SEARCH_PATH}
 VISIBLE_OPTION_CLICK_TIMEOUT_MS = 10_000
+SELECTION_TRANSITION_TIMEOUT_MS = 10_000
+FINAL_TOTAL_READ_TIMEOUT_MS = 250
+INVENTORY_CARD_TEST_ID_PREFIX = "flight-inventory-card-container-"
+INVENTORY_CARD_SELECTOR = (
+    f"[data-testid^='{INVENTORY_CARD_TEST_ID_PREFIX}']"
+)
+INVENTORY_CARD_BUTTON_SELECTOR = (
+    "[data-testid='flight-inventory-card-button'], "
+    "[role='button']:has-text('Choose'), "
+    "[role='button']:has-text('Ch\u1ecdn')"
+)
+LEGACY_CHOOSE_BUTTON_SELECTOR = "button:has-text('Choose'), button:has-text('Ch\u1ecdn')"
+TRAVELOKA_OPTION_ACTIVATION_SCRIPT = """
+node => {
+  const base = {bubbles: true, cancelable: true, composed: true, view: window};
+  const pointer = (type, buttons) => {
+    if (typeof PointerEvent === 'function') {
+      return new PointerEvent(type, Object.assign({}, base, {
+        button: 0,
+        buttons,
+        pointerType: 'mouse',
+        isPrimary: true,
+      }));
+    }
+    return new MouseEvent(type, Object.assign({}, base, {button: 0, buttons}));
+  };
+  node.dispatchEvent(pointer('pointerdown', 1));
+  node.dispatchEvent(new MouseEvent(
+    'mousedown',
+    Object.assign({}, base, {button: 0, buttons: 1})
+  ));
+  node.dispatchEvent(pointer('pointerup', 0));
+  node.dispatchEvent(new MouseEvent(
+    'mouseup',
+    Object.assign({}, base, {button: 0, buttons: 0})
+  ));
+  node.dispatchEvent(new MouseEvent(
+    'click',
+    Object.assign({}, base, {button: 0, buttons: 0})
+  ));
+}
+"""
+_FINAL_TOTAL_SELECTED_TIER = "selected_total"
+_FINAL_TOTAL_SUMMARY_TIER = "summary"
+_FINAL_TOTAL_GLOBAL_LABEL_TIER = "global_label"
+
+_FINAL_TOTAL_SELECTED_SELECTORS: tuple[tuple[str, bool], ...] = (
+    ("[data-testid*='selected'][data-testid*='total']", False),
+    ("[data-testid*='final'][data-testid*='total']", True),
+    ("[data-testid*='checkout'][data-testid*='total']", True),
+    ("[aria-label*='selected' i][aria-label*='total' i]", False),
+    ("[aria-label*='final' i][aria-label*='total' i]", True),
+    ("[aria-label*='checkout' i][aria-label*='total' i]", True),
+    ("text=/selected\\s+(?:final\\s+)?total/i", False),
+    ("text=/final\\s+total/i", False),
+    ("text=/checkout\\s+total/i", False),
+)
+_FINAL_TOTAL_SUMMARY_SELECTORS: tuple[str, ...] = (
+    "#flight-search-result",
+    "[data-testid='bundle-summary-tray']",
+    "[data-testid*='bundle-summary']",
+    "[data-testid*='selected'][data-testid*='summary']",
+    "[data-testid*='summary'][data-testid*='tray']",
+    "[aria-label*='selected' i][aria-label*='summary' i]",
+    "[aria-label*='summary' i][aria-label*='tray' i]",
+)
+_FINAL_TOTAL_GLOBAL_LABEL_SELECTOR = "[data-testid='label_fl_inventory_price']"
 _USD_PRICE_AFTER_MARKER_RE = re.compile(
-    r"(?:USD|\$)\s*(\d[\d,]*(?:\.\d+)?)",
+    r"(?:USD|US\$|\$)\s*(\d[\d,]*(?:\.\d+)?)",
     re.IGNORECASE,
 )
 _USD_PRICE_BEFORE_MARKER_RE = re.compile(
-    r"(?<!:)(\d[\d,]*(?:\.\d+)?)\s*USD\b",
+    r"(?<!:)(\d[\d,]*(?:\.\d+)?)\s*(?:USD\b|US\$)",
     re.IGNORECASE,
 )
 _VND_PRICE_AFTER_MARKER_RE = re.compile(
@@ -40,6 +111,32 @@ _VND_PRICE_AFTER_MARKER_RE = re.compile(
 )
 _VND_PRICE_BEFORE_MARKER_RE = re.compile(
     r"(?<!:)(\d[\d.,]*)\s*(?:\u20ab|VND\b)",
+    re.IGNORECASE,
+)
+_EXPLICIT_TOTAL_PRICE_RE = re.compile(
+    r"(?<!\baddon\s)(?<!\baddons\s)(?<!\badd-on\s)(?<!\badd-ons\s)"
+    r"\btotal\b\s*((?:USD|US\$|\$|VND|\u20ab)\s*\d[\d,.]*(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+_EXPLICIT_SUMMARY_PRICE_RE = re.compile(
+    r"(?:(?<!\baddon\s)(?<!\baddons\s)(?<!\badd-on\s)(?<!\badd-ons\s)"
+    r"\btotal\b|\bround-trip\s+price\b)"
+    r"\s*((?:USD|US\$|\$|VND|\u20ab)\s*\d[\d,.]*(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+_EXPLICIT_ROUND_TRIP_PRICE_RE = re.compile(
+    r"\bround-trip\s+price\b\s*((?:USD|US\$|\$|VND|\u20ab)\s*\d[\d,.]*(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+_EXPLICIT_SELECTED_TOTAL_PRICE_RE = re.compile(
+    r"\b(?:final\s+total|checkout\s+total|selected\s+final\s+total|selected\s+total)\b"
+    r"\s*((?:USD|US\$|\$|VND|\u20ab)\s*\d[\d,.]*(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+_SCOPED_TOTAL_PRICE_ONLY_RE = re.compile(
+    r"^\s*(?:(?:USD|US\$|\$|VND|\u20ab)\s*\d[\d,.]*(?:\.\d+)?"
+    r"|\d[\d,.]*(?:\.\d+)?\s*(?:USD|US\$|VND|\u20ab))"
+    r"(?:\s*/?\s*(?:pax|passenger|person))?\s*$",
     re.IGNORECASE,
 )
 _VISIBLE_OPTION_KEY_TEXT_RE = re.compile(
@@ -139,6 +236,11 @@ class TravelokaAdapter:
         self._launch_browser = (
             launch_browser if launch_browser is not None else _default_launch_browser
         )
+        self._phase_recorder = TravelokaPhaseRecorder(clock=monotonic)
+
+    @property
+    def phase_timings(self) -> tuple[TravelokaPhaseTiming, ...]:
+        return self._phase_recorder.records
 
     def search_exact_one_way(
         self,
@@ -159,35 +261,39 @@ class TravelokaAdapter:
         deadline = monotonic() + self._timeout_seconds
         try:
             try:
-                browser = self._launch_browser(
-                    headless=True,
-                    timeout=_remaining_timeout_ms(deadline),
-                )
+                with self._phase_recorder.phase("browser_launch"):
+                    browser = self._launch_browser(
+                        headless=True,
+                        timeout=_remaining_timeout_ms(deadline),
+                    )
             except Exception as exc:
                 if _is_timeout_exception(exc):
                     raise _timeout_error(type(exc).__name__) from None
                 raise _browser_unavailable_error(type(exc).__name__) from None
 
-            _remaining_timeout_ms(deadline)
-            context = browser.new_context(locale="en-US")  # type: ignore[attr-defined]
-            _remaining_timeout_ms(deadline)
-            page = context.new_page()  # type: ignore[attr-defined]
-            _remaining_timeout_ms(deadline)
-            page.on("response", state.handle_response)  # type: ignore[attr-defined]
-            _remaining_timeout_ms(deadline)
-            page.goto(  # type: ignore[attr-defined]
-                build_full_search_url(request, base_url=self._base_url),
-                wait_until="domcontentloaded",
-                timeout=_remaining_timeout_ms(deadline),
-            )
+            with self._phase_recorder.phase("context_page_setup"):
+                _remaining_timeout_ms(deadline)
+                context = browser.new_context(locale="en-US")  # type: ignore[attr-defined]
+                _remaining_timeout_ms(deadline)
+                page = context.new_page()  # type: ignore[attr-defined]
+                _remaining_timeout_ms(deadline)
+                page.on("response", state.handle_response)  # type: ignore[attr-defined]
+            with self._phase_recorder.phase("initial_navigation"):
+                _remaining_timeout_ms(deadline)
+                page.goto(  # type: ignore[attr-defined]
+                    build_full_search_url(request, base_url=self._base_url),
+                    wait_until="domcontentloaded",
+                    timeout=_remaining_timeout_ms(deadline),
+                )
 
             try:
-                return _wait_for_capture(
-                    state,
-                    page,
-                    deadline,
-                    poll_interval_seconds=self._poll_interval_seconds,
-                )
+                with self._phase_recorder.phase("outbound_capture_wait"):
+                    return _wait_for_capture(
+                        state,
+                        page,
+                        deadline,
+                        poll_interval_seconds=self._poll_interval_seconds,
+                    )
             except TravelokaProviderError as exc:
                 if exc.failure_type == "timeout":
                     _raise_blocked_if_terminal_page(page.content())  # type: ignore[attr-defined]
@@ -199,8 +305,9 @@ class TravelokaAdapter:
                 raise _timeout_error(type(exc).__name__) from None
             raise _navigation_failed_error(type(exc).__name__) from None
         finally:
-            _close_quietly(context)
-            _close_quietly(browser)
+            with self._phase_recorder.phase("cleanup"):
+                _close_quietly(context)
+                _close_quietly(browser)
 
     def _search_selected_round_trip(
         self,
@@ -212,35 +319,39 @@ class TravelokaAdapter:
         deadline = monotonic() + self._timeout_seconds
         try:
             try:
-                browser = self._launch_browser(
-                    headless=True,
-                    timeout=_remaining_timeout_ms(deadline),
-                )
+                with self._phase_recorder.phase("browser_launch"):
+                    browser = self._launch_browser(
+                        headless=True,
+                        timeout=_remaining_timeout_ms(deadline),
+                    )
             except Exception as exc:
                 if _is_timeout_exception(exc):
                     raise _timeout_error(type(exc).__name__) from None
                 raise _browser_unavailable_error(type(exc).__name__) from None
 
-            _remaining_timeout_ms(deadline)
-            context = browser.new_context(locale="en-US")  # type: ignore[attr-defined]
-            _remaining_timeout_ms(deadline)
-            page = context.new_page()  # type: ignore[attr-defined]
-            _remaining_timeout_ms(deadline)
-            page.on("response", state.handle_response)  # type: ignore[attr-defined]
-            _remaining_timeout_ms(deadline)
-            page.goto(  # type: ignore[attr-defined]
-                build_full_search_url(request, base_url=self._base_url),
-                wait_until="domcontentloaded",
-                timeout=_remaining_timeout_ms(deadline),
-            )
+            with self._phase_recorder.phase("context_page_setup"):
+                _remaining_timeout_ms(deadline)
+                context = browser.new_context(locale="en-US")  # type: ignore[attr-defined]
+                _remaining_timeout_ms(deadline)
+                page = context.new_page()  # type: ignore[attr-defined]
+                _remaining_timeout_ms(deadline)
+                page.on("response", state.handle_response)  # type: ignore[attr-defined]
+            with self._phase_recorder.phase("initial_navigation"):
+                _remaining_timeout_ms(deadline)
+                page.goto(  # type: ignore[attr-defined]
+                    build_full_search_url(request, base_url=self._base_url),
+                    wait_until="domcontentloaded",
+                    timeout=_remaining_timeout_ms(deadline),
+                )
 
             try:
-                outbound_capture = _wait_for_capture(
-                    state,
-                    page,
-                    deadline,
-                    poll_interval_seconds=self._poll_interval_seconds,
-                )
+                with self._phase_recorder.phase("outbound_capture_wait"):
+                    outbound_capture = _wait_for_capture(
+                        state,
+                        page,
+                        deadline,
+                        poll_interval_seconds=self._poll_interval_seconds,
+                    )
             except TravelokaProviderError as exc:
                 if exc.failure_type == "timeout":
                     _raise_blocked_if_terminal_page(page.content())  # type: ignore[attr-defined]
@@ -254,42 +365,66 @@ class TravelokaAdapter:
             )
             if outbound_selection_timeout_ms <= 0:
                 return _partial_round_trip_result(
-                    outbound_capture,
-                    "outbound_selection_unavailable",
+                        outbound_capture,
+                        "outbound_selection_unavailable",
+                    )
+            with self._phase_recorder.phase("outbound_visible_option_discovery"):
+                outbound_option = _cheapest_visible_option(
+                    _visible_options_from_page(
+                        page,
+                        deadline=deadline,
+                    )
                 )
-            outbound_option = _cheapest_visible_option(
-                _visible_options_from_page(
+                if outbound_option is None:
+                    return _partial_round_trip_result(
+                        outbound_capture,
+                        "outbound_selection_unavailable",
+                    )
+            with self._phase_recorder.phase("outbound_binding"):
+                outbound_key = _bind_visible_option_to_payload(
+                    outbound_option,
+                    outbound_capture.payload,
+                )
+                if outbound_key is None:
+                    return _partial_round_trip_result(
+                        outbound_capture,
+                        "selected_outbound_binding_unavailable",
+                    )
+
+            with self._phase_recorder.phase("outbound_click_transition"):
+                before_outbound_selection_url = str(getattr(page, "url", ""))
+                before_outbound_selection_body = _read_body_text(
                     page,
+                    timeout_ms=250,
                     deadline=deadline,
                 )
-            )
-            if outbound_option is None:
-                return _partial_round_trip_result(
-                    outbound_capture,
-                    "outbound_selection_unavailable",
+                state.reset()
+                _click_visible_option(
+                    outbound_option,
+                    timeout_ms=_remaining_timeout_ms(deadline),
                 )
-            outbound_key = _bind_visible_option_to_payload(
-                outbound_option,
-                outbound_capture.payload,
-            )
-            if outbound_key is None:
-                return _partial_round_trip_result(
-                    outbound_capture,
-                    "selected_outbound_binding_unavailable",
-                )
-
-            state.reset()
-            _click_visible_option(
-                outbound_option,
-                timeout_ms=_remaining_timeout_ms(deadline),
-            )
-            try:
-                return_capture = _wait_for_capture(
+                if not _wait_for_outbound_selection_transition(
                     state,
                     page,
+                    outbound_key,
                     deadline,
+                    outbound_payload=outbound_capture.payload,
+                    before_url=before_outbound_selection_url,
+                    before_body_text=before_outbound_selection_body,
                     poll_interval_seconds=self._poll_interval_seconds,
-                )
+                ):
+                    return _partial_round_trip_result(
+                        outbound_capture,
+                        "outbound_selection_transition_unavailable",
+                    )
+            try:
+                with self._phase_recorder.phase("return_capture_wait"):
+                    return_capture = _wait_for_capture(
+                        state,
+                        page,
+                        deadline,
+                        poll_interval_seconds=self._poll_interval_seconds,
+                    )
             except TravelokaProviderError as exc:
                 if exc.failure_type == "timeout":
                     return _partial_round_trip_result(
@@ -312,59 +447,71 @@ class TravelokaAdapter:
                     outbound_capture,
                     "return_selection_unavailable",
                 )
-            return_option = _cheapest_visible_option(
-                _visible_options_from_page(
+            with self._phase_recorder.phase("return_visible_option_discovery"):
+                return_option = _cheapest_visible_option(
+                    _visible_options_from_page(
+                        page,
+                        deadline=deadline,
+                    )
+                )
+                if return_option is None:
+                    return _partial_round_trip_result(
+                        outbound_capture,
+                        "return_selection_unavailable",
+                    )
+            with self._phase_recorder.phase("return_binding"):
+                return_key = _bind_visible_option_to_payload(
+                    return_option,
+                    return_capture.payload,
+                )
+                if return_key is None:
+                    return _partial_round_trip_result(
+                        outbound_capture,
+                        "selected_return_binding_unavailable",
+                    )
+
+            with self._phase_recorder.phase("return_click_transition"):
+                return_click_timeout_ms = _remaining_timeout_ms(
+                    deadline,
+                    raise_on_expired=False,
+                )
+                if return_click_timeout_ms <= 0:
+                    return _partial_round_trip_result(
+                        outbound_capture,
+                        "final_round_trip_total_unavailable",
+                    )
+                before_final_total_texts = _final_total_texts(page, deadline=deadline)
+                before_return_selection_marker_texts = _return_selection_marker_texts(
                     page,
                     deadline=deadline,
                 )
-            )
-            if return_option is None:
-                return _partial_round_trip_result(
-                    outbound_capture,
-                    "return_selection_unavailable",
+                before_return_selection_body = _read_body_text(
+                    page,
+                    timeout_ms=250,
+                    deadline=deadline,
                 )
-            return_key = _bind_visible_option_to_payload(
-                return_option,
-                return_capture.payload,
-            )
-            if return_key is None:
-                return _partial_round_trip_result(
-                    outbound_capture,
-                    "selected_return_binding_unavailable",
+                _click_visible_option(
+                    return_option,
+                    timeout_ms=return_click_timeout_ms,
                 )
-
-            return_click_timeout_ms = _remaining_timeout_ms(
-                deadline,
-                raise_on_expired=False,
-            )
-            if return_click_timeout_ms <= 0:
-                return _partial_round_trip_result(
-                    outbound_capture,
-                    "final_round_trip_total_unavailable",
+                if not _wait_for_return_selection_transition(
+                    page,
+                    deadline,
+                    poll_interval_seconds=self._poll_interval_seconds,
+                    before_marker_texts=before_return_selection_marker_texts,
+                    before_body_text=before_return_selection_body,
+                ):
+                    return _partial_round_trip_result(
+                        outbound_capture,
+                        "final_round_trip_total_unavailable",
+                    )
+            with self._phase_recorder.phase("final_total_read"):
+                final_total = _wait_for_final_total(
+                    page,
+                    deadline,
+                    poll_interval_seconds=self._poll_interval_seconds,
+                    before_texts=before_final_total_texts,
                 )
-            _click_visible_option(
-                return_option,
-                timeout_ms=return_click_timeout_ms,
-            )
-            if not _wait_after_return_selection(
-                page,
-                deadline,
-                poll_interval_seconds=self._poll_interval_seconds,
-            ):
-                return _partial_round_trip_result(
-                    outbound_capture,
-                    "final_round_trip_total_unavailable",
-                )
-            final_total_timeout_ms = _remaining_timeout_ms(
-                deadline,
-                raise_on_expired=False,
-            )
-            if final_total_timeout_ms <= 0:
-                return _partial_round_trip_result(
-                    outbound_capture,
-                    "final_round_trip_total_unavailable",
-                )
-            final_total = _read_final_total(page, deadline=deadline)
             if final_total is None:
                 return _partial_round_trip_result(
                     outbound_capture,
@@ -389,8 +536,9 @@ class TravelokaAdapter:
                 raise _timeout_error(type(exc).__name__) from None
             raise _navigation_failed_error(type(exc).__name__) from None
         finally:
-            _close_quietly(context)
-            _close_quietly(browser)
+            with self._phase_recorder.phase("cleanup"):
+                _close_quietly(context)
+                _close_quietly(browser)
 
 
 class _CaptureState:
@@ -522,6 +670,61 @@ def _parse_visible_price(text: str) -> tuple[Decimal, str]:
     raise ValueError("visible price did not include a supported currency")
 
 
+def _parse_explicit_price(
+    text: str,
+    pattern: re.Pattern[str],
+) -> tuple[Decimal, str] | None:
+    normalized = " ".join(text.replace("\xa0", " ").split())
+    match = pattern.search(normalized)
+    if match is None:
+        return None
+    try:
+        return _parse_visible_price(match.group(1))
+    except Exception:
+        return None
+
+
+def _parse_explicit_prices(
+    text: str,
+    pattern: re.Pattern[str],
+) -> list[tuple[Decimal, str]]:
+    normalized = " ".join(text.replace("\xa0", " ").split())
+    prices: list[tuple[Decimal, str]] = []
+    for match in pattern.finditer(normalized):
+        try:
+            prices.append(_parse_visible_price(match.group(1)))
+        except Exception:
+            continue
+    return prices
+
+
+def _parse_selected_total_price(
+    text: str,
+    *,
+    allow_price_only: bool,
+) -> tuple[Decimal, str] | None:
+    explicit_total = _parse_explicit_price(text, _EXPLICIT_SELECTED_TOTAL_PRICE_RE)
+    if explicit_total is not None:
+        return explicit_total
+
+    if not allow_price_only:
+        return None
+    normalized = " ".join(text.replace("\xa0", " ").split())
+    if _SCOPED_TOTAL_PRICE_ONLY_RE.fullmatch(normalized) is None:
+        return None
+    try:
+        return _parse_visible_price(normalized)
+    except Exception:
+        return None
+
+
+def _parse_summary_total_price(text: str) -> tuple[Decimal, str] | None:
+    round_trip_price = _parse_explicit_price(text, _EXPLICIT_ROUND_TRIP_PRICE_RE)
+    if round_trip_price is not None:
+        return round_trip_price
+    return _parse_explicit_price(text, _EXPLICIT_SUMMARY_PRICE_RE)
+
+
 def _bind_visible_option_to_payload(
     option: TravelokaVisibleOption,
     payload: dict[str, object],
@@ -538,10 +741,74 @@ def _visible_options_from_page(
     deadline: float | None = None,
 ) -> list[TravelokaVisibleOption]:
     timeout_ms = max(1, timeout_ms)
+    inventory_options = _visible_options_from_inventory_cards(
+        page,
+        timeout_ms=timeout_ms,
+        deadline=deadline,
+    )
+    if inventory_options:
+        return inventory_options
+
+    return _visible_options_from_legacy_buttons(
+        page,
+        timeout_ms=timeout_ms,
+        deadline=deadline,
+    )
+
+
+def _visible_options_from_inventory_cards(
+    page: object,
+    *,
+    timeout_ms: int,
+    deadline: float | None,
+) -> list[TravelokaVisibleOption]:
     try:
-        cards = page.locator(  # type: ignore[attr-defined]
-            "button:has-text('Choose'), button:has-text('Ch\u1ecdn')"
+        cards = page.locator(INVENTORY_CARD_SELECTOR)  # type: ignore[attr-defined]
+        count = cards.count()
+    except Exception:
+        return []
+
+    options: list[TravelokaVisibleOption] = []
+    for index in range(count):
+        try:
+            card_locator = cards.nth(index)
+        except Exception:
+            continue
+
+        key = _stable_key_from_locator(
+            card_locator,
+            timeout_ms=timeout_ms,
+            deadline=deadline,
         )
+        try:
+            text_timeout_ms = _dom_operation_timeout_ms(
+                timeout_ms=timeout_ms,
+                deadline=deadline,
+            )
+            if text_timeout_ms is None:
+                break
+            text = card_locator.inner_text(timeout=text_timeout_ms)
+        except Exception:
+            continue
+
+        button_locator = _selection_action_from_card(card_locator)
+        if button_locator is None:
+            continue
+
+        parsed = _visible_option_from_text(text, button_locator, key=key)
+        if parsed is not None:
+            options.append(parsed)
+    return options
+
+
+def _visible_options_from_legacy_buttons(
+    page: object,
+    *,
+    timeout_ms: int,
+    deadline: float | None,
+) -> list[TravelokaVisibleOption]:
+    try:
+        cards = page.locator(LEGACY_CHOOSE_BUTTON_SELECTOR)  # type: ignore[attr-defined]
         count = cards.count()
     except Exception:
         return []
@@ -587,6 +854,23 @@ def _visible_options_from_page(
         if parsed is not None:
             options.append(parsed)
     return options
+
+
+def _selection_action_from_card(card_locator: object) -> object | None:
+    try:
+        actions = card_locator.locator(INVENTORY_CARD_BUTTON_SELECTOR)
+        if actions.count() <= 0:
+            return None
+        return _first_locator(actions)
+    except Exception:
+        return None
+
+
+def _first_locator(locator_collection: object) -> object:
+    first = getattr(locator_collection, "first", None)
+    if first is not None:
+        return first() if callable(first) else first
+    return locator_collection.nth(0)  # type: ignore[attr-defined]
 
 
 def _visible_option_from_text(
@@ -643,9 +927,21 @@ def _stable_key_from_locator(
             attribute_name,
             timeout_ms=attribute_timeout_ms,
         )
-        if value is not None:
-            return value
+        key = _stable_key_from_attribute(value)
+        if key is not None:
+            return key
     return None
+
+
+def _stable_key_from_attribute(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if value == "flight-inventory-card-button":
+        return None
+    if value.startswith(INVENTORY_CARD_TEST_ID_PREFIX):
+        key = value.removeprefix(INVENTORY_CARD_TEST_ID_PREFIX).strip()
+        return key or None
+    return value
 
 
 def _locator_attribute(
@@ -674,42 +970,234 @@ def _stable_key_from_text(text: str) -> str | None:
     return match.group(1)
 
 
+@dataclass
+class _FinalTotalSelectorCache:
+    tier: str | None = None
+    selector: str | None = None
+
+    def record(self, *, tier: str, selector: str) -> None:
+        self.tier = tier
+        self.selector = selector
+
+
+def _ordered_final_total_selector_items(
+    *,
+    tier: str,
+    selectors: tuple[tuple[str, bool], ...],
+    selector_cache: _FinalTotalSelectorCache | None,
+) -> tuple[tuple[str, bool], ...]:
+    if selector_cache is None or selector_cache.tier != tier:
+        return selectors
+    cached = selector_cache.selector
+    if cached is None:
+        return selectors
+    cached_items = tuple(item for item in selectors if item[0] == cached)
+    if not cached_items:
+        return selectors
+    remaining = tuple(item for item in selectors if item[0] != cached)
+    return (*cached_items, *remaining)
+
+
+def _ordered_final_total_selectors(
+    *,
+    tier: str,
+    selectors: tuple[str, ...],
+    selector_cache: _FinalTotalSelectorCache | None,
+) -> tuple[str, ...]:
+    if selector_cache is None or selector_cache.tier != tier:
+        return selectors
+    cached = selector_cache.selector
+    if cached is None or cached not in selectors:
+        return selectors
+    return (cached, *(selector for selector in selectors if selector != cached))
+
+
 def _read_final_total(
     page: object,
     *,
     timeout_ms: int = 1000,
     deadline: float | None = None,
+    before_texts: Iterable[str] = (),
+    selector_cache: _FinalTotalSelectorCache | None = None,
 ) -> tuple[Decimal, str] | None:
     timeout_ms = max(1, timeout_ms)
-    total_selectors = (
-        "[data-testid*='selected'][data-testid*='total']",
-        "[data-testid*='final'][data-testid*='total']",
-        "[data-testid*='checkout'][data-testid*='total']",
-        "[aria-label*='selected' i][aria-label*='total' i]",
-        "[aria-label*='final' i][aria-label*='total' i]",
-        "[aria-label*='checkout' i][aria-label*='total' i]",
-        "text=/selected\\s+(?:final\\s+)?total/i",
-        "text=/final\\s+total/i",
-        "text=/checkout\\s+total/i",
-    )
-    for selector in total_selectors:
-        try:
-            locator = page.locator(selector).first()  # type: ignore[attr-defined]
-            text_timeout_ms = _dom_operation_timeout_ms(
-                timeout_ms=timeout_ms,
-                deadline=deadline,
+    before_text_keys = {_normalized_text_key(text) for text in before_texts}
+    for selector, allow_price_only in _ordered_final_total_selector_items(
+        tier=_FINAL_TOTAL_SELECTED_TIER,
+        selectors=_FINAL_TOTAL_SELECTED_SELECTORS,
+        selector_cache=selector_cache,
+    ):
+        for text in _locator_texts(
+            page,
+            selector,
+            timeout_ms=timeout_ms,
+            deadline=deadline,
+        ):
+            if _normalized_text_key(text) in before_text_keys:
+                continue
+            parsed = _parse_selected_total_price(
+                text,
+                allow_price_only=allow_price_only,
             )
-            if text_timeout_ms is None:
-                return None
+            if parsed is not None:
+                if selector_cache is not None:
+                    selector_cache.record(
+                        tier=_FINAL_TOTAL_SELECTED_TIER,
+                        selector=selector,
+                    )
+                return parsed
+
+    all_summary_texts: list[tuple[str, str]] = []
+    for selector in _ordered_final_total_selectors(
+        tier=_FINAL_TOTAL_SUMMARY_TIER,
+        selectors=_FINAL_TOTAL_SUMMARY_SELECTORS,
+        selector_cache=selector_cache,
+    ):
+        for text in _locator_texts(
+            page,
+            selector,
+            timeout_ms=timeout_ms,
+            deadline=deadline,
+        ):
+            all_summary_texts.append((selector, text))
+    all_summary_texts = [
+        (selector, text)
+        for selector, text in all_summary_texts
+        if _normalized_text_key(text) not in before_text_keys
+    ]
+    for selector, text in all_summary_texts:
+        parsed = _parse_explicit_price(text, _EXPLICIT_ROUND_TRIP_PRICE_RE)
+        if parsed is not None:
+            if selector_cache is not None:
+                selector_cache.record(
+                    tier=_FINAL_TOTAL_SUMMARY_TIER,
+                    selector=selector,
+                )
+            return parsed
+    for selector, text in all_summary_texts:
+        parsed = _parse_explicit_price(text, _EXPLICIT_SUMMARY_PRICE_RE)
+        if parsed is not None:
+            if selector_cache is not None:
+                selector_cache.record(
+                    tier=_FINAL_TOTAL_SUMMARY_TIER,
+                    selector=selector,
+                )
+            return parsed
+
+    label_totals: list[tuple[Decimal, str]] = []
+    for text in _locator_texts(
+        page,
+        _FINAL_TOTAL_GLOBAL_LABEL_SELECTOR,
+        timeout_ms=timeout_ms,
+        deadline=deadline,
+    ):
+        if _normalized_text_key(text) in before_text_keys:
+            continue
+        label_totals.extend(_parse_explicit_prices(text, _EXPLICIT_TOTAL_PRICE_RE))
+    if len(label_totals) == 1:
+        if selector_cache is not None:
+            selector_cache.record(
+                tier=_FINAL_TOTAL_GLOBAL_LABEL_TIER,
+                selector=_FINAL_TOTAL_GLOBAL_LABEL_SELECTOR,
+            )
+        return label_totals[0]
+    return None
+
+
+def _final_total_texts(
+    page: object,
+    *,
+    deadline: float | None = None,
+) -> tuple[str, ...]:
+    texts: list[str] = []
+    for selector, _allow_price_only in _FINAL_TOTAL_SELECTED_SELECTORS:
+        texts.extend(_locator_texts(page, selector, timeout_ms=250, deadline=deadline))
+    for selector in _FINAL_TOTAL_SUMMARY_SELECTORS:
+        texts.extend(_locator_texts(page, selector, timeout_ms=250, deadline=deadline))
+    texts.extend(
+        _locator_texts(
+            page,
+            _FINAL_TOTAL_GLOBAL_LABEL_SELECTOR,
+            timeout_ms=250,
+            deadline=deadline,
+        )
+    )
+    return tuple(texts)
+
+
+def _locator_texts(
+    page: object,
+    selector: str,
+    *,
+    timeout_ms: int,
+    deadline: float | None,
+) -> list[str]:
+    try:
+        locators = page.locator(selector)  # type: ignore[attr-defined]
+    except Exception:
+        return []
+
+    local_budget_ms = max(1, timeout_ms)
+
+    def next_timeout_ms() -> int | None:
+        if local_budget_ms <= 0:
+            return None
+        if deadline is None:
+            return local_budget_ms
+        remaining_ms = _remaining_timeout_ms(deadline, raise_on_expired=False)
+        if remaining_ms <= 0:
+            return None
+        return max(1, min(local_budget_ms, remaining_ms))
+
+    def read_text(locator: object) -> str | None:
+        nonlocal local_budget_ms
+        text_timeout_ms = next_timeout_ms()
+        if text_timeout_ms is None:
+            return None
+        started_at = monotonic()
+        try:
             text = locator.inner_text(timeout=text_timeout_ms)
         except Exception:
-            continue
+            return None
+        finally:
+            elapsed_ms = int((monotonic() - started_at) * 1000)
+            local_budget_ms = max(0, local_budget_ms - elapsed_ms)
+        return text if isinstance(text, str) else None
+
+    first = getattr(locators, "first", None)
+    if callable(first):
         try:
-            amount, currency = _parse_visible_price(text)
+            first_locator = first()
+        except Exception:
+            return []
+    else:
+        first_locator = locators
+
+    texts: list[str] = []
+    first_text = read_text(first_locator)
+    if first_text is not None:
+        texts.append(first_text)
+
+    count = getattr(locators, "count", None)
+    if not callable(count):
+        return texts
+
+    try:
+        locator_count = count()
+    except Exception:
+        return texts
+
+    for index in range(1, locator_count):
+        try:
+            locator = locators.nth(index)
         except Exception:
             continue
-        return amount, currency
-    return None
+        text = read_text(locator)
+        if text is None and next_timeout_ms() is None:
+            break
+        if text is not None:
+            texts.append(text)
+    return texts
 
 
 def _dom_operation_timeout_ms(
@@ -722,7 +1210,7 @@ def _dom_operation_timeout_ms(
     remaining_ms = _remaining_timeout_ms(deadline, raise_on_expired=False)
     if remaining_ms <= 0:
         return None
-    return remaining_ms
+    return max(1, min(timeout_ms, remaining_ms))
 
 
 def _click_visible_option(
@@ -730,7 +1218,23 @@ def _click_visible_option(
     *,
     timeout_ms: int = VISIBLE_OPTION_CLICK_TIMEOUT_MS,
 ) -> None:
-    option.locator.click(timeout=timeout_ms)  # type: ignore[attr-defined]
+    click_timeout_ms = max(1, min(timeout_ms, VISIBLE_OPTION_CLICK_TIMEOUT_MS))
+    scroll = getattr(option.locator, "scroll_into_view_if_needed", None)
+    if scroll is not None:
+        try:
+            scroll(timeout=click_timeout_ms)
+        except Exception:
+            pass
+
+    evaluate = getattr(option.locator, "evaluate", None)
+    if evaluate is not None:
+        try:
+            evaluate(TRAVELOKA_OPTION_ACTIVATION_SCRIPT, timeout=click_timeout_ms)
+        except TypeError:
+            evaluate(TRAVELOKA_OPTION_ACTIVATION_SCRIPT)
+        return
+
+    option.locator.click(timeout=click_timeout_ms)  # type: ignore[attr-defined]
 
 
 def _traveloka_date(value: str) -> str:
@@ -873,6 +1377,21 @@ def _wait_for_capture(
     *,
     poll_interval_seconds: float,
 ) -> TravelokaCaptureResult:
+    return _wait_for_conservative_capture_result(
+        state,
+        page,
+        deadline,
+        poll_interval_seconds=poll_interval_seconds,
+    )
+
+
+def _wait_for_conservative_capture_result(
+    state: _CaptureState,
+    page: object,
+    deadline: float,
+    *,
+    poll_interval_seconds: float,
+) -> TravelokaCaptureResult:
     while not state.completed and monotonic() < deadline:
         remaining_ms = _remaining_timeout_ms(deadline, raise_on_expired=False)
         if remaining_ms <= 0:
@@ -880,6 +1399,10 @@ def _wait_for_capture(
         wait_ms = min(round(poll_interval_seconds * 1000), remaining_ms)
         page.wait_for_timeout(wait_ms)  # type: ignore[attr-defined]
 
+    return _capture_result_after_wait(state)
+
+
+def _capture_result_after_wait(state: _CaptureState) -> TravelokaCaptureResult:
     if state.best_result is None:
         raise _timeout_error()
     if state.completed:
@@ -893,20 +1416,248 @@ def _wait_for_capture(
     )
 
 
-def _wait_after_return_selection(
+def _wait_for_return_selection_transition(
     page: object,
     deadline: float,
     *,
     poll_interval_seconds: float,
+    before_marker_texts: Iterable[str] = (),
+    before_body_text: str = "",
 ) -> bool:
-    remaining_ms = _remaining_timeout_ms(deadline, raise_on_expired=False)
-    if remaining_ms <= 0:
+    before_marker_keys = {
+        _return_selection_marker_key(text)
+        for text in before_marker_texts
+        if _return_selection_marker_text(text)
+    }
+    transition_deadline = min(
+        deadline,
+        monotonic() + (SELECTION_TRANSITION_TIMEOUT_MS / 1000),
+    )
+    while monotonic() < transition_deadline:
+        if _return_selection_transitioned(
+            page,
+            before_marker_keys=before_marker_keys,
+            before_body_text=before_body_text,
+            deadline=transition_deadline,
+        ):
+            return True
+        remaining_ms = _remaining_timeout_ms(
+            transition_deadline,
+            raise_on_expired=False,
+        )
+        if remaining_ms <= 0:
+            break
+        wait_ms = min(round(poll_interval_seconds * 1000), remaining_ms)
+        if wait_ms <= 0:
+            break
+        page.wait_for_timeout(wait_ms)  # type: ignore[attr-defined]
+    return _return_selection_transitioned(
+        page,
+        before_marker_keys=before_marker_keys,
+        before_body_text=before_body_text,
+        deadline=transition_deadline,
+    )
+
+
+def _wait_for_final_total(
+    page: object,
+    deadline: float,
+    *,
+    poll_interval_seconds: float,
+    before_texts: Iterable[str] = (),
+) -> tuple[Decimal, str] | None:
+    selector_cache = _FinalTotalSelectorCache()
+    while monotonic() < deadline:
+        remaining_ms = _remaining_timeout_ms(deadline, raise_on_expired=False)
+        if remaining_ms <= 0:
+            break
+        final_total = _read_final_total(
+            page,
+            timeout_ms=min(FINAL_TOTAL_READ_TIMEOUT_MS, remaining_ms),
+            deadline=deadline,
+            before_texts=before_texts,
+            selector_cache=selector_cache,
+        )
+        if final_total is not None:
+            return final_total
+        remaining_ms = _remaining_timeout_ms(deadline, raise_on_expired=False)
+        if remaining_ms <= 0:
+            break
+        wait_ms = min(round(poll_interval_seconds * 1000), remaining_ms)
+        if wait_ms <= 0:
+            break
+        page.wait_for_timeout(wait_ms)  # type: ignore[attr-defined]
+    return None
+
+
+def _return_selection_marker_texts(
+    page: object,
+    *,
+    deadline: float | None = None,
+) -> tuple[str, ...]:
+    marker_texts: list[str] = []
+    for selector in (
+        "[data-testid='flight-summary-container-1_selected']",
+        "[data-testid='bundle-summary-tray']",
+        "[data-testid='flight-summary-tray-routes-v2']",
+    ):
+        for text in _locator_texts(
+            page,
+            selector,
+            timeout_ms=250,
+            deadline=deadline,
+        ):
+            if _return_selection_marker_text(text):
+                marker_texts.append(text)
+    return tuple(marker_texts)
+
+
+def _return_selection_transitioned(
+    page: object,
+    *,
+    before_marker_keys: set[str] | None = None,
+    before_body_text: str = "",
+    deadline: float | None = None,
+) -> bool:
+    before_marker_keys = before_marker_keys or set()
+    for text in _return_selection_marker_texts(page, deadline=deadline):
+        if _return_selection_marker_key(text) not in before_marker_keys:
+            return True
+    body_text = _read_body_text(
+        page,
+        timeout_ms=250,
+        deadline=deadline,
+    )
+    return (
+        "Change return flight" not in before_body_text
+        and "Change return flight" in body_text
+    )
+
+
+def _return_selection_marker_text(text: str) -> bool:
+    return "Return" in text or "Change return flight" in text
+
+
+def _return_selection_marker_key(text: str) -> str:
+    return _normalized_text_key(text)
+
+
+def _normalized_text_key(text: str) -> str:
+    return " ".join(text.replace("\xa0", " ").split())
+
+
+def _wait_for_outbound_selection_transition(
+    state: _CaptureState,
+    page: object,
+    selected_key: str | None,
+    deadline: float,
+    *,
+    outbound_payload: dict[str, object],
+    before_url: str,
+    before_body_text: str,
+    poll_interval_seconds: float,
+) -> bool:
+    transition_deadline = min(
+        deadline,
+        monotonic() + (SELECTION_TRANSITION_TIMEOUT_MS / 1000),
+    )
+    while monotonic() < transition_deadline:
+        if _capture_looks_like_new_inventory(
+            state.best_result,
+            outbound_payload,
+        ):
+            return True
+        if _outbound_selection_transitioned(
+            page,
+            selected_key,
+            before_url=before_url,
+            before_body_text=before_body_text,
+            deadline=transition_deadline,
+        ):
+            return True
+        remaining_ms = _remaining_timeout_ms(
+            transition_deadline,
+            raise_on_expired=False,
+        )
+        if remaining_ms <= 0:
+            break
+        wait_ms = min(round(poll_interval_seconds * 1000), remaining_ms)
+        page.wait_for_timeout(wait_ms)  # type: ignore[attr-defined]
+    return _capture_looks_like_new_inventory(
+        state.best_result,
+        outbound_payload,
+    ) or _outbound_selection_transitioned(
+        page,
+        selected_key,
+        before_url=before_url,
+        before_body_text=before_body_text,
+        deadline=transition_deadline,
+    )
+
+
+def _capture_looks_like_new_inventory(
+    capture: TravelokaCaptureResult | None,
+    previous_payload: dict[str, object],
+) -> bool:
+    if capture is None:
         return False
-    wait_ms = min(round(poll_interval_seconds * 1000), remaining_ms)
-    if wait_ms <= 0:
+    current_ids = _explicit_payload_item_ids(capture.payload)
+    previous_ids = _explicit_payload_item_ids(previous_payload)
+    return bool(current_ids and previous_ids and not current_ids.issubset(previous_ids))
+
+
+def _outbound_selection_transitioned(
+    page: object,
+    selected_key: str | None,
+    *,
+    before_url: str,
+    before_body_text: str,
+    deadline: float | None = None,
+) -> bool:
+    page_url = str(getattr(page, "url", ""))
+    if (
+        page_url != before_url
+        and not _selected_url_fragment(before_url, selected_key)
+        and _selected_url_fragment(page_url, selected_key)
+    ):
+        return True
+    body_text = _read_body_text(
+        page,
+        timeout_ms=250,
+        deadline=deadline,
+    )
+    return (
+        "Change departure flight" not in before_body_text
+        and "Change departure flight" in body_text
+    )
+
+
+def _selected_url_fragment(url: str, selected_key: str | None) -> bool:
+    if not selected_key:
         return False
-    page.wait_for_timeout(wait_ms)  # type: ignore[attr-defined]
-    return _remaining_timeout_ms(deadline, raise_on_expired=False) > 0
+    return urlparse(url).fragment == f"SC{selected_key}"
+
+
+def _read_body_text(
+    page: object,
+    *,
+    timeout_ms: int,
+    deadline: float | None,
+) -> str:
+    if deadline is None:
+        text_timeout_ms: int | None = max(1, timeout_ms)
+    else:
+        remaining_ms = _remaining_timeout_ms(deadline, raise_on_expired=False)
+        if remaining_ms <= 0:
+            text_timeout_ms = None
+        else:
+            text_timeout_ms = max(1, min(timeout_ms, remaining_ms))
+    if text_timeout_ms is None:
+        return ""
+    try:
+        return page.locator("body").inner_text(timeout=text_timeout_ms)  # type: ignore[attr-defined]
+    except Exception:
+        return ""
 
 
 def _partial_round_trip_result(

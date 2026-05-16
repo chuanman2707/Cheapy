@@ -29,9 +29,19 @@ For exact round-trip Traveloka searches:
    details, and final total are all available.
 
 This v1 intentionally does not explore the top two or top three outbound
-options. The result is the cheapest final itinerary within the single branch
-created by choosing the cheapest outbound option first. Cheapy must not claim it
-has exhaustively optimized every possible outbound and return pairing.
+options. It also does not prove that the chosen return option has the lowest
+possible final selected total after Traveloka reprices. The result is a
+comparable selected-candidate itinerary produced by this deterministic
+heuristic:
+
+- choose the cheapest visible outbound card
+- within the resulting return-selection state, choose the cheapest visible
+  return card
+- read the final selected-itinerary total for that exact pair
+
+Cheapy must not claim it has exhaustively optimized every possible outbound and
+return pairing, and it must not describe the Traveloka result as the cheapest
+final itinerary within the chosen outbound branch.
 
 ## Corrected Price Rule
 
@@ -41,6 +51,11 @@ the final round-trip total.
 The final comparable Traveloka price must come from the selected-itinerary state
 after both the outbound and return flights have been chosen. If Traveloka
 reprices after return selection, the final selected-itinerary total wins.
+
+The visible return-card price is used only to pick the one return candidate that
+V1 will select. It is not trusted as the final comparable total and is not proof
+that another visible return card would not have produced a lower final total
+after selection.
 
 If the final selected-itinerary total cannot be read or parsed, the provider
 falls back to the existing partial behavior:
@@ -71,7 +86,8 @@ Round-trip searches use a two-selection browser flow:
    Traveloka labels observed in practice, including `Choose` and `Chọn`.
 9. Wait for the return-selection state.
 10. Capture return flight data emitted by Traveloka's own web app.
-11. Identify the cheapest visible return option.
+11. Identify the cheapest visible return option by the price rendered on the
+    return-selection list.
 12. Bind that visible return card to a captured return item when possible.
 13. Click the return card's selection action, with the same label handling.
 14. Read the final selected-itinerary total from the post-selection UI or a
@@ -82,6 +98,11 @@ The adapter should continue listening only to first-party Traveloka browser
 traffic produced by the loaded page. It must not introduce direct HTTP replay,
 persisted cookies, login, captcha solving, proxy rotation, or provider-internal
 retry loops.
+
+First-party filtering is part of the adapter contract. A supported API path is
+not enough by itself; response capture must also require a Traveloka host, such
+as `traveloka.com` or a `*.traveloka.com` subdomain. A response with a supported
+path on a non-Traveloka host must be ignored.
 
 ## Adapter Contract
 
@@ -107,6 +128,12 @@ Provider code can then distinguish:
 - existing `TravelokaCaptureResult`: partial or one-way capture
 - `TravelokaSelectedRoundTripResult`: full selected round-trip capture
 
+Provider integration must dispatch `TravelokaSelectedRoundTripResult` to a
+selected-round-trip normalization path. Passing the dataclass through the
+existing raw-payload normalizer is a bug because it can produce an empty
+success. A selected-result provider test must prove that one selected result
+produces exactly one comparable round-trip offer.
+
 `source_paths` must contain only safe API paths, never full URLs, cookies,
 headers, tokens, or query strings.
 
@@ -115,6 +142,11 @@ keys must be bound to reliable captured or rendered flight details, and the
 final amount and currency must come from the selected-itinerary state after the
 return leg has been selected. A configured provider default currency is not
 enough for this final selected total.
+
+`TravelokaCaptureResult` may be extended with optional partial-failure metadata
+for round-trip selection failures, but the existing fields remain valid for
+one-way and raw partial captures. The metadata must be safe enum-like values
+from this design, not raw exception strings or captured URLs.
 
 ## Normalization
 
@@ -141,6 +173,15 @@ If either selected leg cannot be mapped to reliable flight details, the
 normalizer must not synthesize a complete itinerary. It should return the
 existing partial offer shape and attach a specific provider error.
 
+Raw `TravelokaCaptureResult` round-trip payloads are never enough to create a
+comparable Traveloka round-trip offer, even when a payload appears to contain
+both outbound and return legs. Without selected-state final total evidence, the
+normalizer must return a non-comparable partial offer using the best outbound
+information available and must leave `actual_return_date=null`,
+`return_offset_days=null`, `rank_within_currency=null`, and `global_rank=null`.
+Existing tests that marked raw round-trip payloads comparable must be updated to
+expect this partial behavior.
+
 ## Error Handling
 
 The provider should preserve useful partial output whenever Traveloka has
@@ -158,6 +199,11 @@ After outbound data exists, failures become partial errors:
   captured flight details
 - `final_round_trip_total_unavailable`: both selections happened, but the final
   total could not be read or parsed
+
+Partial status requires at least one normalizable outbound-only offer plus an
+error. If a failure occurs after an outbound payload exists but no outbound offer
+can be normalized safely, the provider should return `FAILED` with the specific
+error instead of fabricating an offer.
 
 Timeout behavior should remain deadline-based. The adapter owns browser cleanup
 and should not be wrapped by an equal-duration outer timeout that can preempt
@@ -187,10 +233,16 @@ Add focused tests for:
 - cheapest visible outbound selection
 - cheapest visible return selection
 - final total parsing after both legs are selected
+- non-Traveloka hosts with supported API paths are ignored
 - successful selected round-trip normalization with `comparable=true`
+- provider dispatch of `TravelokaSelectedRoundTripResult` creates exactly one
+  comparable offer and does not produce success with zero offers
+- raw round-trip captures with return-looking data remain non-comparable partial
+  offers unless they came through `TravelokaSelectedRoundTripResult`
 - fallback to partial when outbound click fails
 - fallback to partial when return capture times out
 - fallback to partial when final total is unavailable
+- failed status when a selection failure leaves no normalizable outbound offer
 - search aggregation ranking full selected Traveloka offers normally while
   keeping partial Traveloka offers non-comparable
 

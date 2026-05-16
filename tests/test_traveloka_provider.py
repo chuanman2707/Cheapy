@@ -429,6 +429,29 @@ def test_traveloka_provider_maps_return_capture_timeout_to_timeout_error() -> No
     }
 
 
+def test_traveloka_provider_preserves_outbound_transition_failure_type() -> None:
+    adapter = FakeAdapter(
+        _capture(
+            _payload(),
+            partial_failure_type="outbound_selection_transition_unavailable",
+        )
+    )
+    provider = TravelokaProvider(adapter=adapter, timeout_seconds=1)
+
+    result = asyncio.run(provider.search_exact_round_trip(_round_trip_request()))
+
+    assert result.status == ProviderStatusCode.PARTIAL
+    assert len(result.offers) == 1
+    assert len(result.errors) == 1
+    assert result.errors[0].code == ErrorCode.PROVIDER_FAILED
+    assert result.errors[0].retryable is False
+    assert result.errors[0].details == {
+        "provider": "traveloka",
+        "capability": "exact_round_trip",
+        "failure_type": "outbound_selection_transition_unavailable",
+    }
+
+
 def test_traveloka_provider_maps_unknown_partial_failure_type_to_generic() -> None:
     secret = "sk_live_secret"
     adapter = FakeAdapter(
