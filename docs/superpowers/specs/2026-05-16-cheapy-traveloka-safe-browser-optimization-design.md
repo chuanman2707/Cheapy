@@ -39,7 +39,7 @@ reading.
 
 1. Add phase-level timing telemetry for the Traveloka adapter.
 2. Reduce unnecessary final-total DOM selector scans by using a primary fast
-   path before broad fallback scans.
+   path before ordered fallback tiers.
 3. Add an experimental early-proceed mode for stable, bindable visible options
    so the adapter can click sooner when enough evidence is already present.
 4. Keep conservative browser-only behavior as the default unless the fast mode
@@ -97,16 +97,18 @@ developer benchmark scripts, but it must not be added to Contract V1 responses.
 
 ### Final Total Fast Path
 
-The final-total reader currently supports multiple selectors to survive
-Traveloka DOM variations. That broad scan is useful, but it can be expensive
-when repeated during polling.
+The final-total reader currently supports selected/final/checkout selectors,
+selected summary scopes, and unambiguous global label totals to survive
+Traveloka DOM variations. Those fallback tiers are useful, but repeated reads
+can be expensive during polling.
 
 V1 should add a prioritized fast path:
 
 1. Try selected/final/checkout total selectors.
 2. Try selected summary scopes, including `#flight-search-result`.
 3. Try global label totals only when they are unambiguous.
-4. Fall back to the existing broad selector scan.
+4. Preserve the existing selected, summary, and unambiguous label-total fallback
+   behavior if a fast selector misses.
 
 The selector confidence tiers must stay in that order. A cached "last successful
 selector" may reorder selectors only within its own tier. It must not make a
@@ -182,8 +184,14 @@ Experimental fast-stable-options flow:
 
 ## Error Handling
 
-Existing failure types remain valid. The optimization must preserve the current
-provider-level safe failure set:
+Existing adapter, provider, and normalizer failure behavior must remain
+unchanged. This includes existing provider-level failures such as
+`browser_unavailable`, `navigation_failed`, `transport_error`, `invalid_json`,
+`unsupported_response`, `unexpected_error`, `no_usable_outbound_data`,
+`parse_error`, and `return_details_unavailable`.
+
+For partial Traveloka round-trip selection results, the optimization must
+preserve the current safe partial failure set:
 
 - `timeout`
 - `blocked`
@@ -215,8 +223,9 @@ The optimization must also preserve these round-trip selection partial states:
 If early proceed is enabled but conditions are not met, it must not introduce a
 new public failure. The adapter should fall back to conservative waiting.
 
-If the fast final-total path fails, it must fall back to the broad existing
-reader before returning `final_round_trip_total_unavailable`.
+If the fast final-total path fails, it must preserve the existing selected,
+summary, and unambiguous label-total fallback behavior before returning
+`final_round_trip_total_unavailable`.
 
 ## Testing
 
@@ -224,7 +233,8 @@ Unit tests should cover:
 
 - phase timing records phases without leaking URLs, cookies, headers, or
   payloads
-- final-total reader uses a prioritized selector before broad fallback
+- final-total reader uses a prioritized selector while preserving selected,
+  summary, and unambiguous label-total fallback behavior
 - stale pre-return totals remain rejected
 - stable visible option can proceed before search completion when opt-in is
   enabled
@@ -259,6 +269,33 @@ The benchmark report must include:
 - p95 duration
 - phase timing breakdown
 
+The implementation should add a developer benchmark entrypoint:
+
+```bash
+uv run python scripts/benchmark_traveloka_browser_optimization.py \
+  --timeout-seconds 45 \
+  --iterations 1 \
+  --concurrency 1
+```
+
+Benchmark policy:
+
+- The script runs paired route cases in one process.
+- For each route, it runs conservative mode first, then fast mode.
+- The script sets `TRAVELOKA_FAST_STABLE_OPTIONS=0` for conservative mode and
+  `TRAVELOKA_FAST_STABLE_OPTIONS=1` for fast mode.
+- Each route/mode invocation creates a fresh provider and fresh browser context,
+  matching the production adapter's current non-persistent behavior.
+- There are no benchmark retries. Transient live failures must be reported, not
+  hidden.
+- Transient live failure types are `blocked`, `rate_limited`,
+  `browser_unavailable`, `navigation_failed`, `transport_error`, and `timeout`
+  before selected outbound binding.
+- Speed comparison applies only to route pairs where conservative mode succeeds
+  and fast mode does not hit a transient live failure.
+- Correctness comparison applies to all route pairs where conservative mode
+  succeeds and fast mode returns a non-transient result.
+
 ## Acceptance Criteria
 
 1. Default provider behavior remains conservative and contract-compatible.
@@ -268,11 +305,12 @@ The benchmark report must include:
    and final selected total.
 4. Final-total fast path does not accept stale totals from before return
    selection.
-5. Live benchmark shows no correctness regression versus conservative mode in
-   the same run: fast mode must not have a lower success count, must not
-   introduce a new failure type, and every comparable Traveloka success must
-   still have exactly one selected offer with selected outbound binding,
-   selected return binding, final selected total, `comparable=true`,
+5. Live benchmark shows no correctness regression on comparable route pairs:
+   for every route where conservative mode succeeds and fast mode returns a
+   non-transient result, fast mode must also succeed, must not introduce a new
+   non-transient failure type, and every comparable Traveloka success must still
+   have exactly one selected offer with selected outbound binding, selected
+   return binding, final selected total, `comparable=true`,
    `rank_within_currency=1`, and `global_rank=1`.
 6. If speed improves, the benchmark report includes phase timing evidence
    explaining where time was saved.
@@ -284,7 +322,7 @@ why it must remain opt-in and must not be described as exhaustive cheapest
 search.
 
 Final-total selector prioritization can accidentally overfit to one Traveloka
-DOM state. This is mitigated by preserving broad fallback scanning and stale
+DOM state. This is mitigated by preserving the ordered fallback tiers and stale
 text filtering.
 
 Telemetry can accidentally leak sensitive request details. This is mitigated by
