@@ -103,12 +103,18 @@ when repeated during polling.
 
 V1 should add a prioritized fast path:
 
-1. Try the most recently successful selector for the current adapter run, if
-   known.
-2. Try the current live-selected summary scope first, including
-   `#flight-search-result`.
-3. Try selected/final/checkout total selectors.
+1. Try selected/final/checkout total selectors.
+2. Try selected summary scopes, including `#flight-search-result`.
+3. Try global label totals only when they are unambiguous.
 4. Fall back to the existing broad selector scan.
+
+The selector confidence tiers must stay in that order. A cached "last successful
+selector" may reorder selectors only within its own tier. It must not make a
+summary selector win over an explicit selected/final/checkout total selector,
+and it must not make a global label total win over a selected summary selector.
+If two selectors disagree within the same tier, the reader must prefer the
+existing deterministic order for that tier and tests must document the chosen
+precedence.
 
 The stale-text guard must remain in force. A total that existed before return
 selection must not be accepted as the final selected total unless a new selected
@@ -120,12 +126,21 @@ The current capture wait tends to wait for `searchCompleted=True`. That is
 correct but can cost time because usable priced inventory often appears before
 Traveloka marks the search complete.
 
-Add an experimental fast mode that can proceed when both conditions are true:
+Add an experimental fast mode that can proceed when all conditions are true:
 
 1. A visible cheapest option exists and can be bound to the current captured
    payload item IDs.
-2. The same cheapest bound option remains stable for a small number of polling
-   samples or for a minimum dwell period.
+2. The captured payload contains at least one explicit item ID.
+3. The same cheapest bound option remains stable for at least two consecutive
+   samples.
+4. At least 500 milliseconds elapse between the first stable sample and the
+   decision to proceed.
+
+The stability key is `(option.key, option.price_amount, option.currency)`.
+Locator object identity is intentionally not part of the key because Playwright
+locators can be recreated between samples. Sampling uses the adapter's existing
+`poll_interval_seconds`; with the current default of 0.25 seconds, the 500 ms
+dwell requires at least two poll intervals before early proceed can fire.
 
 This mode must be opt-in through the environment flag
 `TRAVELOKA_FAST_STABLE_OPTIONS=1`. The default is disabled.
@@ -167,8 +182,27 @@ Experimental fast-stable-options flow:
 
 ## Error Handling
 
-Existing failure types remain valid. The optimization must preserve these
-structured partial states:
+Existing failure types remain valid. The optimization must preserve the current
+provider-level safe failure set:
+
+- `timeout`
+- `blocked`
+- `rate_limited`
+- `partial_failure`
+- `final_round_trip_total_unavailable`
+- `outbound_selection_unavailable`
+- `outbound_selection_transition_unavailable`
+- `return_capture_timeout`
+- `return_selection_unavailable`
+- `selected_outbound_binding_unavailable`
+- `selected_return_binding_unavailable`
+
+Outbound capture timeout behavior must remain unchanged: if no completed
+outbound capture exists but a partial capture exists, the adapter may return a
+timed-out `TravelokaCaptureResult` with no `partial_failure_type`; the provider
+maps that to the public `timeout` failure type.
+
+The optimization must also preserve these round-trip selection partial states:
 
 - `outbound_selection_unavailable`
 - `selected_outbound_binding_unavailable`
@@ -199,9 +233,24 @@ Unit tests should cover:
 - conservative mode keeps current wait-for-completion behavior
 - all existing Traveloka provider and normalizer tests still pass
 
-Live benchmark should compare before and after:
+Live benchmark should compare conservative mode and fast mode back-to-back with
+one adult on this route matrix:
 
-- same 10 airport round-trip routes used in the latest benchmark
+| # | Origin | Destination | Departure | Return |
+|---:|---|---|---|---|
+| 1 | CXR | BKK | 2026-06-10 | 2026-06-15 |
+| 2 | SGN | BKK | 2026-06-12 | 2026-06-17 |
+| 3 | HAN | BKK | 2026-06-13 | 2026-06-18 |
+| 4 | CXR | SGN | 2026-06-20 | 2026-06-25 |
+| 5 | SGN | SIN | 2026-07-01 | 2026-07-06 |
+| 6 | HAN | SIN | 2026-07-03 | 2026-07-08 |
+| 7 | DAD | KUL | 2026-07-05 | 2026-07-10 |
+| 8 | SGN | TPE | 2026-07-07 | 2026-07-12 |
+| 9 | SGN | HKG | 2026-07-09 | 2026-07-14 |
+| 10 | SGN | NRT | 2026-07-11 | 2026-07-18 |
+
+The benchmark report must include:
+
 - success count
 - partial/failure count
 - failure types
@@ -219,8 +268,12 @@ Live benchmark should compare before and after:
    and final selected total.
 4. Final-total fast path does not accept stale totals from before return
    selection.
-5. Live benchmark shows no correctness regression versus the current browser
-   selected flow.
+5. Live benchmark shows no correctness regression versus conservative mode in
+   the same run: fast mode must not have a lower success count, must not
+   introduce a new failure type, and every comparable Traveloka success must
+   still have exactly one selected offer with selected outbound binding,
+   selected return binding, final selected total, `comparable=true`,
+   `rank_within_currency=1`, and `global_rank=1`.
 6. If speed improves, the benchmark report includes phase timing evidence
    explaining where time was saved.
 
