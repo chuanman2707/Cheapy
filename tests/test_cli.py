@@ -158,6 +158,14 @@ def test_providers_list_prints_json() -> None:
             "name": "manual_fixture",
             "provider_kind": "fixture",
         },
+        "traveloka": {
+            "capabilities": ["exact_one_way", "exact_round_trip"],
+            "default_enabled": True,
+            "display_name": "Traveloka research provider",
+            "enabled": True,
+            "name": "traveloka",
+            "provider_kind": "live",
+        },
     }
 
 
@@ -169,13 +177,16 @@ def test_providers_test_prints_json() -> None:
     payload = json.loads(result.stdout)
     providers = {provider["name"]: provider for provider in payload["providers"]}
     assert payload["status"] == "ok"
-    assert payload["providers_tested"] == 2
+    assert payload["providers_tested"] == 3
     assert providers["manual_fixture"]["status"] == "success"
     assert providers["manual_fixture"]["provider_kind"] == "fixture"
     assert providers["manual_fixture"]["live_smoke"] == "not_applicable"
     assert providers["google_fli"]["status"] == "skipped"
     assert providers["google_fli"]["provider_kind"] == "live"
     assert providers["google_fli"]["live_smoke"] == "not_run"
+    assert providers["traveloka"]["status"] == "skipped"
+    assert providers["traveloka"]["provider_kind"] == "live"
+    assert providers["traveloka"]["live_smoke"] == "not_run"
 
 
 def test_providers_test_default_does_not_run_live_provider(monkeypatch) -> None:
@@ -189,6 +200,9 @@ def test_providers_test_default_does_not_run_live_provider(monkeypatch) -> None:
     assert providers["manual_fixture"]["live_smoke"] == "not_applicable"
     assert providers["google_fli"]["status"] == "skipped"
     assert providers["google_fli"]["live_smoke"] == "not_run"
+    assert providers["traveloka"]["status"] == "skipped"
+    assert providers["traveloka"]["provider_kind"] == "live"
+    assert providers["traveloka"]["live_smoke"] == "not_run"
 
 
 def test_providers_test_human_prints_success_report() -> None:
@@ -198,6 +212,7 @@ def test_providers_test_human_prints_success_report() -> None:
     assert result.stderr == ""
     assert "manual_fixture fixture exact_one_way: success" in result.stdout
     assert "google_fli live exact_one_way: skipped" in result.stdout
+    assert "traveloka live exact_one_way: skipped" in result.stdout
     assert result.stdout.endswith("status: ok\n")
 
 
@@ -216,9 +231,59 @@ def test_providers_test_live_requires_environment_gate(monkeypatch) -> None:
     }
 
 
-def test_providers_test_live_reports_provider_failure(monkeypatch) -> None:
+def test_providers_test_live_reports_structured_provider_failure_without_crashing(
+    monkeypatch,
+) -> None:
     class FailingLiveProvider:
-        name = "google_fli"
+        name = "traveloka"
+        capabilities = ("exact_one_way",)
+
+        async def search_exact_one_way(
+            self,
+            request: ProviderExactOneWayRequest,
+        ) -> ProviderResult:
+            return ProviderResult(
+                provider_name=self.name,
+                capability="exact_one_way",
+                status=ProviderStatusCode.FAILED,
+                offers=[],
+                warnings=[],
+                errors=[
+                    ErrorV1(
+                        code=ErrorCode.PROVIDER_BLOCKED,
+                        severity=Severity.ERROR,
+                        message_en="Traveloka blocked the request.",
+                        details={
+                            "provider": "traveloka",
+                            "capability": "exact_one_way",
+                            "failure_type": "blocked",
+                        },
+                        retryable=False,
+                    )
+                ],
+                duration_ms=1,
+                retryable=False,
+            )
+
+    monkeypatch.setenv("CHEAPY_RUN_LIVE_TESTS", "1")
+    monkeypatch.setattr("cheapy.cli.load_live_test_providers", lambda: [FailingLiveProvider()])
+
+    result = runner.invoke(app, ["providers", "test", "--live"])
+
+    assert result.exit_code == 0
+    assert result.stderr == ""
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "ok"
+    provider = payload["providers"][0]
+    assert provider["name"] == "traveloka"
+    assert provider["status"] == "failed"
+    assert provider["error_count"] == 1
+    assert provider["live_smoke"] == "run"
+
+
+def test_providers_test_live_keeps_fixture_failures_failing(monkeypatch) -> None:
+    class FailingFixtureProvider:
+        name = "manual_fixture"
         capabilities = ("exact_one_way",)
 
         async def search_exact_one_way(
@@ -235,7 +300,7 @@ def test_providers_test_live_reports_provider_failure(monkeypatch) -> None:
                     ErrorV1(
                         code=ErrorCode.PROVIDER_FAILED,
                         severity=Severity.ERROR,
-                        message_en="Live provider failed.",
+                        message_en="Fixture provider failed.",
                     )
                 ],
                 duration_ms=1,
@@ -243,14 +308,21 @@ def test_providers_test_live_reports_provider_failure(monkeypatch) -> None:
             )
 
     monkeypatch.setenv("CHEAPY_RUN_LIVE_TESTS", "1")
-    monkeypatch.setattr("cheapy.cli.load_live_test_providers", lambda: [FailingLiveProvider()])
+    monkeypatch.setattr(
+        "cheapy.cli.load_live_test_providers",
+        lambda: [FailingFixtureProvider()],
+    )
 
     result = runner.invoke(app, ["providers", "test", "--live"])
 
     assert result.exit_code == 1
     assert result.stdout == ""
-    error = json.loads(result.stderr)
-    assert error["code"] == "PROVIDER_LIVE_TEST_FAILED"
+    assert json.loads(result.stderr) == {
+        "error": True,
+        "code": "PROVIDER_TEST_FAILED",
+        "message": "One or more provider checks failed.",
+        "suggestion": "Run 'cheapy providers test --human' for a concise provider report.",
+    }
 
 
 def test_providers_test_live_reports_unexpected_provider_exception(monkeypatch) -> None:

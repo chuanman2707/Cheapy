@@ -306,22 +306,12 @@ def providers_test(
         )
         raise typer.Exit(code=1)
 
-    failed_reports = [
-        report
-        for report in reports
-        if report["status"] == ProviderStatusCode.FAILED.value
-    ]
+    failed_reports = _failed_provider_reports(reports, live=live)
     if failed_reports:
-        code = "PROVIDER_LIVE_TEST_FAILED" if live else "PROVIDER_TEST_FAILED"
-        message = (
-            "One or more live provider checks failed."
-            if live
-            else "One or more provider checks failed."
-        )
         _json_echo(
             _error_payload(
-                code,
-                message,
+                "PROVIDER_TEST_FAILED",
+                "One or more provider checks failed.",
                 "Run 'cheapy providers test --human' for a concise provider report.",
             ),
             err=True,
@@ -339,6 +329,25 @@ def providers_test(
             "providers": reports,
         }
     )
+
+
+def _failed_provider_reports(
+    reports: list[dict[str, Any]],
+    *,
+    live: bool,
+) -> list[dict[str, Any]]:
+    failed_reports = [
+        report
+        for report in reports
+        if report["status"] == ProviderStatusCode.FAILED.value
+    ]
+    if not live:
+        return failed_reports
+    return [
+        report
+        for report in failed_reports
+        if report.get("provider_kind") != "live"
+    ]
 
 
 def _echo_provider_human_report(reports: list[dict[str, Any]], *, status: str) -> None:

@@ -78,3 +78,20 @@ def test_cheapy_skill_does_not_claim_runtime_resolves_aliases() -> None:
     assert "the agent is responsible" in text
     assert "cheapy runtime does not resolve vietnamese aliases" in text
     assert "cheapy runtime resolves vietnamese aliases" not in text
+
+
+def test_cheapy_skill_mentions_traveloka_without_provider_selection() -> None:
+    text = SKILL_PATH.read_text(encoding="utf-8")
+
+    assert "traveloka" in text.lower()
+    assert (
+        "Cheapy may call multiple enabled live providers, including google_fli and traveloka."
+        in text
+    )
+    assert "Use each offer's `provider` field" in text
+    assert "Do not ask the user to choose providers." in text
+    assert (
+        "Traveloka is a default-enabled research provider for this codebase under the "
+        "project permission assumption and may return structured timeout, block, or parse failures."
+        in text
+    )
