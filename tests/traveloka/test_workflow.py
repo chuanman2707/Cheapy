@@ -3,10 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 
-from cheapy.providers.base import (
-    ProviderExactOneWayRequest,
-    ProviderExactRoundTripRequest,
-)
+from cheapy.providers.base import ProviderExactOneWayRequest
 from cheapy.providers.traveloka import workflow as traveloka_workflow
 from cheapy.providers.traveloka.capture import CaptureState
 from cheapy.providers.traveloka.results import TravelokaCaptureResult

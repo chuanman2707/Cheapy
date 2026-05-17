@@ -35,7 +35,6 @@ from cheapy.providers.traveloka.timing import (
 
 DEFAULT_TIMEOUT_SECONDS = 45.0
 DEFAULT_CURRENCY = "USD"
-ProviderRequest = ProviderExactOneWayRequest | ProviderExactRoundTripRequest
 BrowserLauncher = Callable[..., object]
 
 

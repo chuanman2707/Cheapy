@@ -2,16 +2,10 @@
 
 from __future__ import annotations
 
-from cheapy.providers.base import (
-    ProviderExactOneWayRequest,
-    ProviderExactRoundTripRequest,
-)
+from cheapy.providers.base import ProviderExactOneWayRequest
 from cheapy.providers.traveloka import capture as traveloka_capture
 from cheapy.providers.traveloka import errors as traveloka_errors
-from cheapy.providers.traveloka.results import (
-    TravelokaCaptureResult,
-    TravelokaSelectedRoundTripResult,
-)
+from cheapy.providers.traveloka.results import TravelokaCaptureResult
 from cheapy.providers.traveloka.session import BrowserLauncher, open_browser_session
 from cheapy.providers.traveloka.timing import TravelokaPhaseRecorder
 
