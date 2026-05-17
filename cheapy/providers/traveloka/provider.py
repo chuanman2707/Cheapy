@@ -19,7 +19,7 @@ from cheapy.providers.base import (
 )
 from cheapy.providers.traveloka.adapter import TravelokaAdapter
 from cheapy.providers.traveloka.errors import TravelokaProviderError
-from cheapy.providers.traveloka.normalizer import (
+from cheapy.providers.traveloka.normalization import (
     normalize_payload,
     normalize_selected_round_trip,
 )
