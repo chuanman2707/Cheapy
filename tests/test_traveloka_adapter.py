@@ -226,6 +226,15 @@ class LocatorFakePage(FakePage):
 
     def locator(self, selector: str) -> object:
         self.locator_calls.append(selector)
+        if selector == "[data-testid^='flight-inventory-card-container-']":
+            if self.option_groups and all(
+                isinstance(locator, LiveTravelokaCardLocator)
+                for locator in self.option_groups[0]
+            ):
+                return FakeLocatorCollection(self.option_groups.pop(0))
+            if selector in self.selector_locators:
+                return self.selector_locators[selector]
+            return FakeLocatorCollection([])
         if selector.startswith("button:has-text"):
             if not self.option_groups:
                 return FakeLocatorCollection([])
@@ -308,6 +317,27 @@ def _visible_option(
         price_amount=price_amount,
         currency=currency,
         locator=locator if locator is not None else FakeLocator(),
+    )
+
+
+def _inventory_card_option(
+    *,
+    key: str,
+    amount: str = "100.00",
+    currency: str = "USD",
+    airline: str = "Traveloka Air",
+    route_text: str = "SGN - BKK",
+    on_click: object | None = None,
+) -> LiveTravelokaCardLocator:
+    button = TextFakeLocator(
+        text="Choose",
+        attrs={"data-testid": "flight-inventory-card-button", "role": "button"},
+        on_click=on_click,
+    )
+    return LiveTravelokaCardLocator(
+        container_id=key,
+        text=f"{airline}\n{route_text}\n{currency} {amount}",
+        button=button,
     )
 
 
@@ -2010,9 +2040,10 @@ def test_round_trip_rejects_preexisting_return_marker_without_transition(
         ],
         option_groups=[
             [
-                TextFakeLocator(
-                    text="VietJet Air\nSGN - BKK\nUSD 120.00",
-                    attrs={"data-testid": "out-1"},
+                _inventory_card_option(
+                    key="out-1",
+                    amount="120.00",
+                    airline="VietJet Air",
                     on_click=lambda: page.emit_response(
                         FakeResponse(
                             url="https://www.traveloka.com/api/v2/flight/search/poll",
@@ -2022,9 +2053,11 @@ def test_round_trip_rejects_preexisting_return_marker_without_transition(
                 )
             ],
             [
-                TextFakeLocator(
-                    text="VietJet Air\nBKK - SGN\nUSD 110.00",
-                    attrs={"data-testid": "ret-1"},
+                _inventory_card_option(
+                    key="ret-1",
+                    amount="110.00",
+                    airline="VietJet Air",
+                    route_text="BKK - SGN",
                 )
             ],
         ],
@@ -2073,9 +2106,10 @@ def test_round_trip_rejects_stale_summary_total_after_return_transition() -> Non
         ],
         option_groups=[
             [
-                TextFakeLocator(
-                    text="VietJet Air\nSGN - BKK\nUSD 120.00",
-                    attrs={"data-testid": "out-1"},
+                _inventory_card_option(
+                    key="out-1",
+                    amount="120.00",
+                    airline="VietJet Air",
                     on_click=lambda: page.emit_response(
                         FakeResponse(
                             url="https://www.traveloka.com/api/v2/flight/search/poll",
@@ -2085,9 +2119,11 @@ def test_round_trip_rejects_stale_summary_total_after_return_transition() -> Non
                 )
             ],
             [
-                TextFakeLocator(
-                    text="VietJet Air\nBKK - SGN\nUSD 110.00",
-                    attrs={"data-testid": "ret-1"},
+                _inventory_card_option(
+                    key="ret-1",
+                    amount="110.00",
+                    airline="VietJet Air",
+                    route_text="BKK - SGN",
                     on_click=lambda: setattr(
                         body,
                         "text",
@@ -2133,9 +2169,10 @@ def test_round_trip_reads_live_flight_search_result_summary_total() -> None:
         ],
         option_groups=[
             [
-                TextFakeLocator(
-                    text="Vietnam Airlines\nSGN - BKK\nUSD 120.00",
-                    attrs={"data-testid": "out-1"},
+                _inventory_card_option(
+                    key="out-1",
+                    amount="120.00",
+                    airline="Vietnam Airlines",
                     on_click=lambda: page.emit_response(
                         FakeResponse(
                             url="https://www.traveloka.com/api/v2/flight/search/poll",
@@ -2145,9 +2182,11 @@ def test_round_trip_reads_live_flight_search_result_summary_total() -> None:
                 )
             ],
             [
-                TextFakeLocator(
-                    text="Vietnam Airlines\nBKK - SGN\nUSD 110.00",
-                    attrs={"data-testid": "ret-1"},
+                _inventory_card_option(
+                    key="ret-1",
+                    amount="110.00",
+                    airline="Vietnam Airlines",
+                    route_text="BKK - SGN",
                     on_click=lambda: (
                         setattr(
                             body,
@@ -2216,13 +2255,15 @@ def test_round_trip_default_helpers_bind_locator_attributes_and_select_final_tot
         ],
         option_groups=[
             [
-                TextFakeLocator(
-                    text="Sky High\nSGN - BKK\nUSD 240.00",
-                    attrs={"data-testid": "out-expensive"},
+                _inventory_card_option(
+                    key="out-expensive",
+                    amount="240.00",
+                    airline="Sky High",
                 ),
-                TextFakeLocator(
-                    text="VietJet Air\nSGN - BKK\nUSD 120.00",
-                    attrs={"data-testid": "out-cheap"},
+                _inventory_card_option(
+                    key="out-cheap",
+                    amount="120.00",
+                    airline="VietJet Air",
                     on_click=lambda: page.emit_response(
                         FakeResponse(
                             url="https://www.traveloka.com/api/v2/flight/search/poll",
@@ -2232,13 +2273,17 @@ def test_round_trip_default_helpers_bind_locator_attributes_and_select_final_tot
                 ),
             ],
             [
-                TextFakeLocator(
-                    text="Sky High\nBKK - SGN\nUSD 230.00",
-                    attrs={"data-testid": "ret-expensive"},
+                _inventory_card_option(
+                    key="ret-expensive",
+                    amount="230.00",
+                    airline="Sky High",
+                    route_text="BKK - SGN",
                 ),
-                TextFakeLocator(
-                    text="VietJet Air\nBKK - SGN\nUSD 110.00",
-                    attrs={"data-testid": "ret-cheap"},
+                _inventory_card_option(
+                    key="ret-cheap",
+                    amount="110.00",
+                    airline="VietJet Air",
+                    route_text="BKK - SGN",
                     on_click=lambda: page.selector_locators.update(
                         {
                             "[data-testid='flight-summary-container-1_selected']": TextFakeLocator(
