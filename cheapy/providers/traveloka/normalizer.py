@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import date, datetime
 from decimal import Decimal
 
 from cheapy.models import (
@@ -23,8 +22,23 @@ from cheapy.providers.traveloka.normalization.errors import (
     return_details_unavailable_error,
     selected_round_trip_error,
 )
+from cheapy.providers.traveloka.normalization.legs import normalize_leg
 from cheapy.providers.traveloka.normalization.payloads import itinerary_items
 from cheapy.providers.traveloka.normalization.ranking import rank_offers
+from cheapy.providers.traveloka.normalization.routes import (
+    ValidatedRoute,
+    _chain_end_index,
+    date_offset,
+    raw_round_trip_outbound_legs,
+    requested_departure_date,
+    requested_destination,
+    requested_origin,
+    requested_return_date,
+    stops,
+    total_duration_minutes,
+    validate_exact_candidate_dates,
+    validate_route,
+)
 from cheapy.providers.traveloka.results import TravelokaSelectedRoundTripResult
 
 
@@ -117,11 +131,11 @@ def normalize_selected_round_trip(
     legs = [*outbound.legs, *return_leg.legs]
     actual_departure_date = outbound.legs[0].departure_time[:10]
     actual_return_date = return_leg.legs[0].departure_time[:10]
-    departure_offset_days = _date_offset(
+    departure_offset_days = date_offset(
         actual_departure_date,
-        _requested_departure_date(request),
+        requested_departure_date(request),
     )
-    return_offset_days = _date_offset(actual_return_date, _requested_return_date(request))
+    return_offset_days = date_offset(actual_return_date, requested_return_date(request))
     offer = FlightOfferV1(
         offer_id=(
             f"{PROVIDER_NAME}:{request.origin}-{request.destination}:"
@@ -134,16 +148,16 @@ def normalize_selected_round_trip(
         rank_within_currency=1,
         global_rank=1,
         provider=PROVIDER_NAME,
-        requested_origin=_requested_origin(request),
-        requested_destination=_requested_destination(request),
+        requested_origin=requested_origin(request),
+        requested_destination=requested_destination(request),
         actual_origin=request.origin,
         actual_destination=request.destination,
         nearby_origin_distance_km=None,
         nearby_destination_distance_km=None,
-        requested_departure_date=_requested_departure_date(request),
+        requested_departure_date=requested_departure_date(request),
         actual_departure_date=actual_departure_date,
         departure_offset_days=departure_offset_days,
-        requested_return_date=_requested_return_date(request),
+        requested_return_date=requested_return_date(request),
         actual_return_date=actual_return_date,
         return_offset_days=return_offset_days,
         legs=legs,
@@ -207,7 +221,7 @@ def _normalize_item(
                 currency_unavailable_error(item_index, request)
             )
 
-        legs = [_normalize_leg(segment) for segment in _raw_segments(raw_item)]
+        legs = [normalize_leg(segment) for segment in _raw_segments(raw_item)]
         if not legs:
             raise ValueError("itinerary item has no legs")
 
@@ -216,36 +230,36 @@ def _normalize_item(
             ProviderExactRoundTripRequest,
         )
         if force_raw_round_trip_partial:
-            legs = _raw_round_trip_outbound_legs(request, legs)
-            route = _ValidatedRoute(
+            legs = raw_round_trip_outbound_legs(request, legs)
+            route = ValidatedRoute(
                 outbound_end_index=len(legs) - 1,
                 return_start_index=None,
                 return_departure_date=None,
                 return_details_unavailable=True,
             )
         else:
-            route = _validate_route(
+            route = validate_route(
                 request,
                 legs,
                 allow_priced_round_trip_outbound_only=is_traveloka_search_result,
             )
         actual_departure_date = legs[0].departure_time[:10]
         actual_return_date = route.return_departure_date
-        _validate_exact_candidate_dates(
+        validate_exact_candidate_dates(
             request,
             actual_departure_date=actual_departure_date,
             actual_return_date=actual_return_date,
             allow_missing_return_details=route.return_details_unavailable,
         )
-        departure_offset_days = _date_offset(
+        departure_offset_days = date_offset(
             actual_departure_date,
-            _requested_departure_date(request),
+            requested_departure_date(request),
         )
         return_offset_days = (
             None
             if actual_return_date is None
             or not isinstance(request, ProviderExactRoundTripRequest)
-            else _date_offset(actual_return_date, _requested_return_date(request))
+            else date_offset(actual_return_date, requested_return_date(request))
         )
         return_suffix = (
             f":{request.return_date}"
@@ -266,8 +280,8 @@ def _normalize_item(
                 rank_within_currency=rank if is_comparable else None,
                 global_rank=rank if is_comparable else None,
                 provider=PROVIDER_NAME,
-                requested_origin=_requested_origin(request),
-                requested_destination=_requested_destination(request),
+                requested_origin=requested_origin(request),
+                requested_destination=requested_destination(request),
                 actual_origin=(
                     request.origin
                     if isinstance(request, ProviderExactRoundTripRequest)
@@ -280,11 +294,11 @@ def _normalize_item(
                 ),
                 nearby_origin_distance_km=None,
                 nearby_destination_distance_km=None,
-                requested_departure_date=_requested_departure_date(request),
+                requested_departure_date=requested_departure_date(request),
                 actual_departure_date=actual_departure_date,
                 departure_offset_days=departure_offset_days,
                 requested_return_date=(
-                    _requested_return_date(request)
+                    requested_return_date(request)
                     if isinstance(request, ProviderExactRoundTripRequest)
                     else None
                 ),
@@ -294,12 +308,12 @@ def _normalize_item(
                 total_duration_minutes=(
                     sum(leg.duration_minutes for leg in legs)
                     if route.return_details_unavailable
-                    else _total_duration_minutes(raw_item, legs)
+                    else total_duration_minutes(raw_item, legs)
                 ),
                 stops=(
                     route.outbound_end_index
                     if route.return_details_unavailable
-                    else _stops(raw_item, route, leg_count=len(legs))
+                    else stops(raw_item, route, leg_count=len(legs))
                 ),
                 flags=OfferFlagsV1(
                     uses_flexible_departure_date=departure_offset_days != 0,
@@ -330,7 +344,7 @@ def _selected_leg_item(
         item_id = _item_id(raw_item, item_index)
         if item_id != selected_key:
             continue
-        legs = [_normalize_leg(segment) for segment in _raw_segments(raw_item)]
+        legs = [normalize_leg(segment) for segment in _raw_segments(raw_item)]
         end_index = _chain_end_index(legs, start=start, end=end, start_index=0)
         if end_index is None or end_index != len(legs) - 1:
             raise ValueError("selected leg route does not match request")
@@ -339,7 +353,7 @@ def _selected_leg_item(
         return _SelectedLegItem(
             item_id=item_id,
             legs=legs,
-            total_duration_minutes=_total_duration_minutes(raw_item, legs),
+            total_duration_minutes=total_duration_minutes(raw_item, legs),
             stops=max(0, len(legs) - 1),
         )
     raise ValueError("selected key was not found")
@@ -412,265 +426,9 @@ def _segment_list(item: Mapping[str, object]) -> list[object] | None:
     return None
 
 
-def _normalize_leg(segment: object) -> FlightLegV1:
-    if not isinstance(segment, Mapping):
-        raise ValueError("segment must be a mapping")
-    departure_time = _iso_datetime(
-        _required_value(
-            segment,
-            "departureTime",
-            "departureDateTime",
-            "departure_datetime",
-        )
-    )
-    arrival_time = _iso_datetime(
-        _required_value(
-            segment,
-            "arrivalTime",
-            "arrivalDateTime",
-            "arrival_datetime",
-        )
-    )
-    return FlightLegV1(
-        origin=_string_value(
-            _required_value(
-                segment,
-                "origin",
-                "originCode",
-                "departureAirport",
-                "departureAirportCode",
-            )
-        ),
-        destination=_string_value(
-            _required_value(
-                segment,
-                "destination",
-                "destinationCode",
-                "arrivalAirport",
-                "arrivalAirportCode",
-            )
-        ),
-        departure_time=departure_time,
-        arrival_time=arrival_time,
-        airline_code=_string_value(
-            _required_value(segment, "airlineCode", "carrierCode", "airline")
-        ),
-        flight_number=_string_value(
-            _required_value(segment, "flightNumber", "flightNo", "number")
-        ),
-        duration_minutes=_duration_minutes(segment, departure_time, arrival_time),
-    )
-
-
-def _duration_minutes(
-    segment: Mapping[str, object],
-    departure_time: str,
-    arrival_time: str,
-) -> int:
-    for key in ("durationMinutes", "durationInMinutes", "duration"):
-        if key in segment:
-            return int(segment[key])
-    departure = datetime.fromisoformat(departure_time)
-    arrival = datetime.fromisoformat(arrival_time)
-    return int((arrival - departure).total_seconds() // 60)
-
-
-def _required_value(segment: Mapping[str, object], *keys: str) -> object:
-    for key in keys:
-        if key in segment:
-            value = segment[key]
-            if value is not None:
-                return value
-    raise ValueError("segment field is missing")
-
-
-def _string_value(value: object) -> str:
-    enum_name = getattr(value, "name", None)
-    if isinstance(enum_name, str):
-        if len(enum_name) > 1 and enum_name.startswith("_") and enum_name[1].isdigit():
-            return enum_name[1:]
-        return enum_name
-    enum_value = getattr(value, "value", value)
-    return str(enum_value)
-
-
-def _iso_datetime(value: object) -> str:
-    if isinstance(value, datetime):
-        return value.replace(tzinfo=None).isoformat(timespec="seconds")
-    return str(value)
-
-
-def _validate_route(
-    request: ProviderRequest,
-    legs: list[FlightLegV1],
-    *,
-    allow_priced_round_trip_outbound_only: bool = False,
-) -> "_ValidatedRoute":
-    outbound_end_index = _chain_end_index(
-        legs,
-        start=request.origin,
-        end=request.destination,
-        start_index=0,
-    )
-    if outbound_end_index is None:
-        raise ValueError("outbound legs do not match request")
-
-    if not isinstance(request, ProviderExactRoundTripRequest):
-        if outbound_end_index != len(legs) - 1:
-            raise ValueError("one-way result has unexpected trailing legs")
-        return _ValidatedRoute(
-            outbound_end_index=outbound_end_index,
-            return_start_index=None,
-            return_departure_date=None,
-        )
-
-    return_start_index = outbound_end_index + 1
-    return_end_index = _chain_end_index(
-        legs,
-        start=request.destination,
-        end=request.origin,
-        start_index=return_start_index,
-    )
-    if return_end_index is None:
-        if (
-            allow_priced_round_trip_outbound_only
-            and outbound_end_index == len(legs) - 1
-        ):
-            return _ValidatedRoute(
-                outbound_end_index=outbound_end_index,
-                return_start_index=None,
-                return_departure_date=None,
-                return_details_unavailable=True,
-            )
-        raise ValueError("round-trip return legs do not match request")
-    if return_end_index != len(legs) - 1:
-        raise ValueError("round-trip result has unexpected trailing legs")
-    return _ValidatedRoute(
-        outbound_end_index=outbound_end_index,
-        return_start_index=return_start_index,
-        return_departure_date=legs[return_start_index].departure_time[:10],
-    )
-
-
-def _raw_round_trip_outbound_legs(
-    request: ProviderExactRoundTripRequest,
-    legs: list[FlightLegV1],
-) -> list[FlightLegV1]:
-    outbound_end_index = _chain_end_index(
-        legs,
-        start=request.origin,
-        end=request.destination,
-        start_index=0,
-    )
-    if outbound_end_index is None:
-        raise ValueError("outbound legs do not match request")
-    return legs[: outbound_end_index + 1]
-
-
-def _validate_exact_candidate_dates(
-    request: ProviderRequest,
-    *,
-    actual_departure_date: str,
-    actual_return_date: str | None,
-    allow_missing_return_details: bool = False,
-) -> None:
-    if actual_departure_date != request.departure_date:
-        raise ValueError("outbound departure date does not match exact request")
-    if not isinstance(request, ProviderExactRoundTripRequest):
-        return
-    if allow_missing_return_details and actual_return_date is None:
-        return
-    if actual_return_date != request.return_date:
-        raise ValueError("return departure date does not match exact request")
-
-
-@dataclass(frozen=True)
-class _ValidatedRoute:
-    outbound_end_index: int
-    return_start_index: int | None
-    return_departure_date: str | None
-    return_details_unavailable: bool = False
-
-
-def _chain_end_index(
-    legs: list[FlightLegV1],
-    *,
-    start: str,
-    end: str,
-    start_index: int,
-) -> int | None:
-    if start_index >= len(legs) or legs[start_index].origin != start:
-        return None
-    current_destination = legs[start_index].destination
-    if current_destination == end:
-        return start_index
-    for index in range(start_index + 1, len(legs)):
-        leg = legs[index]
-        if leg.origin != current_destination:
-            return None
-        current_destination = leg.destination
-        if current_destination == end:
-            return index
-    return None
-
-
-def _total_duration_minutes(
-    item: Mapping[str, object],
-    legs: list[FlightLegV1],
-) -> int:
-    for key in ("durationMinutes", "durationInMinutes", "duration"):
-        if key in item:
-            return int(item[key])
-    return sum(leg.duration_minutes for leg in legs)
-
-
-def _stops(
-    item: Mapping[str, object],
-    route: "_ValidatedRoute",
-    *,
-    leg_count: int,
-) -> int:
-    for key in ("stops", "stopCount"):
-        if key in item:
-            return int(item[key])
-    outbound_stops = route.outbound_end_index
-    if route.return_start_index is None:
-        return outbound_stops
-    return_stops = max(0, leg_count - route.return_start_index - 1)
-    return outbound_stops + return_stops
-
-
 def _item_id(item: Mapping[str, object], item_index: int) -> str:
     for key in ("id", "offerId", "itineraryId"):
         value = item.get(key)
         if value not in (None, ""):
             return str(value)
     return str(item_index)
-
-
-def _requested_origin(request: ProviderRequest) -> str:
-    if request.requested_origin is None:
-        return request.origin
-    return request.requested_origin
-
-
-def _requested_destination(request: ProviderRequest) -> str:
-    if request.requested_destination is None:
-        return request.destination
-    return request.requested_destination
-
-
-def _requested_departure_date(request: ProviderRequest) -> str:
-    if request.requested_departure_date is None:
-        return request.departure_date
-    return request.requested_departure_date
-
-
-def _requested_return_date(request: ProviderExactRoundTripRequest) -> str:
-    if request.requested_return_date is None:
-        return request.return_date
-    return request.requested_return_date
-
-
-def _date_offset(actual: str, requested: str) -> int:
-    return (date.fromisoformat(actual) - date.fromisoformat(requested)).days
