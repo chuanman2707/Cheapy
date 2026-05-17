@@ -91,3 +91,25 @@ def test_adapter_delegates_round_trip_to_workflow(monkeypatch) -> None:
     assert result.search_completed is True
     assert seen["request"] == _round_trip_request()
     assert seen["kwargs"]["timeout_seconds"] == 7
+
+
+def test_adapter_phase_timings_exposes_recorder_without_response_mutation() -> None:
+    adapter = TravelokaAdapter(launch_browser=lambda **kwargs: object())
+    result = TravelokaCaptureResult(
+        payload={"data": {"searchResults": []}},
+        source_path="/api/v2/flight/search/initial",
+        search_completed=True,
+    )
+
+    assert adapter.phase_timings == ()
+
+    with adapter._phase_recorder.phase("context_page_setup"):
+        pass
+
+    assert adapter.phase_timings[0].phase == "context_page_setup"
+    assert result == TravelokaCaptureResult(
+        payload={"data": {"searchResults": []}},
+        source_path="/api/v2/flight/search/initial",
+        search_completed=True,
+    )
+    assert not hasattr(result, "phase_timings")
