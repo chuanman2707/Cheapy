@@ -8,20 +8,23 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from cheapy.models import (
-    ErrorCode,
     ErrorV1,
     FlightLegV1,
     FlightOfferV1,
     OfferFlagsV1,
-    Severity,
 )
 from cheapy.providers.base import ProviderExactOneWayRequest, ProviderExactRoundTripRequest
+from cheapy.providers.traveloka.normalization.errors import (
+    PROVIDER_NAME,
+    currency_unavailable_error,
+    parse_error,
+    return_details_unavailable_error,
+    selected_round_trip_error,
+)
+from cheapy.providers.traveloka.normalization.ranking import rank_offers
 from cheapy.providers.traveloka.results import TravelokaSelectedRoundTripResult
 
 
-PROVIDER_NAME = "traveloka"
-EXACT_ONE_WAY_CAPABILITY = "exact_one_way"
-EXACT_ROUND_TRIP_CAPABILITY = "exact_round_trip"
 ProviderRequest = ProviderExactOneWayRequest | ProviderExactRoundTripRequest
 
 
@@ -43,11 +46,11 @@ def normalize_payload(
             offers.append(normalized.offer)
             if normalized.return_details_unavailable:
                 errors.append(
-                    _return_details_unavailable_error(item_index, request)
+                    return_details_unavailable_error(item_index, request)
                 )
         except _ItemNormalizationError as exc:
             errors.append(exc.error)
-    return _rank_offers(
+    return rank_offers(
         offers,
         sort_non_comparable=isinstance(request, ProviderExactRoundTripRequest),
     ), errors
@@ -157,45 +160,6 @@ def _valid_selected_total(amount: Decimal) -> bool:
     return amount.is_finite() and amount >= Decimal("0")
 
 
-def _rank_offers(
-    offers: list[FlightOfferV1],
-    *,
-    sort_non_comparable: bool = False,
-) -> list[FlightOfferV1]:
-    if sort_non_comparable and all(not offer.comparable for offer in offers):
-        offers = sorted(
-            offers,
-            key=lambda offer: (offer.currency, offer.price_amount, offer.offer_id),
-        )
-
-    ranked: list[FlightOfferV1] = []
-    comparable_rank = 0
-    for offer in offers:
-        if not offer.comparable:
-            ranked.append(
-                offer.model_copy(
-                    update={
-                        "comparable": False,
-                        "rank_within_currency": None,
-                        "global_rank": None,
-                    }
-                )
-            )
-            continue
-
-        comparable_rank += 1
-        ranked.append(
-            offer.model_copy(
-                update={
-                    "comparable": True,
-                    "rank_within_currency": comparable_rank,
-                    "global_rank": comparable_rank,
-                }
-            )
-        )
-    return ranked
-
-
 class _ItemNormalizationError(Exception):
     """Internal wrapper for a structured item-level normalization error."""
 
@@ -241,7 +205,7 @@ def _normalize_item(
         currency = _currency(price, raw_item)
         if currency is None:
             raise _ItemNormalizationError(
-                _currency_unavailable_error(item_index, request)
+                currency_unavailable_error(item_index, request)
             )
 
         legs = [_normalize_leg(segment) for segment in _raw_segments(raw_item)]
@@ -349,7 +313,7 @@ def _normalize_item(
     except _ItemNormalizationError:
         raise
     except Exception as exc:
-        raise _ItemNormalizationError(_parse_error(item_index, request, exc)) from exc
+        raise _ItemNormalizationError(parse_error(item_index, request, exc)) from exc
 
 
 def _itinerary_items(payload: object) -> list[object]:
@@ -406,7 +370,7 @@ def _selected_failure_fallback(
     failure_type: str,
 ) -> tuple[list[FlightOfferV1], list[ErrorV1]]:
     offers, errors = normalize_payload(result.outbound_payload, request)
-    errors.append(_selected_round_trip_error(failure_type, request))
+    errors.append(selected_round_trip_error(failure_type, request))
     return offers, errors
 
 
@@ -905,90 +869,3 @@ def _requested_return_date(request: ProviderExactRoundTripRequest) -> str:
 
 def _date_offset(actual: str, requested: str) -> int:
     return (date.fromisoformat(actual) - date.fromisoformat(requested)).days
-
-
-def _currency_unavailable_error(index: int, request: ProviderRequest) -> ErrorV1:
-    return _error(
-        message_en="Provider result did not include a reliable currency.",
-        failure_type="currency_unavailable",
-        item_index=index,
-        capability=_capability_for_request(request),
-    )
-
-
-def _return_details_unavailable_error(
-    index: int,
-    request: ProviderRequest,
-) -> ErrorV1:
-    return _error(
-        message_en=(
-            "Traveloka priced the round trip but did not include return flight "
-            "details in the captured payload."
-        ),
-        failure_type="return_details_unavailable",
-        item_index=index,
-        capability=_capability_for_request(request),
-    )
-
-
-def _selected_round_trip_error(
-    failure_type: str,
-    request: ProviderExactRoundTripRequest,
-) -> ErrorV1:
-    messages = {
-        "selected_outbound_binding_unavailable": (
-            "Traveloka selected outbound details could not be mapped safely."
-        ),
-        "selected_return_binding_unavailable": (
-            "Traveloka selected return details could not be mapped safely."
-        ),
-        "final_round_trip_total_unavailable": (
-            "Traveloka final selected round-trip total was unavailable."
-        ),
-    }
-    return _error(
-        message_en=messages[failure_type],
-        failure_type=failure_type,
-        item_index=1,
-        capability=EXACT_ROUND_TRIP_CAPABILITY,
-    )
-
-
-def _parse_error(index: int, request: ProviderRequest, exc: Exception) -> ErrorV1:
-    return _error(
-        message_en="Provider result could not be normalized.",
-        failure_type="parse_error",
-        item_index=index,
-        capability=_capability_for_request(request),
-        exception_type=type(exc).__name__,
-    )
-
-
-def _capability_for_request(request: ProviderRequest) -> str:
-    if isinstance(request, ProviderExactRoundTripRequest):
-        return EXACT_ROUND_TRIP_CAPABILITY
-    return EXACT_ONE_WAY_CAPABILITY
-
-
-def _error(
-    *,
-    message_en: str,
-    failure_type: str,
-    item_index: int,
-    capability: str,
-    exception_type: str | None = None,
-) -> ErrorV1:
-    details: dict[str, object] = {
-        "provider": PROVIDER_NAME,
-        "capability": capability,
-        "failure_type": failure_type,
-        "item_index": item_index,
-        "exception_type": exception_type,
-    }
-    return ErrorV1(
-        code=ErrorCode.PROVIDER_FAILED,
-        severity=Severity.ERROR,
-        message_en=message_en,
-        details=details,
-        retryable=False,
-    )
