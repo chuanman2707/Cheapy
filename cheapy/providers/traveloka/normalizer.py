@@ -15,7 +15,6 @@ from cheapy.models import (
 )
 from cheapy.providers.base import ProviderExactOneWayRequest, ProviderExactRoundTripRequest
 from cheapy.providers.traveloka.normalization.errors import (
-    PROVIDER_NAME,
     currency_unavailable_error,
     parse_error,
     return_details_unavailable_error,
@@ -25,6 +24,9 @@ from cheapy.providers.traveloka.normalization.ranking import rank_offers
 from cheapy.providers.traveloka.results import TravelokaSelectedRoundTripResult
 
 
+PROVIDER_NAME = "traveloka"
+EXACT_ONE_WAY_CAPABILITY = "exact_one_way"
+EXACT_ROUND_TRIP_CAPABILITY = "exact_round_trip"
 ProviderRequest = ProviderExactOneWayRequest | ProviderExactRoundTripRequest
 
 
