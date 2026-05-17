@@ -25,8 +25,6 @@ from cheapy.providers.traveloka.results import TravelokaSelectedRoundTripResult
 
 
 PROVIDER_NAME = "traveloka"
-EXACT_ONE_WAY_CAPABILITY = "exact_one_way"
-EXACT_ROUND_TRIP_CAPABILITY = "exact_round_trip"
 ProviderRequest = ProviderExactOneWayRequest | ProviderExactRoundTripRequest
 
 
