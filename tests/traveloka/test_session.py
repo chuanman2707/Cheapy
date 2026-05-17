@@ -6,6 +6,7 @@ import pytest
 
 from cheapy.providers.base import ProviderExactOneWayRequest
 from cheapy.providers.traveloka import session as traveloka_session
+from cheapy.providers.traveloka import errors as traveloka_errors
 from cheapy.providers.traveloka.errors import TravelokaProviderError
 from cheapy.providers.traveloka.timing import TravelokaPhaseRecorder
 
@@ -132,6 +133,24 @@ def test_open_browser_session_maps_launch_failure_to_provider_error() -> None:
 
     assert exc_info.value.failure_type == "browser_unavailable"
     assert exc_info.value.exception_type == "RuntimeError"
+
+
+def test_open_browser_session_preserves_launch_provider_error() -> None:
+    def fail_launch(**kwargs: object) -> object:
+        raise traveloka_errors.timeout_error("InjectedTimeout")
+
+    with pytest.raises(TravelokaProviderError) as exc_info:
+        with traveloka_session.open_browser_session(
+            _request(),
+            base_url="https://www.traveloka.com",
+            timeout_seconds=1.0,
+            launch_browser=fail_launch,
+            phase_recorder=TravelokaPhaseRecorder(clock=monotonic),
+        ):
+            raise AssertionError("session should not open")
+
+    assert exc_info.value.failure_type == "timeout"
+    assert exc_info.value.exception_type == "InjectedTimeout"
 
 
 def test_open_browser_session_maps_context_setup_failure_to_navigation_failed() -> None:

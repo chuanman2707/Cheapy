@@ -46,6 +46,8 @@ def open_browser_session(
                     headless=True,
                     timeout=remaining_timeout_ms(deadline),
                 )
+        except traveloka_errors.TravelokaProviderError:
+            raise
         except Exception as exc:
             if traveloka_errors.is_timeout_exception(exc):
                 raise traveloka_errors.timeout_error(type(exc).__name__) from None
