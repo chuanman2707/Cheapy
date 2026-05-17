@@ -16,6 +16,7 @@ from cheapy.providers.traveloka import inventory as traveloka_inventory
 from cheapy.providers.traveloka import selection as traveloka_selection
 from cheapy.providers.traveloka import totals as traveloka_totals
 from cheapy.providers.traveloka import urls as traveloka_urls
+from cheapy.providers.traveloka import workflow as traveloka_workflow
 from cheapy.providers.traveloka.browser_helpers import (
     close_quietly,
     read_body_text,
@@ -79,57 +80,16 @@ class TravelokaAdapter:
     ) -> TravelokaCaptureResult | TravelokaSelectedRoundTripResult:
         return self._search_selected_round_trip(request)
 
-    def _search(self, request: ProviderRequest) -> TravelokaCaptureResult:
-        browser: object | None = None
-        context: object | None = None
-        state = traveloka_capture.CaptureState()
-        deadline = _monotonic() + self._timeout_seconds
+    def _search(self, request: ProviderExactOneWayRequest) -> TravelokaCaptureResult:
         try:
-            try:
-                with self._phase_recorder.phase("browser_launch"):
-                    browser = self._launch_browser(
-                        headless=True,
-                        timeout=remaining_timeout_ms(deadline),
-                    )
-            except Exception as exc:
-                if traveloka_errors.is_timeout_exception(exc):
-                    raise traveloka_errors.timeout_error(type(exc).__name__) from None
-                raise traveloka_errors.browser_unavailable_error(
-                    type(exc).__name__
-                ) from None
-
-            with self._phase_recorder.phase("context_page_setup"):
-                remaining_timeout_ms(deadline)
-                context = browser.new_context(locale="en-US")  # type: ignore[attr-defined]
-                remaining_timeout_ms(deadline)
-                page = context.new_page()  # type: ignore[attr-defined]
-                remaining_timeout_ms(deadline)
-                page.on("response", state.handle_response)  # type: ignore[attr-defined]
-            with self._phase_recorder.phase("initial_navigation"):
-                remaining_timeout_ms(deadline)
-                page.goto(  # type: ignore[attr-defined]
-                    traveloka_urls.build_full_search_url(
-                        request,
-                        base_url=self._base_url,
-                    ),
-                    wait_until="domcontentloaded",
-                    timeout=remaining_timeout_ms(deadline),
-                )
-
-            try:
-                with self._phase_recorder.phase("outbound_capture_wait"):
-                    return traveloka_capture.wait_for_capture(
-                        state,
-                        page,
-                        deadline,
-                        poll_interval_seconds=self._poll_interval_seconds,
-                    )
-            except traveloka_errors.TravelokaProviderError as exc:
-                if exc.failure_type == "timeout":
-                    traveloka_errors.raise_blocked_if_terminal_page(  # type: ignore[attr-defined]
-                        page.content()
-                    )
-                raise
+            return traveloka_workflow.search_exact_one_way(
+                request,
+                base_url=self._base_url,
+                timeout_seconds=self._timeout_seconds,
+                poll_interval_seconds=self._poll_interval_seconds,
+                launch_browser=self._launch_browser,
+                phase_recorder=self._phase_recorder,
+            )
         except traveloka_errors.TravelokaProviderError:
             raise
         except Exception as exc:
@@ -138,10 +98,6 @@ class TravelokaAdapter:
             raise traveloka_errors.navigation_failed_error(
                 type(exc).__name__
             ) from None
-        finally:
-            with self._phase_recorder.phase("cleanup"):
-                close_quietly(context)
-                close_quietly(browser)
 
     def _search_selected_round_trip(
         self,
