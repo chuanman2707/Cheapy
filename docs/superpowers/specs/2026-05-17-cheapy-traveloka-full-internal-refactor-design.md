@@ -309,12 +309,21 @@ the verified boundary:
 - obsolete DOM fallbacks may be deleted
 - tests may be reorganized and rewritten around module contracts
 
-Deletion of fallback behavior requires one of these conditions:
+Fallback behavior is data-shape dependent, so static reachability is not enough
+to delete it safely. Any removed parser or DOM fallback requires a removal
+catalog entry in the implementation commit or plan task that includes:
 
-- the fallback has no runtime caller after extraction
-- it is only protected by tests that do not model the current Traveloka selected
-  flow
-- an equivalent behavior test is rewritten against the current runtime surface
+- the helper, branch, selector, or parser path being removed
+- the existing test or runtime behavior it previously protected
+- the current one-way or selected round-trip runtime path analysis
+- the replacement test, or the exact reason no replacement is needed
+- confirmation that public offers, partial results, failure types, and
+  sensitive-data safety are preserved
+
+A fallback can be deleted only when that catalog proves it is outside the
+current runtime surface, or when an equivalent behavior test has been rewritten
+against the current runtime surface. If the catalog cannot prove that, the
+fallback should be moved into the new module boundary and revisited later.
 
 ## Data Flow
 
@@ -328,8 +337,8 @@ TravelokaProvider
   -> capture.CaptureState handles first-party fare responses
   -> capture.wait_for_capture
   -> TravelokaCaptureResult
-  -> normalization.normalize_payload
-  -> ProviderResult
+  -> normalization.normalize_payload returns offers/errors
+  -> provider.py wraps offers/errors into ProviderResult
 ```
 
 Selected exact round-trip:
@@ -352,8 +361,8 @@ TravelokaProvider
   -> selection proves return transition
   -> totals reads final selected total
   -> TravelokaSelectedRoundTripResult
-  -> normalization.normalize_selected_round_trip
-  -> ProviderResult
+  -> normalization.normalize_selected_round_trip returns offers/errors
+  -> provider.py wraps offers/errors into ProviderResult
 ```
 
 Partial selected round-trip fallback:
@@ -361,8 +370,8 @@ Partial selected round-trip fallback:
 ```text
 selected workflow fails after outbound payload exists
   -> TravelokaCaptureResult with safe partial_failure_type
-  -> normalization.normalize_payload(outbound_payload, round_trip_request)
-  -> provider appends public partial error
+  -> normalization.normalize_payload returns outbound partial offers/errors
+  -> provider.py appends public partial error
   -> ProviderResult(status=PARTIAL or FAILED)
 ```
 
@@ -476,6 +485,12 @@ Coverage rules:
 Tests that only protect removed legacy behavior should be deleted or rewritten
 against the current runtime surface.
 
+Any deleted fallback must be recorded in a fallback removal catalog. The catalog
+can live in the relevant task section of the implementation plan and must be
+carried into the implementation commit message or code review notes. Each entry
+must name the removed behavior, the old coverage, the runtime-path rationale,
+and the replacement coverage or deletion rationale.
+
 ### Offline Final Verification
 
 After implementation:
@@ -516,6 +531,12 @@ complete if the selected flow clearly regresses, for example:
 - selected round-trip comparable offers disappear for routes that passed before
 - runtime becomes clearly worse without an explained live-site reason
 - failure types become less specific or leak unsafe details
+
+The implementation plan must define the exact recording format for live matrix
+results. At minimum, each route record should include origin, destination,
+departure date, return date, status, offer count, comparable offer count,
+failure types, duration in milliseconds, and whether the result came from the
+baseline or refactored implementation.
 
 ## Migration Plan
 
