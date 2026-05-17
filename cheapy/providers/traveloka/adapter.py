@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from time import monotonic as _monotonic
 from typing import Callable
 
 from cheapy.providers.base import (
@@ -50,7 +49,7 @@ class TravelokaAdapter:
         self._launch_browser = (
             launch_browser if launch_browser is not None else _default_launch_browser
         )
-        self._phase_recorder = TravelokaPhaseRecorder(clock=_monotonic)
+        self._phase_recorder = TravelokaPhaseRecorder()
 
     @property
     def phase_timings(self) -> tuple[TravelokaPhaseTiming, ...]:
