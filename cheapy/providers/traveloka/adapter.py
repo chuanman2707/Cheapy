@@ -16,6 +16,11 @@ from cheapy.providers.base import (
     ProviderExactOneWayRequest,
     ProviderExactRoundTripRequest,
 )
+from cheapy.providers.traveloka.results import (
+    TravelokaCaptureResult,
+    TravelokaSelectedRoundTripResult,
+    partial_round_trip_result,
+)
 from cheapy.providers.traveloka.timing import (
     TravelokaPhaseRecorder,
     TravelokaPhaseTiming,
@@ -156,27 +161,6 @@ _STABLE_OPTION_KEY_ATTRIBUTES = (
 
 ProviderRequest = ProviderExactOneWayRequest | ProviderExactRoundTripRequest
 BrowserLauncher = Callable[..., object]
-
-
-@dataclass(frozen=True)
-class TravelokaCaptureResult:
-    payload: dict[str, object]
-    source_path: str
-    search_completed: bool
-    timed_out: bool = False
-    partial_failure_type: str | None = None
-
-
-@dataclass(frozen=True)
-class TravelokaSelectedRoundTripResult:
-    outbound_payload: dict[str, object]
-    return_payload: dict[str, object]
-    selected_outbound_key: str | None
-    selected_return_key: str | None
-    final_total_amount: Decimal
-    final_total_currency: str
-    source_paths: tuple[str, ...]
-    timed_out: bool = False
 
 
 @dataclass(frozen=True)
@@ -364,10 +348,10 @@ class TravelokaAdapter:
                 raise_on_expired=False,
             )
             if outbound_selection_timeout_ms <= 0:
-                return _partial_round_trip_result(
-                        outbound_capture,
-                        "outbound_selection_unavailable",
-                    )
+                return partial_round_trip_result(
+                    outbound_capture,
+                    "outbound_selection_unavailable",
+                )
             with self._phase_recorder.phase("outbound_visible_option_discovery"):
                 outbound_option = _cheapest_visible_option(
                     _visible_options_from_page(
@@ -376,7 +360,7 @@ class TravelokaAdapter:
                     )
                 )
                 if outbound_option is None:
-                    return _partial_round_trip_result(
+                    return partial_round_trip_result(
                         outbound_capture,
                         "outbound_selection_unavailable",
                     )
@@ -386,7 +370,7 @@ class TravelokaAdapter:
                     outbound_capture.payload,
                 )
                 if outbound_key is None:
-                    return _partial_round_trip_result(
+                    return partial_round_trip_result(
                         outbound_capture,
                         "selected_outbound_binding_unavailable",
                     )
@@ -413,7 +397,7 @@ class TravelokaAdapter:
                     before_body_text=before_outbound_selection_body,
                     poll_interval_seconds=self._poll_interval_seconds,
                 ):
-                    return _partial_round_trip_result(
+                    return partial_round_trip_result(
                         outbound_capture,
                         "outbound_selection_transition_unavailable",
                     )
@@ -427,13 +411,13 @@ class TravelokaAdapter:
                     )
             except TravelokaProviderError as exc:
                 if exc.failure_type == "timeout":
-                    return _partial_round_trip_result(
+                    return partial_round_trip_result(
                         outbound_capture,
                         "return_capture_timeout",
                     )
                 raise
             if return_capture.timed_out:
-                return _partial_round_trip_result(
+                return partial_round_trip_result(
                     outbound_capture,
                     "return_capture_timeout",
                 )
@@ -443,7 +427,7 @@ class TravelokaAdapter:
                 raise_on_expired=False,
             )
             if return_selection_timeout_ms <= 0:
-                return _partial_round_trip_result(
+                return partial_round_trip_result(
                     outbound_capture,
                     "return_selection_unavailable",
                 )
@@ -455,7 +439,7 @@ class TravelokaAdapter:
                     )
                 )
                 if return_option is None:
-                    return _partial_round_trip_result(
+                    return partial_round_trip_result(
                         outbound_capture,
                         "return_selection_unavailable",
                     )
@@ -465,7 +449,7 @@ class TravelokaAdapter:
                     return_capture.payload,
                 )
                 if return_key is None:
-                    return _partial_round_trip_result(
+                    return partial_round_trip_result(
                         outbound_capture,
                         "selected_return_binding_unavailable",
                     )
@@ -476,7 +460,7 @@ class TravelokaAdapter:
                     raise_on_expired=False,
                 )
                 if return_click_timeout_ms <= 0:
-                    return _partial_round_trip_result(
+                    return partial_round_trip_result(
                         outbound_capture,
                         "final_round_trip_total_unavailable",
                     )
@@ -501,7 +485,7 @@ class TravelokaAdapter:
                     before_marker_texts=before_return_selection_marker_texts,
                     before_body_text=before_return_selection_body,
                 ):
-                    return _partial_round_trip_result(
+                    return partial_round_trip_result(
                         outbound_capture,
                         "final_round_trip_total_unavailable",
                     )
@@ -513,7 +497,7 @@ class TravelokaAdapter:
                     before_texts=before_final_total_texts,
                 )
             if final_total is None:
-                return _partial_round_trip_result(
+                return partial_round_trip_result(
                     outbound_capture,
                     "final_round_trip_total_unavailable",
                 )
@@ -1658,19 +1642,6 @@ def _read_body_text(
         return page.locator("body").inner_text(timeout=text_timeout_ms)  # type: ignore[attr-defined]
     except Exception:
         return ""
-
-
-def _partial_round_trip_result(
-    capture: TravelokaCaptureResult,
-    failure_type: str,
-) -> TravelokaCaptureResult:
-    return TravelokaCaptureResult(
-        payload=capture.payload,
-        source_path=capture.source_path,
-        search_completed=capture.search_completed,
-        timed_out=capture.timed_out,
-        partial_failure_type=failure_type,
-    )
 
 
 def _is_timeout_exception(exc: Exception) -> bool:

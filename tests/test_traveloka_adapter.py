@@ -13,7 +13,12 @@ from cheapy.providers.base import (
     ProviderExactRoundTripRequest,
 )
 from cheapy.providers.traveloka import adapter as traveloka_adapter
+from cheapy.providers.traveloka import results as traveloka_results
 from cheapy.providers.traveloka.adapter import TravelokaAdapter, TravelokaProviderError
+from cheapy.providers.traveloka.results import (
+    TravelokaCaptureResult,
+    TravelokaSelectedRoundTripResult,
+)
 from cheapy.providers.traveloka.timing import TravelokaPhaseRecorder
 
 
@@ -334,7 +339,7 @@ def test_build_full_search_url_maps_round_trip_request_to_traveloka_route() -> N
 
 
 def test_capture_result_carries_completion_and_timeout_state() -> None:
-    result = traveloka_adapter.TravelokaCaptureResult(
+    result = TravelokaCaptureResult(
         payload={"data": {"searchResults": []}},
         source_path="/api/v2/flight/search/initial",
         search_completed=False,
@@ -348,7 +353,7 @@ def test_capture_result_carries_completion_and_timeout_state() -> None:
 
 
 def test_capture_result_carries_safe_partial_failure_metadata() -> None:
-    result = traveloka_adapter.TravelokaCaptureResult(
+    result = TravelokaCaptureResult(
         payload={"data": {"searchResults": []}},
         source_path="/api/v2/flight/search/initial",
         search_completed=False,
@@ -361,7 +366,7 @@ def test_capture_result_carries_safe_partial_failure_metadata() -> None:
 
 
 def test_selected_round_trip_result_carries_final_total_and_safe_paths() -> None:
-    result = traveloka_adapter.TravelokaSelectedRoundTripResult(
+    result = TravelokaSelectedRoundTripResult(
         outbound_payload={"data": {"searchResults": [{"id": "out-1"}]}},
         return_payload={"data": {"searchResults": [{"id": "ret-1"}]}},
         selected_outbound_key="out-1",
@@ -380,6 +385,31 @@ def test_selected_round_trip_result_carries_final_total_and_safe_paths() -> None
     assert result.selected_return_key == "ret-1"
     assert all(path.startswith("/api/") for path in result.source_paths)
     assert all("?" not in path for path in result.source_paths)
+
+
+def test_traveloka_result_contracts_live_in_results_module() -> None:
+    capture = traveloka_results.TravelokaCaptureResult(
+        payload={"data": {"searchResults": []}},
+        source_path="/api/v2/flight/search/initial",
+        search_completed=True,
+    )
+    partial = traveloka_results.partial_round_trip_result(
+        capture,
+        "return_capture_timeout",
+    )
+    selected = traveloka_results.TravelokaSelectedRoundTripResult(
+        outbound_payload={"data": {"searchResults": [{"id": "out-1"}]}},
+        return_payload={"data": {"searchResults": [{"id": "ret-1"}]}},
+        selected_outbound_key="out-1",
+        selected_return_key="ret-1",
+        final_total_amount=Decimal("123.45"),
+        final_total_currency="USD",
+        source_paths=("/api/v2/flight/search/initial", "/api/v2/flight/search/poll"),
+    )
+
+    assert partial.partial_failure_type == "return_capture_timeout"
+    assert partial.payload == capture.payload
+    assert selected.final_total_currency == "USD"
 
 
 def test_phase_recorder_records_safe_phase_without_sensitive_metadata() -> None:
@@ -445,7 +475,7 @@ def test_phase_recorder_uses_safe_exception_type_without_message() -> None:
 
 def test_adapter_phase_timings_exposes_recorder_without_response_mutation() -> None:
     adapter = TravelokaAdapter(launch_browser=lambda **kwargs: object())
-    result = traveloka_adapter.TravelokaCaptureResult(
+    result = TravelokaCaptureResult(
         payload={"data": {"searchResults": []}},
         source_path="/api/v2/flight/search/initial",
         search_completed=True,
@@ -457,7 +487,7 @@ def test_adapter_phase_timings_exposes_recorder_without_response_mutation() -> N
         pass
 
     assert adapter.phase_timings[0].phase == "context_page_setup"
-    assert result == traveloka_adapter.TravelokaCaptureResult(
+    assert result == TravelokaCaptureResult(
         payload={"data": {"searchResults": []}},
         source_path="/api/v2/flight/search/initial",
         search_completed=True,
@@ -1476,7 +1506,7 @@ def test_adapter_captures_completed_initial_fare_payload() -> None:
 
     result = adapter.search_exact_one_way(_one_way_request())
 
-    assert result == traveloka_adapter.TravelokaCaptureResult(
+    assert result == TravelokaCaptureResult(
         payload=payload,
         source_path="/api/v2/flight/search/initial",
         search_completed=True,
@@ -1495,7 +1525,7 @@ def test_round_trip_default_waits_conservatively_for_capture_completion(
 ) -> None:
     page = FakePage([])
     captures = [
-        traveloka_adapter.TravelokaCaptureResult(
+        TravelokaCaptureResult(
             payload={
                 "data": {
                     "meta": {"searchCompleted": True},
@@ -1505,7 +1535,7 @@ def test_round_trip_default_waits_conservatively_for_capture_completion(
             source_path="/api/v2/flight/search/initial",
             search_completed=True,
         ),
-        traveloka_adapter.TravelokaCaptureResult(
+        TravelokaCaptureResult(
             payload={
                 "data": {
                     "meta": {"searchCompleted": True},
@@ -1566,7 +1596,7 @@ def test_round_trip_default_waits_conservatively_for_capture_completion(
 
     result = adapter.search_exact_round_trip(_round_trip_request())
 
-    assert isinstance(result, traveloka_adapter.TravelokaSelectedRoundTripResult)
+    assert isinstance(result, TravelokaSelectedRoundTripResult)
     assert capture_calls == 2
 
 
@@ -1575,7 +1605,7 @@ def test_round_trip_fast_env_is_ignored_and_uses_conservative_capture(
 ) -> None:
     page = FakePage([])
     captures = [
-        traveloka_adapter.TravelokaCaptureResult(
+        TravelokaCaptureResult(
             payload={
                 "data": {
                     "meta": {"searchCompleted": True},
@@ -1585,7 +1615,7 @@ def test_round_trip_fast_env_is_ignored_and_uses_conservative_capture(
             source_path="/api/v2/flight/search/initial",
             search_completed=True,
         ),
-        traveloka_adapter.TravelokaCaptureResult(
+        TravelokaCaptureResult(
             payload={
                 "data": {
                     "meta": {"searchCompleted": True},
@@ -1647,7 +1677,7 @@ def test_round_trip_fast_env_is_ignored_and_uses_conservative_capture(
 
     result = adapter.search_exact_round_trip(_round_trip_request())
 
-    assert isinstance(result, traveloka_adapter.TravelokaSelectedRoundTripResult)
+    assert isinstance(result, TravelokaSelectedRoundTripResult)
     assert result.selected_outbound_key == "out-1"
     assert result.selected_return_key == "ret-1"
     assert capture_calls == 2
@@ -1747,7 +1777,7 @@ def test_round_trip_selects_cheapest_visible_outbound_and_return(
 
     result = adapter.search_exact_round_trip(_round_trip_request())
 
-    assert isinstance(result, traveloka_adapter.TravelokaSelectedRoundTripResult)
+    assert isinstance(result, TravelokaSelectedRoundTripResult)
     assert result.outbound_payload == outbound_payload
     assert result.return_payload == return_payload
     assert result.selected_outbound_key == "out-cheap"
@@ -1775,12 +1805,12 @@ def test_round_trip_uses_bounded_timeout_for_final_total_reader(
     }
     page = FakePage([])
     captures = [
-        traveloka_adapter.TravelokaCaptureResult(
+        TravelokaCaptureResult(
             payload=outbound_payload,
             source_path="/api/v2/flight/search/initial",
             search_completed=True,
         ),
-        traveloka_adapter.TravelokaCaptureResult(
+        TravelokaCaptureResult(
             payload=return_payload,
             source_path="/api/v2/flight/search/poll",
             search_completed=True,
@@ -1798,7 +1828,7 @@ def test_round_trip_uses_bounded_timeout_for_final_total_reader(
         deadline: float,
         *,
         poll_interval_seconds: float,
-    ) -> traveloka_adapter.TravelokaCaptureResult:
+    ) -> TravelokaCaptureResult:
         return captures.pop(0)
 
     def read_final_total(
@@ -1838,7 +1868,7 @@ def test_round_trip_uses_bounded_timeout_for_final_total_reader(
 
     result = adapter.search_exact_round_trip(_round_trip_request())
 
-    assert isinstance(result, traveloka_adapter.TravelokaSelectedRoundTripResult)
+    assert isinstance(result, TravelokaSelectedRoundTripResult)
     assert final_total_kwargs
     assert final_total_kwargs[0]["timeout_ms"] <= 250
 
@@ -1854,12 +1884,12 @@ def test_round_trip_polls_until_final_total_is_available(
     }
     page = FakePage([])
     captures = [
-        traveloka_adapter.TravelokaCaptureResult(
+        TravelokaCaptureResult(
             payload=outbound_payload,
             source_path="/api/v2/flight/search/initial",
             search_completed=True,
         ),
-        traveloka_adapter.TravelokaCaptureResult(
+        TravelokaCaptureResult(
             payload=return_payload,
             source_path="/api/v2/flight/search/poll",
             search_completed=True,
@@ -1880,7 +1910,7 @@ def test_round_trip_polls_until_final_total_is_available(
         deadline: float,
         *,
         poll_interval_seconds: float,
-    ) -> traveloka_adapter.TravelokaCaptureResult:
+    ) -> TravelokaCaptureResult:
         return captures.pop(0)
 
     def read_final_total(
@@ -1919,7 +1949,7 @@ def test_round_trip_polls_until_final_total_is_available(
 
     result = adapter.search_exact_round_trip(_round_trip_request())
 
-    assert isinstance(result, traveloka_adapter.TravelokaSelectedRoundTripResult)
+    assert isinstance(result, TravelokaSelectedRoundTripResult)
     assert page.wait_calls >= 1
 
 
@@ -1983,7 +2013,7 @@ def test_round_trip_rejects_preexisting_return_marker_without_transition(
 
     result = adapter.search_exact_round_trip(_round_trip_request())
 
-    assert isinstance(result, traveloka_adapter.TravelokaCaptureResult)
+    assert isinstance(result, TravelokaCaptureResult)
     assert result.payload == outbound_payload
     assert result.partial_failure_type == "final_round_trip_total_unavailable"
 
@@ -2043,7 +2073,7 @@ def test_round_trip_rejects_stale_summary_total_after_return_transition() -> Non
 
     result = adapter.search_exact_round_trip(_round_trip_request())
 
-    assert isinstance(result, traveloka_adapter.TravelokaCaptureResult)
+    assert isinstance(result, TravelokaCaptureResult)
     assert result.payload == outbound_payload
     assert result.partial_failure_type == "final_round_trip_total_unavailable"
 
@@ -2119,7 +2149,7 @@ def test_round_trip_reads_live_flight_search_result_summary_total() -> None:
 
     result = adapter.search_exact_round_trip(_round_trip_request())
 
-    assert isinstance(result, traveloka_adapter.TravelokaSelectedRoundTripResult)
+    assert isinstance(result, TravelokaSelectedRoundTripResult)
     assert result.selected_outbound_key == "out-1"
     assert result.selected_return_key == "ret-1"
     assert result.final_total_amount == Decimal("250.86")
@@ -2193,7 +2223,7 @@ def test_round_trip_default_helpers_bind_locator_attributes_and_select_final_tot
 
     result = adapter.search_exact_round_trip(_round_trip_request())
 
-    assert isinstance(result, traveloka_adapter.TravelokaSelectedRoundTripResult)
+    assert isinstance(result, TravelokaSelectedRoundTripResult)
     assert result.selected_outbound_key == "out-cheap"
     assert result.selected_return_key == "ret-cheap"
     assert result.final_total_amount == Decimal("321.09")
@@ -2218,8 +2248,8 @@ def test_round_trip_returns_timeout_partial_when_outbound_capture_is_timed_out(
         deadline: float,
         *,
         poll_interval_seconds: float,
-    ) -> traveloka_adapter.TravelokaCaptureResult:
-        return traveloka_adapter.TravelokaCaptureResult(
+    ) -> TravelokaCaptureResult:
+        return TravelokaCaptureResult(
             payload=payload,
             source_path="/api/v2/flight/search/initial",
             search_completed=False,
@@ -2244,7 +2274,7 @@ def test_round_trip_returns_timeout_partial_when_outbound_capture_is_timed_out(
 
     result = adapter.search_exact_round_trip(_round_trip_request())
 
-    assert isinstance(result, traveloka_adapter.TravelokaCaptureResult)
+    assert isinstance(result, TravelokaCaptureResult)
     assert result.payload == payload
     assert result.partial_failure_type is None
     assert result.timed_out is True
@@ -2270,13 +2300,13 @@ def test_round_trip_returns_return_capture_partial_when_return_capture_is_timed_
     )
     return_click = EmittingFakeLocator()
     captures = [
-        traveloka_adapter.TravelokaCaptureResult(
+        TravelokaCaptureResult(
             payload=outbound_payload,
             source_path="/api/v2/flight/search/initial",
             search_completed=True,
             timed_out=False,
         ),
-        traveloka_adapter.TravelokaCaptureResult(
+        TravelokaCaptureResult(
             payload=return_payload,
             source_path="/api/v2/flight/search/poll",
             search_completed=False,
@@ -2294,7 +2324,7 @@ def test_round_trip_returns_return_capture_partial_when_return_capture_is_timed_
         deadline: float,
         *,
         poll_interval_seconds: float,
-    ) -> traveloka_adapter.TravelokaCaptureResult:
+    ) -> TravelokaCaptureResult:
         return captures.pop(0)
 
     monkeypatch.setattr(
@@ -2318,7 +2348,7 @@ def test_round_trip_returns_return_capture_partial_when_return_capture_is_timed_
 
     result = adapter.search_exact_round_trip(_round_trip_request())
 
-    assert isinstance(result, traveloka_adapter.TravelokaCaptureResult)
+    assert isinstance(result, TravelokaCaptureResult)
     assert result.payload == outbound_payload
     assert result.source_path == "/api/v2/flight/search/initial"
     assert result.partial_failure_type == "return_capture_timeout"
@@ -2349,7 +2379,7 @@ def test_round_trip_returns_partial_when_outbound_selection_is_unavailable(
 
     result = adapter.search_exact_round_trip(_round_trip_request())
 
-    assert isinstance(result, traveloka_adapter.TravelokaCaptureResult)
+    assert isinstance(result, TravelokaCaptureResult)
     assert result.payload == payload
     assert result.partial_failure_type == "outbound_selection_unavailable"
 
@@ -2385,7 +2415,7 @@ def test_round_trip_returns_partial_when_selected_outbound_cannot_bind(
 
     result = adapter.search_exact_round_trip(_round_trip_request())
 
-    assert isinstance(result, traveloka_adapter.TravelokaCaptureResult)
+    assert isinstance(result, TravelokaCaptureResult)
     assert result.payload == payload
     assert result.partial_failure_type == "selected_outbound_binding_unavailable"
     assert outbound_click.clicked is False
@@ -2428,7 +2458,7 @@ def test_round_trip_returns_partial_when_return_capture_times_out(
 
     result = adapter.search_exact_round_trip(_round_trip_request())
 
-    assert isinstance(result, traveloka_adapter.TravelokaCaptureResult)
+    assert isinstance(result, TravelokaCaptureResult)
     assert result.payload == payload
     assert result.partial_failure_type == "return_capture_timeout"
     assert outbound_click.clicked is True
@@ -2474,7 +2504,7 @@ def test_round_trip_returns_partial_when_outbound_activation_does_not_transition
 
     result = adapter.search_exact_round_trip(_round_trip_request())
 
-    assert isinstance(result, traveloka_adapter.TravelokaCaptureResult)
+    assert isinstance(result, TravelokaCaptureResult)
     assert result.payload == payload
     assert result.partial_failure_type == "outbound_selection_transition_unavailable"
     assert outbound_click.clicked is True
@@ -2517,7 +2547,7 @@ def test_round_trip_keeps_return_capture_timeout_after_outbound_transition(
 
     result = adapter.search_exact_round_trip(_round_trip_request())
 
-    assert isinstance(result, traveloka_adapter.TravelokaCaptureResult)
+    assert isinstance(result, TravelokaCaptureResult)
     assert result.payload == payload
     assert result.partial_failure_type == "return_capture_timeout"
     assert outbound_click.clicked is True
@@ -2570,7 +2600,7 @@ def test_round_trip_ignores_duplicate_outbound_payload_after_noop_activation(
 
     result = adapter.search_exact_round_trip(_round_trip_request())
 
-    assert isinstance(result, traveloka_adapter.TravelokaCaptureResult)
+    assert isinstance(result, TravelokaCaptureResult)
     assert result.payload == payload
     assert result.partial_failure_type == "outbound_selection_transition_unavailable"
     assert outbound_click.clicked is True
@@ -2627,7 +2657,7 @@ def test_round_trip_ignores_preexisting_selected_hash_after_noop_activation(
 
     result = adapter.search_exact_round_trip(_round_trip_request())
 
-    assert isinstance(result, traveloka_adapter.TravelokaCaptureResult)
+    assert isinstance(result, TravelokaCaptureResult)
     assert result.payload == payload
     assert result.partial_failure_type == "outbound_selection_transition_unavailable"
     assert outbound_click.clicked is True
@@ -2710,7 +2740,7 @@ def test_round_trip_returns_partial_when_return_selection_is_unavailable(
 
     result = adapter.search_exact_round_trip(_round_trip_request())
 
-    assert isinstance(result, traveloka_adapter.TravelokaCaptureResult)
+    assert isinstance(result, TravelokaCaptureResult)
     assert result.payload == outbound_payload
     assert result.source_path == "/api/v2/flight/search/initial"
     assert result.partial_failure_type == "return_selection_unavailable"
@@ -2759,7 +2789,7 @@ def test_round_trip_returns_partial_when_selected_return_cannot_bind(
 
     result = adapter.search_exact_round_trip(_round_trip_request())
 
-    assert isinstance(result, traveloka_adapter.TravelokaCaptureResult)
+    assert isinstance(result, TravelokaCaptureResult)
     assert result.payload == outbound_payload
     assert result.source_path == "/api/v2/flight/search/initial"
     assert result.partial_failure_type == "selected_return_binding_unavailable"
@@ -2823,7 +2853,7 @@ def test_round_trip_returns_partial_when_final_total_is_unavailable(
 
     result = adapter.search_exact_round_trip(_round_trip_request())
 
-    assert isinstance(result, traveloka_adapter.TravelokaCaptureResult)
+    assert isinstance(result, TravelokaCaptureResult)
     assert result.payload == outbound_payload
     assert result.source_path == "/api/v2/flight/search/initial"
     assert result.partial_failure_type == "final_round_trip_total_unavailable"
@@ -2847,7 +2877,7 @@ def test_adapter_captures_completed_poll_fare_payload() -> None:
 
     result = adapter.search_exact_one_way(_one_way_request())
 
-    assert result == traveloka_adapter.TravelokaCaptureResult(
+    assert result == TravelokaCaptureResult(
         payload=payload,
         source_path="/api/v2/flight/search/poll",
         search_completed=True,
@@ -2886,7 +2916,7 @@ def test_adapter_keeps_non_empty_payload_when_completion_frame_is_empty() -> Non
 
     result = adapter.search_exact_one_way(_one_way_request())
 
-    assert result == traveloka_adapter.TravelokaCaptureResult(
+    assert result == TravelokaCaptureResult(
         payload=non_empty_payload,
         source_path="/api/v2/flight/search/initial",
         search_completed=True,
@@ -2909,7 +2939,7 @@ def test_capture_state_preserves_partial_failure_type_when_completion_upgrades_p
         }
     }
     state = traveloka_adapter._CaptureState()
-    state.best_result = traveloka_adapter.TravelokaCaptureResult(
+    state.best_result = TravelokaCaptureResult(
         payload=non_empty_payload,
         source_path="/api/v2/flight/search/initial",
         search_completed=False,
@@ -2960,7 +2990,7 @@ def test_adapter_uses_empty_completion_payload_when_no_offers_were_seen() -> Non
 
     result = adapter.search_exact_one_way(_one_way_request())
 
-    assert result == traveloka_adapter.TravelokaCaptureResult(
+    assert result == TravelokaCaptureResult(
         payload=empty_completed_payload,
         source_path="/api/v2/flight/search/poll",
         search_completed=True,
@@ -3010,7 +3040,7 @@ def test_adapter_preserves_partial_failure_type_when_returning_timed_out_partial
 
     class SeededCaptureState:
         def __init__(self) -> None:
-            self.best_result = traveloka_adapter.TravelokaCaptureResult(
+            self.best_result = TravelokaCaptureResult(
                 payload=payload,
                 source_path="/api/v2/flight/search/initial",
                 search_completed=False,

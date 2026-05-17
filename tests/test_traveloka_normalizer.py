@@ -7,11 +7,11 @@ from cheapy.providers.base import (
     ProviderExactOneWayRequest,
     ProviderExactRoundTripRequest,
 )
-from cheapy.providers.traveloka.adapter import TravelokaSelectedRoundTripResult
 from cheapy.providers.traveloka.normalizer import (
     normalize_payload,
     normalize_selected_round_trip,
 )
+from cheapy.providers.traveloka.results import TravelokaSelectedRoundTripResult
 
 
 def _one_way_request() -> ProviderExactOneWayRequest:
