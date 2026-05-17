@@ -13,9 +13,11 @@ from cheapy.providers.base import (
     ProviderExactRoundTripRequest,
 )
 from cheapy.providers.traveloka import adapter as traveloka_adapter
+from cheapy.providers.traveloka import activation as traveloka_activation
 from cheapy.providers.traveloka import browser_helpers
 from cheapy.providers.traveloka import capture as traveloka_capture
 from cheapy.providers.traveloka import errors as traveloka_errors
+from cheapy.providers.traveloka import inventory as traveloka_inventory
 from cheapy.providers.traveloka import results as traveloka_results
 from cheapy.providers.traveloka import urls as traveloka_urls
 from cheapy.providers.traveloka.adapter import TravelokaAdapter, TravelokaProviderError
@@ -226,19 +228,12 @@ class LocatorFakePage(FakePage):
 
     def locator(self, selector: str) -> object:
         self.locator_calls.append(selector)
-        if selector == "[data-testid^='flight-inventory-card-container-']":
-            if self.option_groups and all(
-                isinstance(locator, LiveTravelokaCardLocator)
-                for locator in self.option_groups[0]
-            ):
+        if selector == traveloka_inventory.INVENTORY_CARD_SELECTOR:
+            if self.option_groups:
                 return FakeLocatorCollection(self.option_groups.pop(0))
             if selector in self.selector_locators:
                 return self.selector_locators[selector]
             return FakeLocatorCollection([])
-        if selector.startswith("button:has-text"):
-            if not self.option_groups:
-                return FakeLocatorCollection([])
-            return FakeLocatorCollection(self.option_groups.pop(0))
         if selector in self.selector_locators:
             return self.selector_locators[selector]
         return EmptyFakeLocator()
@@ -252,10 +247,8 @@ class LiveTravelokaInventoryPage(FakePage):
 
     def locator(self, selector: str) -> object:
         self.locator_calls.append(selector)
-        if selector == "[data-testid^='flight-inventory-card-container-']":
+        if selector == traveloka_inventory.INVENTORY_CARD_SELECTOR:
             return FakeLocatorCollection(self.cards)
-        if selector.startswith("button:has-text"):
-            return FakeLocatorCollection([])
         return EmptyFakeLocator()
 
 
@@ -308,7 +301,7 @@ def _visible_option(
     currency: str | None = "USD",
     locator: object | None = None,
 ):
-    return traveloka_adapter.TravelokaVisibleOption(
+    return traveloka_inventory.TravelokaVisibleOption(
         key=key,
         airline_name=airline_name,
         departure_time_text="09:00",
@@ -480,6 +473,42 @@ def test_browser_helpers_keep_deadline_and_dom_reads_together() -> None:
     ) <= 250
 
 
+def test_traveloka_inventory_module_owns_visible_option_contract() -> None:
+    option = traveloka_inventory.TravelokaVisibleOption(
+        key="out-1",
+        airline_name="Traveloka Air",
+        departure_time_text=None,
+        arrival_time_text=None,
+        route_text=None,
+        price_amount=Decimal("10.00"),
+        currency="USD",
+        locator=FakeLocator(),
+    )
+
+    assert traveloka_inventory.cheapest_visible_option([option]) == option
+
+
+def test_traveloka_activation_module_clicks_visible_option() -> None:
+    locator = ScrollableFakeLocator()
+    option = traveloka_inventory.TravelokaVisibleOption(
+        key="out-1",
+        airline_name=None,
+        departure_time_text=None,
+        arrival_time_text=None,
+        route_text=None,
+        price_amount=Decimal("10.00"),
+        currency="USD",
+        locator=locator,
+    )
+
+    traveloka_activation.click_visible_option(option, timeout_ms=1000)
+
+    assert locator.evaluate_scripts == [
+        traveloka_activation.TRAVELOKA_OPTION_ACTIVATION_SCRIPT
+    ]
+    assert locator.scroll_kwargs[0]["timeout"] == 1000
+
+
 def test_phase_recorder_records_safe_phase_without_sensitive_metadata() -> None:
     now_values = iter([10.0, 10.125])
     recorder = TravelokaPhaseRecorder(clock=lambda: next(now_values))
@@ -564,7 +593,7 @@ def test_adapter_phase_timings_exposes_recorder_without_response_mutation() -> N
 
 
 def test_cheapest_visible_option_returns_none_for_empty_options() -> None:
-    assert traveloka_adapter._cheapest_visible_option([]) is None
+    assert traveloka_inventory.cheapest_visible_option([]) is None
 
 
 def test_cheapest_visible_option_uses_lowest_price_then_stable_key_tie_break() -> None:
@@ -586,14 +615,14 @@ def test_cheapest_visible_option_uses_lowest_price_then_stable_key_tie_break() -
         ),
     ]
 
-    cheapest = traveloka_adapter._cheapest_visible_option(options)
+    cheapest = traveloka_inventory.cheapest_visible_option(options)
 
     assert cheapest is not None
     assert cheapest.key == "a-option"
 
 
 def test_visible_option_optional_text_fields_accept_none_and_tie_break_safely() -> None:
-    type_hints = get_type_hints(traveloka_adapter.TravelokaVisibleOption)
+    type_hints = get_type_hints(traveloka_inventory.TravelokaVisibleOption)
     for field_name in (
         "key",
         "airline_name",
@@ -604,7 +633,7 @@ def test_visible_option_optional_text_fields_accept_none_and_tie_break_safely() 
     ):
         assert type_hints[field_name] == str | None
 
-    option_with_none_fields = traveloka_adapter.TravelokaVisibleOption(
+    option_with_none_fields = traveloka_inventory.TravelokaVisibleOption(
         key=None,
         airline_name=None,
         departure_time_text=None,
@@ -614,7 +643,7 @@ def test_visible_option_optional_text_fields_accept_none_and_tie_break_safely() 
         currency=None,
         locator=FakeLocator(),
     )
-    other_option = traveloka_adapter.TravelokaVisibleOption(
+    other_option = traveloka_inventory.TravelokaVisibleOption(
         key="a-option",
         airline_name=None,
         departure_time_text="09:00",
@@ -625,7 +654,7 @@ def test_visible_option_optional_text_fields_accept_none_and_tie_break_safely() 
         locator=FakeLocator(),
     )
 
-    cheapest = traveloka_adapter._cheapest_visible_option(
+    cheapest = traveloka_inventory.cheapest_visible_option(
         [other_option, option_with_none_fields]
     )
 
@@ -649,7 +678,7 @@ def test_cheapest_visible_option_prefers_keyed_option_for_same_price() -> None:
         price_amount=Decimal("90"),
     )
 
-    cheapest = traveloka_adapter._cheapest_visible_option(
+    cheapest = traveloka_inventory.cheapest_visible_option(
         [keyless_option, keyed_option, empty_key_option]
     )
 
@@ -668,7 +697,7 @@ def test_cheapest_visible_option_prefers_non_numeric_key_for_same_price() -> Non
         price_amount=Decimal("90"),
     )
 
-    cheapest = traveloka_adapter._cheapest_visible_option(
+    cheapest = traveloka_inventory.cheapest_visible_option(
         [numeric_fallback_option, keyed_option]
     )
 
@@ -688,7 +717,7 @@ def test_parse_visible_price_handles_usd_like_and_vnd_grouped_prices(
     expected_amount: Decimal,
     expected_currency: str,
 ) -> None:
-    amount, currency = traveloka_adapter._parse_visible_price(text)
+    amount, currency = traveloka_inventory.parse_visible_price(text)
 
     assert amount == expected_amount
     assert currency == expected_currency
@@ -706,7 +735,7 @@ def test_parse_visible_price_uses_amount_near_supported_currency_marker(
     expected_amount: Decimal,
     expected_currency: str,
 ) -> None:
-    amount, currency = traveloka_adapter._parse_visible_price(text)
+    amount, currency = traveloka_inventory.parse_visible_price(text)
 
     assert amount == expected_amount
     assert currency == expected_currency
@@ -725,21 +754,21 @@ def test_bind_visible_option_to_payload_returns_key_only_for_explicit_payload_id
     }
 
     assert (
-        traveloka_adapter._bind_visible_option_to_payload(
+        traveloka_inventory.bind_visible_option_to_payload(
             _visible_option(key="out-offer-2"),
             payload,
         )
         == "out-offer-2"
     )
     assert (
-        traveloka_adapter._bind_visible_option_to_payload(
+        traveloka_inventory.bind_visible_option_to_payload(
             _visible_option(key="1"),
             payload,
         )
         is None
     )
     assert (
-        traveloka_adapter._bind_visible_option_to_payload(
+        traveloka_inventory.bind_visible_option_to_payload(
             _visible_option(key="missing"),
             payload,
         )
@@ -751,7 +780,7 @@ def test_bind_visible_option_to_payload_ignores_numeric_payload_ids() -> None:
     payload = {"data": {"searchResults": [{"id": 1}]}}
 
     assert (
-        traveloka_adapter._bind_visible_option_to_payload(
+        traveloka_inventory.bind_visible_option_to_payload(
             _visible_option(key="1"),
             payload,
         )
@@ -790,7 +819,7 @@ def test_visible_options_from_page_discovers_live_inventory_cards() -> None:
     )
     page = LiveTravelokaInventoryPage([expensive, cheapest])
 
-    options = traveloka_adapter._visible_options_from_page(page, timeout_ms=123)
+    options = traveloka_inventory.visible_options_from_page(page, timeout_ms=123)
 
     assert [option.key for option in options] == [
         "eva-expensive",
@@ -801,20 +830,20 @@ def test_visible_options_from_page_discovers_live_inventory_cards() -> None:
         Decimal("1663.60"),
     ]
     assert [option.currency for option in options] == ["USD", "USD"]
-    assert traveloka_adapter._cheapest_visible_option(options) == options[1]
+    assert traveloka_inventory.cheapest_visible_option(options) == options[1]
     assert expensive.inner_text_kwargs == [{"timeout": 123}]
     assert cheapest.inner_text_kwargs == [{"timeout": 123}]
     assert page.locator_calls[0] == "[data-testid^='flight-inventory-card-container-']"
 
 
 def test_visible_options_from_page_uses_bounded_timeouts_for_text_and_attributes() -> None:
-    locator = TextFakeLocator(
+    locator = LiveTravelokaCardLocator(
+        container_id="out-1",
         text="VietJet Air\nSGN - BKK\nUSD 120.00",
-        attrs={"data-testid": "out-1"},
     )
     page = LocatorFakePage([], option_groups=[[locator]])
 
-    options = traveloka_adapter._visible_options_from_page(page, timeout_ms=123)
+    options = traveloka_inventory.visible_options_from_page(page, timeout_ms=123)
 
     assert len(options) == 1
     assert options[0].key == "out-1"
@@ -825,14 +854,14 @@ def test_visible_options_from_page_uses_bounded_timeouts_for_text_and_attributes
 def test_visible_options_from_page_caps_far_future_deadline_to_local_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    locator = TextFakeLocator(
+    locator = LiveTravelokaCardLocator(
+        container_id="out-1",
         text="VietJet Air\nSGN - BKK\nUSD 120.00",
-        attrs={"data-testid": "out-1"},
     )
     page = LocatorFakePage([], option_groups=[[locator]])
     monkeypatch.setattr(browser_helpers, "monotonic", lambda: 0.0)
 
-    options = traveloka_adapter._visible_options_from_page(
+    options = traveloka_inventory.visible_options_from_page(
         page,
         timeout_ms=123,
         deadline=999.0,
@@ -846,19 +875,19 @@ def test_visible_options_from_page_caps_far_future_deadline_to_local_timeout(
 def test_visible_options_from_page_uses_fresh_remaining_deadline_for_each_read(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    first_locator = TextFakeLocator(
+    first_locator = LiveTravelokaCardLocator(
+        container_id="out-1",
         text="VietJet Air\nSGN - BKK\nUSD 120.00",
-        attrs={"data-testid": "out-1"},
     )
-    second_locator = TextFakeLocator(
+    second_locator = LiveTravelokaCardLocator(
+        container_id="out-2",
         text="VietJet Air\nSGN - BKK\nUSD 140.00",
-        attrs={"data-testid": "out-2"},
     )
     page = LocatorFakePage([], option_groups=[[first_locator, second_locator]])
     now_values = iter([9.0, 9.1, 9.2, 9.3])
     monkeypatch.setattr(browser_helpers, "monotonic", lambda: next(now_values))
 
-    options = traveloka_adapter._visible_options_from_page(page, deadline=10.0)
+    options = traveloka_inventory.visible_options_from_page(page, deadline=10.0)
 
     assert [option.key for option in options] == ["out-1", "out-2"]
     assert first_locator.get_attribute_kwargs[0]["timeout"] == 1000
@@ -1532,7 +1561,7 @@ def test_click_visible_option_dispatches_traveloka_activation_sequence() -> None
     locator = FakeLocator()
     option = _visible_option(key="out-1", locator=locator)
 
-    traveloka_adapter._click_visible_option(option, timeout_ms=3210)
+    traveloka_activation.click_visible_option(option, timeout_ms=3210)
 
     assert locator.click_kwargs == []
     assert locator.evaluate_calls == [{"timeout": 3210}]
@@ -1545,7 +1574,7 @@ def test_click_visible_option_scrolls_and_caps_live_activation_timeout() -> None
     locator = ScrollableFakeLocator()
     option = _visible_option(key="out-1", locator=locator)
 
-    traveloka_adapter._click_visible_option(option, timeout_ms=45_000)
+    traveloka_activation.click_visible_option(option, timeout_ms=45_000)
 
     assert locator.scroll_kwargs == [{"timeout": 10_000}]
     assert locator.evaluate_calls == [{"timeout": 10_000}]
@@ -1637,8 +1666,8 @@ def test_round_trip_default_waits_conservatively_for_capture_completion(
         wait_for_capture,
     )
     monkeypatch.setattr(
-        traveloka_adapter,
-        "_visible_options_from_page",
+        traveloka_inventory,
+        "visible_options_from_page",
         lambda page_arg, **kwargs: options.pop(0),
     )
     monkeypatch.setattr(
@@ -1718,8 +1747,8 @@ def test_round_trip_fast_env_is_ignored_and_uses_conservative_capture(
         wait_for_capture,
     )
     monkeypatch.setattr(
-        traveloka_adapter,
-        "_visible_options_from_page",
+        traveloka_inventory,
+        "visible_options_from_page",
         lambda page_arg, **kwargs: options.pop(0),
     )
     monkeypatch.setattr(
@@ -1790,7 +1819,7 @@ def test_round_trip_selects_cheapest_visible_outbound_and_return(
     def visible_options(
         page_arg: object,
         **kwargs: object,
-    ) -> list[traveloka_adapter.TravelokaVisibleOption]:
+    ) -> list[traveloka_inventory.TravelokaVisibleOption]:
         nonlocal visible_call_count
         visible_call_count += 1
         if visible_call_count == 1:
@@ -1820,8 +1849,8 @@ def test_round_trip_selects_cheapest_visible_outbound_and_return(
         ]
 
     monkeypatch.setattr(
-        traveloka_adapter,
-        "_visible_options_from_page",
+        traveloka_inventory,
+        "visible_options_from_page",
         visible_options,
         raising=False,
     )
@@ -1922,8 +1951,8 @@ def test_round_trip_uses_bounded_timeout_for_final_total_reader(
         lambda *args, **kwargs: True,
     )
     monkeypatch.setattr(
-        traveloka_adapter,
-        "_visible_options_from_page",
+        traveloka_inventory,
+        "visible_options_from_page",
         lambda page_arg, **kwargs: options.pop(0),
         raising=False,
     )
@@ -2003,8 +2032,8 @@ def test_round_trip_polls_until_final_total_is_available(
         lambda *args, **kwargs: True,
     )
     monkeypatch.setattr(
-        traveloka_adapter,
-        "_visible_options_from_page",
+        traveloka_inventory,
+        "visible_options_from_page",
         lambda page_arg, **kwargs: options.pop(0),
         raising=False,
     )
@@ -2345,8 +2374,8 @@ def test_round_trip_returns_timeout_partial_when_outbound_capture_is_timed_out(
         wait_for_capture,
     )
     monkeypatch.setattr(
-        traveloka_adapter,
-        "_visible_options_from_page",
+        traveloka_inventory,
+        "visible_options_from_page",
         lambda page_arg, **kwargs: [_visible_option(key="out-1", locator=outbound_click)],
     )
     adapter = TravelokaAdapter(
@@ -2416,8 +2445,8 @@ def test_round_trip_returns_return_capture_partial_when_return_capture_is_timed_
         wait_for_capture,
     )
     monkeypatch.setattr(
-        traveloka_adapter,
-        "_visible_options_from_page",
+        traveloka_inventory,
+        "visible_options_from_page",
         lambda page_arg, **kwargs: options.pop(0),
     )
     monkeypatch.setattr(
@@ -2451,8 +2480,8 @@ def test_round_trip_returns_partial_when_outbound_selection_is_unavailable(
         ]
     )
     monkeypatch.setattr(
-        traveloka_adapter,
-        "_visible_options_from_page",
+        traveloka_inventory,
+        "visible_options_from_page",
         lambda page_arg, **kwargs: [],
         raising=False,
     )
@@ -2481,8 +2510,8 @@ def test_round_trip_returns_partial_when_selected_outbound_cannot_bind(
     )
     outbound_click = EmittingFakeLocator()
     monkeypatch.setattr(
-        traveloka_adapter,
-        "_visible_options_from_page",
+        traveloka_inventory,
+        "visible_options_from_page",
         lambda page_arg, **kwargs: [
             _visible_option(
                 key="missing-outbound",
@@ -2522,8 +2551,8 @@ def test_round_trip_returns_partial_when_return_capture_times_out(
         lambda: setattr(body, "text", "Your Flights\nChange departure flight")
     )
     monkeypatch.setattr(
-        traveloka_adapter,
-        "_visible_options_from_page",
+        traveloka_inventory,
+        "visible_options_from_page",
         lambda page_arg, **kwargs: [
             _visible_option(
                 key="tv-1",
@@ -2568,8 +2597,8 @@ def test_round_trip_returns_partial_when_outbound_activation_does_not_transition
         raising=False,
     )
     monkeypatch.setattr(
-        traveloka_adapter,
-        "_visible_options_from_page",
+        traveloka_inventory,
+        "visible_options_from_page",
         lambda page_arg, **kwargs: [
             _visible_option(
                 key="tv-1",
@@ -2611,8 +2640,8 @@ def test_round_trip_keeps_return_capture_timeout_after_outbound_transition(
         lambda: setattr(body, "text", "Your Flights\nChange departure flight")
     )
     monkeypatch.setattr(
-        traveloka_adapter,
-        "_visible_options_from_page",
+        traveloka_inventory,
+        "visible_options_from_page",
         lambda page_arg, **kwargs: [
             _visible_option(
                 key="tv-1",
@@ -2664,8 +2693,8 @@ def test_round_trip_ignores_duplicate_outbound_payload_after_noop_activation(
         raising=False,
     )
     monkeypatch.setattr(
-        traveloka_adapter,
-        "_visible_options_from_page",
+        traveloka_inventory,
+        "visible_options_from_page",
         lambda page_arg, **kwargs: [
             _visible_option(
                 key="tv-1",
@@ -2727,8 +2756,8 @@ def test_round_trip_ignores_preexisting_selected_hash_after_noop_activation(
         ]
 
     monkeypatch.setattr(
-        traveloka_adapter,
-        "_visible_options_from_page",
+        traveloka_inventory,
+        "visible_options_from_page",
         visible_options,
         raising=False,
     )
@@ -2812,8 +2841,8 @@ def test_round_trip_returns_partial_when_return_selection_is_unavailable(
         [],
     ]
     monkeypatch.setattr(
-        traveloka_adapter,
-        "_visible_options_from_page",
+        traveloka_inventory,
+        "visible_options_from_page",
         lambda page_arg, **kwargs: options.pop(0),
         raising=False,
     )
@@ -2861,8 +2890,8 @@ def test_round_trip_returns_partial_when_selected_return_cannot_bind(
         [_visible_option(key="missing-return", locator=return_click)],
     ]
     monkeypatch.setattr(
-        traveloka_adapter,
-        "_visible_options_from_page",
+        traveloka_inventory,
+        "visible_options_from_page",
         lambda page_arg, **kwargs: options.pop(0),
         raising=False,
     )
@@ -2911,8 +2940,8 @@ def test_round_trip_returns_partial_when_final_total_is_unavailable(
     ]
 
     monkeypatch.setattr(
-        traveloka_adapter,
-        "_visible_options_from_page",
+        traveloka_inventory,
+        "visible_options_from_page",
         lambda page_arg, **kwargs: options.pop(0),
         raising=False,
     )

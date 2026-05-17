@@ -14,11 +14,12 @@ from cheapy.providers.base import (
     ProviderExactOneWayRequest,
     ProviderExactRoundTripRequest,
 )
+from cheapy.providers.traveloka import activation as traveloka_activation
 from cheapy.providers.traveloka import capture as traveloka_capture
+from cheapy.providers.traveloka import inventory as traveloka_inventory
 from cheapy.providers.traveloka import urls as traveloka_urls
 from cheapy.providers.traveloka.browser_helpers import (
     close_quietly,
-    dom_operation_timeout_ms,
     locator_texts,
     read_body_text,
     remaining_timeout_ms,
@@ -45,49 +46,8 @@ from cheapy.providers.traveloka.timing import (
 DEFAULT_TIMEOUT_SECONDS = 45.0
 DEFAULT_CURRENCY = "USD"
 DEFAULT_LOCALE = "en-en"
-VISIBLE_OPTION_CLICK_TIMEOUT_MS = 10_000
 SELECTION_TRANSITION_TIMEOUT_MS = 10_000
 FINAL_TOTAL_READ_TIMEOUT_MS = 250
-INVENTORY_CARD_TEST_ID_PREFIX = "flight-inventory-card-container-"
-INVENTORY_CARD_SELECTOR = (
-    f"[data-testid^='{INVENTORY_CARD_TEST_ID_PREFIX}']"
-)
-INVENTORY_CARD_BUTTON_SELECTOR = (
-    "[data-testid='flight-inventory-card-button'], "
-    "[role='button']:has-text('Choose'), "
-    "[role='button']:has-text('Ch\u1ecdn')"
-)
-LEGACY_CHOOSE_BUTTON_SELECTOR = "button:has-text('Choose'), button:has-text('Ch\u1ecdn')"
-TRAVELOKA_OPTION_ACTIVATION_SCRIPT = """
-node => {
-  const base = {bubbles: true, cancelable: true, composed: true, view: window};
-  const pointer = (type, buttons) => {
-    if (typeof PointerEvent === 'function') {
-      return new PointerEvent(type, Object.assign({}, base, {
-        button: 0,
-        buttons,
-        pointerType: 'mouse',
-        isPrimary: true,
-      }));
-    }
-    return new MouseEvent(type, Object.assign({}, base, {button: 0, buttons}));
-  };
-  node.dispatchEvent(pointer('pointerdown', 1));
-  node.dispatchEvent(new MouseEvent(
-    'mousedown',
-    Object.assign({}, base, {button: 0, buttons: 1})
-  ));
-  node.dispatchEvent(pointer('pointerup', 0));
-  node.dispatchEvent(new MouseEvent(
-    'mouseup',
-    Object.assign({}, base, {button: 0, buttons: 0})
-  ));
-  node.dispatchEvent(new MouseEvent(
-    'click',
-    Object.assign({}, base, {button: 0, buttons: 0})
-  ));
-}
-"""
 _FINAL_TOTAL_SELECTED_TIER = "selected_total"
 _FINAL_TOTAL_SUMMARY_TIER = "summary"
 _FINAL_TOTAL_GLOBAL_LABEL_TIER = "global_label"
@@ -113,22 +73,6 @@ _FINAL_TOTAL_SUMMARY_SELECTORS: tuple[str, ...] = (
     "[aria-label*='summary' i][aria-label*='tray' i]",
 )
 _FINAL_TOTAL_GLOBAL_LABEL_SELECTOR = "[data-testid='label_fl_inventory_price']"
-_USD_PRICE_AFTER_MARKER_RE = re.compile(
-    r"(?:USD|US\$|\$)\s*(\d[\d,]*(?:\.\d+)?)",
-    re.IGNORECASE,
-)
-_USD_PRICE_BEFORE_MARKER_RE = re.compile(
-    r"(?<!:)(\d[\d,]*(?:\.\d+)?)\s*(?:USD\b|US\$)",
-    re.IGNORECASE,
-)
-_VND_PRICE_AFTER_MARKER_RE = re.compile(
-    r"(?:\u20ab|VND)\s*(\d[\d.,]*)",
-    re.IGNORECASE,
-)
-_VND_PRICE_BEFORE_MARKER_RE = re.compile(
-    r"(?<!:)(\d[\d.,]*)\s*(?:\u20ab|VND\b)",
-    re.IGNORECASE,
-)
 _EXPLICIT_TOTAL_PRICE_RE = re.compile(
     r"(?<!\baddon\s)(?<!\baddons\s)(?<!\badd-on\s)(?<!\badd-ons\s)"
     r"\btotal\b\s*((?:USD|US\$|\$|VND|\u20ab)\s*\d[\d,.]*(?:\.\d+)?)",
@@ -155,35 +99,8 @@ _SCOPED_TOTAL_PRICE_ONLY_RE = re.compile(
     r"(?:\s*/?\s*(?:pax|passenger|person))?\s*$",
     re.IGNORECASE,
 )
-_VISIBLE_OPTION_KEY_TEXT_RE = re.compile(
-    r"\b(?:data-testid|flight id|id|offer id|offerid|itinerary id|itineraryid)"
-    r"\s*[:=#]\s*([A-Za-z0-9][A-Za-z0-9._:-]{0,127})",
-    re.IGNORECASE,
-)
-_STABLE_OPTION_KEY_ATTRIBUTES = (
-    "data-testid",
-    "data-test-id",
-    "data-flight-id",
-    "data-result-id",
-    "data-offer-id",
-    "data-itinerary-id",
-    "id",
-)
-
 ProviderRequest = ProviderExactOneWayRequest | ProviderExactRoundTripRequest
 BrowserLauncher = Callable[..., object]
-
-
-@dataclass(frozen=True)
-class TravelokaVisibleOption:
-    key: str | None
-    airline_name: str | None
-    departure_time_text: str | None
-    arrival_time_text: str | None
-    route_text: str | None
-    price_amount: Decimal
-    currency: str | None
-    locator: object
 
 
 class TravelokaAdapter:
@@ -348,8 +265,8 @@ class TravelokaAdapter:
                     "outbound_selection_unavailable",
                 )
             with self._phase_recorder.phase("outbound_visible_option_discovery"):
-                outbound_option = _cheapest_visible_option(
-                    _visible_options_from_page(
+                outbound_option = traveloka_inventory.cheapest_visible_option(
+                    traveloka_inventory.visible_options_from_page(
                         page,
                         deadline=deadline,
                     )
@@ -360,7 +277,7 @@ class TravelokaAdapter:
                         "outbound_selection_unavailable",
                     )
             with self._phase_recorder.phase("outbound_binding"):
-                outbound_key = _bind_visible_option_to_payload(
+                outbound_key = traveloka_inventory.bind_visible_option_to_payload(
                     outbound_option,
                     outbound_capture.payload,
                 )
@@ -378,7 +295,7 @@ class TravelokaAdapter:
                     deadline=deadline,
                 )
                 state.reset()
-                _click_visible_option(
+                traveloka_activation.click_visible_option(
                     outbound_option,
                     timeout_ms=remaining_timeout_ms(deadline),
                 )
@@ -427,8 +344,8 @@ class TravelokaAdapter:
                     "return_selection_unavailable",
                 )
             with self._phase_recorder.phase("return_visible_option_discovery"):
-                return_option = _cheapest_visible_option(
-                    _visible_options_from_page(
+                return_option = traveloka_inventory.cheapest_visible_option(
+                    traveloka_inventory.visible_options_from_page(
                         page,
                         deadline=deadline,
                     )
@@ -439,7 +356,7 @@ class TravelokaAdapter:
                         "return_selection_unavailable",
                     )
             with self._phase_recorder.phase("return_binding"):
-                return_key = _bind_visible_option_to_payload(
+                return_key = traveloka_inventory.bind_visible_option_to_payload(
                     return_option,
                     return_capture.payload,
                 )
@@ -469,7 +386,7 @@ class TravelokaAdapter:
                     timeout_ms=250,
                     deadline=deadline,
                 )
-                _click_visible_option(
+                traveloka_activation.click_visible_option(
                     return_option,
                     timeout_ms=return_click_timeout_ms,
                 )
@@ -520,54 +437,6 @@ class TravelokaAdapter:
                 close_quietly(browser)
 
 
-def _cheapest_visible_option(
-    options: Iterable[TravelokaVisibleOption],
-) -> TravelokaVisibleOption | None:
-    return min(
-        options,
-        key=lambda option: (
-            option.price_amount,
-            _visible_option_key_rank(option.key),
-            option.key or "",
-            option.airline_name or "",
-        ),
-        default=None,
-    )
-
-
-def _visible_option_key_rank(key: str | None) -> int:
-    if not key:
-        return 2
-    if key.isdecimal():
-        return 1
-    return 0
-
-
-def _parse_visible_price(text: str) -> tuple[Decimal, str]:
-    normalized = " ".join(text.replace("\xa0", " ").split())
-
-    vnd_amount = _price_amount_near_marker(
-        normalized,
-        _VND_PRICE_AFTER_MARKER_RE,
-        _VND_PRICE_BEFORE_MARKER_RE,
-    )
-    if vnd_amount is not None:
-        amount_text = "".join(
-            character for character in vnd_amount if character.isdigit()
-        )
-        return Decimal(amount_text), "VND"
-
-    usd_amount = _price_amount_near_marker(
-        normalized,
-        _USD_PRICE_AFTER_MARKER_RE,
-        _USD_PRICE_BEFORE_MARKER_RE,
-    )
-    if usd_amount is not None:
-        return Decimal(usd_amount.replace(",", "")), "USD"
-
-    raise ValueError("visible price did not include a supported currency")
-
-
 def _parse_explicit_price(
     text: str,
     pattern: re.Pattern[str],
@@ -577,7 +446,7 @@ def _parse_explicit_price(
     if match is None:
         return None
     try:
-        return _parse_visible_price(match.group(1))
+        return traveloka_inventory.parse_visible_price(match.group(1))
     except Exception:
         return None
 
@@ -590,7 +459,7 @@ def _parse_explicit_prices(
     prices: list[tuple[Decimal, str]] = []
     for match in pattern.finditer(normalized):
         try:
-            prices.append(_parse_visible_price(match.group(1)))
+            prices.append(traveloka_inventory.parse_visible_price(match.group(1)))
         except Exception:
             continue
     return prices
@@ -611,7 +480,7 @@ def _parse_selected_total_price(
     if _SCOPED_TOTAL_PRICE_ONLY_RE.fullmatch(normalized) is None:
         return None
     try:
-        return _parse_visible_price(normalized)
+        return traveloka_inventory.parse_visible_price(normalized)
     except Exception:
         return None
 
@@ -621,254 +490,6 @@ def _parse_summary_total_price(text: str) -> tuple[Decimal, str] | None:
     if round_trip_price is not None:
         return round_trip_price
     return _parse_explicit_price(text, _EXPLICIT_SUMMARY_PRICE_RE)
-
-
-def _bind_visible_option_to_payload(
-    option: TravelokaVisibleOption,
-    payload: dict[str, object],
-) -> str | None:
-    if (
-        option.key is not None
-        and option.key in traveloka_capture.explicit_payload_item_ids(payload)
-    ):
-        return option.key
-    return None
-
-
-def _visible_options_from_page(
-    page: object,
-    *,
-    timeout_ms: int = VISIBLE_OPTION_CLICK_TIMEOUT_MS,
-    deadline: float | None = None,
-) -> list[TravelokaVisibleOption]:
-    timeout_ms = max(1, timeout_ms)
-    inventory_options = _visible_options_from_inventory_cards(
-        page,
-        timeout_ms=timeout_ms,
-        deadline=deadline,
-    )
-    if inventory_options:
-        return inventory_options
-
-    return _visible_options_from_legacy_buttons(
-        page,
-        timeout_ms=timeout_ms,
-        deadline=deadline,
-    )
-
-
-def _visible_options_from_inventory_cards(
-    page: object,
-    *,
-    timeout_ms: int,
-    deadline: float | None,
-) -> list[TravelokaVisibleOption]:
-    try:
-        cards = page.locator(INVENTORY_CARD_SELECTOR)  # type: ignore[attr-defined]
-        count = cards.count()
-    except Exception:
-        return []
-
-    options: list[TravelokaVisibleOption] = []
-    for index in range(count):
-        try:
-            card_locator = cards.nth(index)
-        except Exception:
-            continue
-
-        key = _stable_key_from_locator(
-            card_locator,
-            timeout_ms=timeout_ms,
-            deadline=deadline,
-        )
-        try:
-            text_timeout_ms = dom_operation_timeout_ms(
-                timeout_ms=timeout_ms,
-                deadline=deadline,
-            )
-            if text_timeout_ms is None:
-                break
-            text = card_locator.inner_text(timeout=text_timeout_ms)
-        except Exception:
-            continue
-
-        button_locator = _selection_action_from_card(card_locator)
-        if button_locator is None:
-            continue
-
-        parsed = _visible_option_from_text(text, button_locator, key=key)
-        if parsed is not None:
-            options.append(parsed)
-    return options
-
-
-def _visible_options_from_legacy_buttons(
-    page: object,
-    *,
-    timeout_ms: int,
-    deadline: float | None,
-) -> list[TravelokaVisibleOption]:
-    try:
-        cards = page.locator(LEGACY_CHOOSE_BUTTON_SELECTOR)  # type: ignore[attr-defined]
-        count = cards.count()
-    except Exception:
-        return []
-
-    options: list[TravelokaVisibleOption] = []
-    for index in range(count):
-        try:
-            locator = cards.nth(index)
-        except Exception:
-            continue
-        key = _stable_key_from_locator(
-            locator,
-            timeout_ms=timeout_ms,
-            deadline=deadline,
-        )
-        try:
-            ancestor_locator = locator.locator("xpath=ancestor::*[self::div][1]")
-            if key is None:
-                key = _stable_key_from_locator(
-                    ancestor_locator,
-                    timeout_ms=timeout_ms,
-                    deadline=deadline,
-                )
-            text_timeout_ms = dom_operation_timeout_ms(
-                timeout_ms=timeout_ms,
-                deadline=deadline,
-            )
-            if text_timeout_ms is None:
-                break
-            text = ancestor_locator.inner_text(timeout=text_timeout_ms)
-        except Exception:
-            try:
-                text_timeout_ms = dom_operation_timeout_ms(
-                    timeout_ms=timeout_ms,
-                    deadline=deadline,
-                )
-                if text_timeout_ms is None:
-                    break
-                text = locator.inner_text(timeout=text_timeout_ms)
-            except Exception:
-                continue
-        parsed = _visible_option_from_text(text, locator, key=key)
-        if parsed is not None:
-            options.append(parsed)
-    return options
-
-
-def _selection_action_from_card(card_locator: object) -> object | None:
-    try:
-        actions = card_locator.locator(INVENTORY_CARD_BUTTON_SELECTOR)
-        if actions.count() <= 0:
-            return None
-        return _first_locator(actions)
-    except Exception:
-        return None
-
-
-def _first_locator(locator_collection: object) -> object:
-    first = getattr(locator_collection, "first", None)
-    if first is not None:
-        return first() if callable(first) else first
-    return locator_collection.nth(0)  # type: ignore[attr-defined]
-
-
-def _visible_option_from_text(
-    text: str,
-    locator: object,
-    *,
-    key: str | None = None,
-) -> TravelokaVisibleOption | None:
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    price_line = next(
-        (
-            line
-            for line in reversed(lines)
-            if any(
-                marker in line.upper()
-                for marker in ("US$", "USD", "VND", "\u20ab", "$")
-            )
-        ),
-        None,
-    )
-    if price_line is None:
-        return None
-    try:
-        amount, currency = _parse_visible_price(price_line)
-    except Exception:
-        return None
-    return TravelokaVisibleOption(
-        key=key or _stable_key_from_text(text),
-        airline_name=lines[0] if lines else None,
-        departure_time_text=None,
-        arrival_time_text=None,
-        route_text=None,
-        price_amount=amount,
-        currency=currency,
-        locator=locator,
-    )
-
-
-def _stable_key_from_locator(
-    locator: object,
-    *,
-    timeout_ms: int,
-    deadline: float | None = None,
-) -> str | None:
-    for attribute_name in _STABLE_OPTION_KEY_ATTRIBUTES:
-        attribute_timeout_ms = dom_operation_timeout_ms(
-            timeout_ms=timeout_ms,
-            deadline=deadline,
-        )
-        if attribute_timeout_ms is None:
-            return None
-        value = _locator_attribute(
-            locator,
-            attribute_name,
-            timeout_ms=attribute_timeout_ms,
-        )
-        key = _stable_key_from_attribute(value)
-        if key is not None:
-            return key
-    return None
-
-
-def _stable_key_from_attribute(value: str | None) -> str | None:
-    if value is None:
-        return None
-    if value == "flight-inventory-card-button":
-        return None
-    if value.startswith(INVENTORY_CARD_TEST_ID_PREFIX):
-        key = value.removeprefix(INVENTORY_CARD_TEST_ID_PREFIX).strip()
-        return key or None
-    return value
-
-
-def _locator_attribute(
-    locator: object,
-    attribute_name: str,
-    *,
-    timeout_ms: int,
-) -> str | None:
-    get_attribute = getattr(locator, "get_attribute", None)
-    if get_attribute is None:
-        return None
-    try:
-        value = get_attribute(attribute_name, timeout=timeout_ms)
-    except Exception:
-        return None
-    if not isinstance(value, str):
-        return None
-    value = value.strip()
-    return value or None
-
-
-def _stable_key_from_text(text: str) -> str | None:
-    match = _VISIBLE_OPTION_KEY_TEXT_RE.search(text)
-    if match is None:
-        return None
-    return match.group(1)
 
 
 @dataclass
@@ -1026,48 +647,10 @@ def _final_total_texts(
     return tuple(texts)
 
 
-def _click_visible_option(
-    option: TravelokaVisibleOption,
-    *,
-    timeout_ms: int = VISIBLE_OPTION_CLICK_TIMEOUT_MS,
-) -> None:
-    click_timeout_ms = max(1, min(timeout_ms, VISIBLE_OPTION_CLICK_TIMEOUT_MS))
-    scroll = getattr(option.locator, "scroll_into_view_if_needed", None)
-    if scroll is not None:
-        try:
-            scroll(timeout=click_timeout_ms)
-        except Exception:
-            pass
-
-    evaluate = getattr(option.locator, "evaluate", None)
-    if evaluate is not None:
-        try:
-            evaluate(TRAVELOKA_OPTION_ACTIVATION_SCRIPT, timeout=click_timeout_ms)
-        except TypeError:
-            evaluate(TRAVELOKA_OPTION_ACTIVATION_SCRIPT)
-        return
-
-    option.locator.click(timeout=click_timeout_ms)  # type: ignore[attr-defined]
-
-
 def _default_launch_browser(**kwargs: object) -> object:
     from cloakbrowser import launch
 
     return launch(**kwargs)
-
-
-def _price_amount_near_marker(
-    text: str,
-    after_marker_pattern: re.Pattern[str],
-    before_marker_pattern: re.Pattern[str],
-) -> str | None:
-    after_marker_match = after_marker_pattern.search(text)
-    if after_marker_match is not None:
-        return after_marker_match.group(1)
-    before_marker_match = before_marker_pattern.search(text)
-    if before_marker_match is not None:
-        return before_marker_match.group(1)
-    return None
 
 
 def _wait_for_return_selection_transition(
