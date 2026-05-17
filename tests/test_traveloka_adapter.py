@@ -19,6 +19,8 @@ from cheapy.providers.traveloka import capture as traveloka_capture
 from cheapy.providers.traveloka import errors as traveloka_errors
 from cheapy.providers.traveloka import inventory as traveloka_inventory
 from cheapy.providers.traveloka import results as traveloka_results
+from cheapy.providers.traveloka import selection as traveloka_selection
+from cheapy.providers.traveloka import totals as traveloka_totals
 from cheapy.providers.traveloka import urls as traveloka_urls
 from cheapy.providers.traveloka.adapter import TravelokaAdapter, TravelokaProviderError
 from cheapy.providers.traveloka.results import (
@@ -473,6 +475,32 @@ def test_browser_helpers_keep_deadline_and_dom_reads_together() -> None:
     ) <= 250
 
 
+def test_traveloka_totals_module_reads_final_total() -> None:
+    page = LocatorFakePage(
+        [],
+        selector_locators={
+            "[data-testid*='checkout'][data-testid*='total']": FakeLocatorCollection(
+                [TextFakeLocator(text="Checkout total USD 321.09")]
+            )
+        },
+    )
+
+    assert traveloka_totals.read_final_total(page) == (Decimal("321.09"), "USD")
+
+
+def test_traveloka_selection_module_detects_return_transition() -> None:
+    page = LocatorFakePage(
+        [],
+        selector_locators={
+            "[data-testid='flight-summary-container-1_selected']": FakeLocatorCollection(
+                [TextFakeLocator(text="Return\nChange return flight")]
+            )
+        },
+    )
+
+    assert traveloka_selection.return_selection_transitioned(page) is True
+
+
 def test_traveloka_inventory_module_owns_visible_option_contract() -> None:
     option = traveloka_inventory.TravelokaVisibleOption(
         key="out-1",
@@ -907,7 +935,7 @@ def test_read_final_total_prefers_explicit_selected_total_and_uses_bounded_timeo
         },
     )
 
-    result = traveloka_adapter._read_final_total(page, timeout_ms=456)
+    result = traveloka_totals.read_final_total(page, timeout_ms=456)
 
     assert result == (Decimal("321.09"), "USD")
     assert selected_total.inner_text_kwargs == [{"timeout": 456}]
@@ -929,7 +957,7 @@ def test_read_final_total_uses_fresh_remaining_deadline_for_each_read(
     now_values = iter([9.0, 9.0, 9.2, 9.2, 9.2, 9.2])
     monkeypatch.setattr(browser_helpers, "monotonic", lambda: next(now_values))
 
-    result = traveloka_adapter._read_final_total(page, deadline=10.0)
+    result = traveloka_totals.read_final_total(page, deadline=10.0)
 
     assert result == (Decimal("321.09"), "USD")
     assert selected_total.inner_text_kwargs == [{"timeout": 1000}]
@@ -945,7 +973,7 @@ def test_read_final_total_reads_explicit_final_total_after_addon() -> None:
         },
     )
 
-    assert traveloka_adapter._read_final_total(page, timeout_ms=456) == (
+    assert traveloka_totals.read_final_total(page, timeout_ms=456) == (
         Decimal("321.09"),
         "USD",
     )
@@ -960,7 +988,7 @@ def test_read_final_total_reads_scoped_price_only_total() -> None:
         },
     )
 
-    assert traveloka_adapter._read_final_total(page, timeout_ms=456) == (
+    assert traveloka_totals.read_final_total(page, timeout_ms=456) == (
         Decimal("321.09"),
         "USD",
     )
@@ -975,7 +1003,7 @@ def test_read_final_total_reads_usd_symbol_final_total() -> None:
         },
     )
 
-    assert traveloka_adapter._read_final_total(page, timeout_ms=456) == (
+    assert traveloka_totals.read_final_total(page, timeout_ms=456) == (
         Decimal("321.09"),
         "USD",
     )
@@ -990,7 +1018,7 @@ def test_read_final_total_prefers_final_total_over_addon_total() -> None:
         },
     )
 
-    assert traveloka_adapter._read_final_total(page, timeout_ms=456) == (
+    assert traveloka_totals.read_final_total(page, timeout_ms=456) == (
         Decimal("321.09"),
         "USD",
     )
@@ -1007,7 +1035,7 @@ def test_read_final_total_ignores_selected_addon_total_before_checkout() -> None
         },
     )
 
-    assert traveloka_adapter._read_final_total(page, timeout_ms=456) == (
+    assert traveloka_totals.read_final_total(page, timeout_ms=456) == (
         Decimal("321.09"),
         "USD",
     )
@@ -1024,7 +1052,7 @@ def test_read_final_total_ignores_selected_price_only_before_checkout() -> None:
         },
     )
 
-    assert traveloka_adapter._read_final_total(page, timeout_ms=456) == (
+    assert traveloka_totals.read_final_total(page, timeout_ms=456) == (
         Decimal("321.09"),
         "USD",
     )
@@ -1045,7 +1073,7 @@ def test_read_final_total_prefers_checkout_total_over_summary_and_label() -> Non
         },
     )
 
-    assert traveloka_adapter._read_final_total(page, timeout_ms=456) == (
+    assert traveloka_totals.read_final_total(page, timeout_ms=456) == (
         Decimal("321.09"),
         "USD",
     )
@@ -1057,7 +1085,7 @@ def test_read_final_total_prefers_checkout_total_over_summary_and_label() -> Non
 def test_read_final_total_cached_summary_selector_cannot_outrank_selected_total() -> None:
     selected_total = TextFakeLocator(text="Selected final total USD 321.09")
     summary_total = TextFakeLocator(text="Round-trip price USD 239.68/pax")
-    cache = traveloka_adapter._FinalTotalSelectorCache(
+    cache = traveloka_totals._FinalTotalSelectorCache(
         tier="summary",
         selector="#flight-search-result",
     )
@@ -1069,7 +1097,7 @@ def test_read_final_total_cached_summary_selector_cannot_outrank_selected_total(
         },
     )
 
-    result = traveloka_adapter._read_final_total(
+    result = traveloka_totals.read_final_total(
         page,
         timeout_ms=456,
         selector_cache=cache,
@@ -1085,7 +1113,7 @@ def test_read_final_total_cached_summary_selector_cannot_outrank_selected_total(
 def test_read_final_total_cached_label_selector_cannot_outrank_summary_total() -> None:
     summary_total = TextFakeLocator(text="Round-trip price USD 239.68/pax")
     label_total = TextFakeLocator(text="Total USD 111.00/pax")
-    cache = traveloka_adapter._FinalTotalSelectorCache(
+    cache = traveloka_totals._FinalTotalSelectorCache(
         tier="global_label",
         selector="[data-testid='label_fl_inventory_price']",
     )
@@ -1099,7 +1127,7 @@ def test_read_final_total_cached_label_selector_cannot_outrank_summary_total() -
         },
     )
 
-    result = traveloka_adapter._read_final_total(
+    result = traveloka_totals.read_final_total(
         page,
         timeout_ms=456,
         selector_cache=cache,
@@ -1115,7 +1143,7 @@ def test_read_final_total_cached_label_selector_cannot_outrank_summary_total() -
 def test_read_final_total_cached_selector_reorders_only_inside_same_tier() -> None:
     final_total = TextFakeLocator(text="Final total USD 321.09")
     selected_total = TextFakeLocator(text="Selected total unavailable")
-    cache = traveloka_adapter._FinalTotalSelectorCache(
+    cache = traveloka_totals._FinalTotalSelectorCache(
         tier="selected_total",
         selector="[data-testid*='final'][data-testid*='total']",
     )
@@ -1127,7 +1155,7 @@ def test_read_final_total_cached_selector_reorders_only_inside_same_tier() -> No
         },
     )
 
-    result = traveloka_adapter._read_final_total(
+    result = traveloka_totals.read_final_total(
         page,
         timeout_ms=456,
         selector_cache=cache,
@@ -1147,7 +1175,7 @@ def test_read_final_total_prefers_summary_round_trip_price_over_addon_total() ->
         selector_locators={"[data-testid='bundle-summary-tray']": selected_summary},
     )
 
-    assert traveloka_adapter._read_final_total(page, timeout_ms=456) == (
+    assert traveloka_totals.read_final_total(page, timeout_ms=456) == (
         Decimal("239.68"),
         "USD",
     )
@@ -1165,7 +1193,7 @@ def test_read_final_total_prefers_later_summary_round_trip_price_over_addon_tota
         },
     )
 
-    assert traveloka_adapter._read_final_total(page, timeout_ms=456) == (
+    assert traveloka_totals.read_final_total(page, timeout_ms=456) == (
         Decimal("239.68"),
         "USD",
     )
@@ -1182,7 +1210,7 @@ def test_read_final_total_prefers_round_trip_price_across_summary_selectors() ->
         },
     )
 
-    assert traveloka_adapter._read_final_total(page, timeout_ms=456) == (
+    assert traveloka_totals.read_final_total(page, timeout_ms=456) == (
         Decimal("239.68"),
         "USD",
     )
@@ -1271,7 +1299,7 @@ def test_read_final_total_reads_live_label_total_and_ignores_addon() -> None:
         },
     )
 
-    result = traveloka_adapter._read_final_total(page, timeout_ms=456)
+    result = traveloka_totals.read_final_total(page, timeout_ms=456)
 
     assert result == (Decimal("239.68"), "USD")
     assert price_label.inner_text_kwargs == [{"timeout": 456}]
@@ -1298,7 +1326,7 @@ def test_read_final_total_reads_live_label_total_after_addon_total(
         },
     )
 
-    assert traveloka_adapter._read_final_total(page, timeout_ms=456) == (
+    assert traveloka_totals.read_final_total(page, timeout_ms=456) == (
         Decimal("239.68"),
         "USD",
     )
@@ -1315,7 +1343,7 @@ def test_read_final_total_reads_live_label_dotted_vnd_total() -> None:
         },
     )
 
-    assert traveloka_adapter._read_final_total(page, timeout_ms=456) == (
+    assert traveloka_totals.read_final_total(page, timeout_ms=456) == (
         Decimal("1234567"),
         "VND",
     )
@@ -1334,7 +1362,7 @@ def test_read_final_total_reads_selected_summary_round_trip_price() -> None:
         selector_locators={"[data-testid='bundle-summary-tray']": selected_summary},
     )
 
-    assert traveloka_adapter._read_final_total(page, timeout_ms=456) == (
+    assert traveloka_totals.read_final_total(page, timeout_ms=456) == (
         Decimal("239.68"),
         "USD",
     )
@@ -1347,7 +1375,7 @@ def test_read_final_total_reads_selected_summary_usd_symbol_round_trip_price() -
         selector_locators={"[data-testid='bundle-summary-tray']": selected_summary},
     )
 
-    assert traveloka_adapter._read_final_total(page, timeout_ms=456) == (
+    assert traveloka_totals.read_final_total(page, timeout_ms=456) == (
         Decimal("239.68"),
         "USD",
     )
@@ -1370,7 +1398,7 @@ def test_read_final_total_ignores_summary_addon_total_without_round_trip_price(
         selector_locators={"[data-testid='bundle-summary-tray']": selected_summary},
     )
 
-    assert traveloka_adapter._read_final_total(page, timeout_ms=456) is None
+    assert traveloka_totals.read_final_total(page, timeout_ms=456) is None
 
 
 def test_read_final_total_prefers_selected_summary_over_global_label_total() -> None:
@@ -1386,7 +1414,7 @@ def test_read_final_total_prefers_selected_summary_over_global_label_total() -> 
         },
     )
 
-    assert traveloka_adapter._read_final_total(page, timeout_ms=456) == (
+    assert traveloka_totals.read_final_total(page, timeout_ms=456) == (
         Decimal("239.68"),
         "USD",
     )
@@ -1404,7 +1432,7 @@ def test_read_final_total_ignores_conflicting_global_label_totals() -> None:
         },
     )
 
-    assert traveloka_adapter._read_final_total(page, timeout_ms=456) is None
+    assert traveloka_totals.read_final_total(page, timeout_ms=456) is None
 
 
 def test_read_final_total_ignores_duplicate_global_label_totals() -> None:
@@ -1419,7 +1447,7 @@ def test_read_final_total_ignores_duplicate_global_label_totals() -> None:
         },
     )
 
-    assert traveloka_adapter._read_final_total(page, timeout_ms=456) is None
+    assert traveloka_totals.read_final_total(page, timeout_ms=456) is None
 
 
 def test_read_final_total_ignores_duplicate_label_totals_in_same_text() -> None:
@@ -1435,7 +1463,7 @@ def test_read_final_total_ignores_duplicate_label_totals_in_same_text() -> None:
         },
     )
 
-    assert traveloka_adapter._read_final_total(page, timeout_ms=456) is None
+    assert traveloka_totals.read_final_total(page, timeout_ms=456) is None
 
 
 def test_read_final_total_ignores_unselected_round_trip_card_price() -> None:
@@ -1452,7 +1480,7 @@ def test_read_final_total_ignores_unselected_round_trip_card_price() -> None:
         },
     )
 
-    assert traveloka_adapter._read_final_total(page, timeout_ms=456) == (
+    assert traveloka_totals.read_final_total(page, timeout_ms=456) == (
         Decimal("239.68"),
         "USD",
     )
@@ -1481,7 +1509,7 @@ def test_read_final_total_ignores_ambiguous_generic_total() -> None:
         selector_locators={"text=/total/i": TextFakeLocator(text="Trip total USD 999.00")},
     )
 
-    assert traveloka_adapter._read_final_total(page, timeout_ms=456) is None
+    assert traveloka_totals.read_final_total(page, timeout_ms=456) is None
 
 
 def test_wait_for_return_selection_transition_recognizes_selected_summary() -> None:
@@ -1495,7 +1523,7 @@ def test_wait_for_return_selection_transition_recognizes_selected_summary() -> N
     )
 
     assert (
-        traveloka_adapter._wait_for_return_selection_transition(
+        traveloka_selection.wait_for_return_selection_transition(
             page,
             deadline=traveloka_adapter.monotonic() + 1,
             poll_interval_seconds=0.001,
@@ -1509,14 +1537,14 @@ def test_wait_for_return_selection_transition_times_out_without_marker(
 ) -> None:
     page = LocatorFakePage([], selector_locators={"body": TextFakeLocator(text="Choose")})
     monkeypatch.setattr(
-        traveloka_adapter,
+        traveloka_selection,
         "SELECTION_TRANSITION_TIMEOUT_MS",
         1,
         raising=False,
     )
 
     assert (
-        traveloka_adapter._wait_for_return_selection_transition(
+        traveloka_selection.wait_for_return_selection_transition(
             page,
             deadline=traveloka_adapter.monotonic() + 1,
             poll_interval_seconds=0.001,
@@ -1539,14 +1567,14 @@ def test_wait_for_return_selection_transition_ignores_preexisting_marker(
         },
     )
     monkeypatch.setattr(
-        traveloka_adapter,
+        traveloka_selection,
         "SELECTION_TRANSITION_TIMEOUT_MS",
         1,
         raising=False,
     )
 
     assert (
-        traveloka_adapter._wait_for_return_selection_transition(
+        traveloka_selection.wait_for_return_selection_transition(
             page,
             deadline=traveloka_adapter.monotonic() + 1,
             poll_interval_seconds=0.001,
@@ -1671,18 +1699,18 @@ def test_round_trip_default_waits_conservatively_for_capture_completion(
         lambda page_arg, **kwargs: options.pop(0),
     )
     monkeypatch.setattr(
-        traveloka_adapter,
-        "_wait_for_outbound_selection_transition",
+        traveloka_selection,
+        "wait_for_outbound_selection_transition",
         lambda *args, **kwargs: True,
     )
     monkeypatch.setattr(
-        traveloka_adapter,
-        "_wait_for_return_selection_transition",
+        traveloka_selection,
+        "wait_for_return_selection_transition",
         lambda *args, **kwargs: True,
     )
     monkeypatch.setattr(
-        traveloka_adapter,
-        "_read_final_total",
+        traveloka_totals,
+        "read_final_total",
         lambda page_arg, **kwargs: (Decimal("321.09"), "USD"),
     )
     adapter = TravelokaAdapter(
@@ -1752,18 +1780,18 @@ def test_round_trip_fast_env_is_ignored_and_uses_conservative_capture(
         lambda page_arg, **kwargs: options.pop(0),
     )
     monkeypatch.setattr(
-        traveloka_adapter,
-        "_wait_for_outbound_selection_transition",
+        traveloka_selection,
+        "wait_for_outbound_selection_transition",
         lambda *args, **kwargs: True,
     )
     monkeypatch.setattr(
-        traveloka_adapter,
-        "_wait_for_return_selection_transition",
+        traveloka_selection,
+        "wait_for_return_selection_transition",
         lambda *args, **kwargs: True,
     )
     monkeypatch.setattr(
-        traveloka_adapter,
-        "_read_final_total",
+        traveloka_totals,
+        "read_final_total",
         lambda page_arg, **kwargs: (Decimal("321.09"), "USD"),
     )
     adapter = TravelokaAdapter(
@@ -1855,14 +1883,14 @@ def test_round_trip_selects_cheapest_visible_outbound_and_return(
         raising=False,
     )
     monkeypatch.setattr(
-        traveloka_adapter,
-        "_read_final_total",
+        traveloka_totals,
+        "read_final_total",
         lambda page_arg, **kwargs: (Decimal("321.09"), "USD"),
         raising=False,
     )
     monkeypatch.setattr(
-        traveloka_adapter,
-        "_wait_for_return_selection_transition",
+        traveloka_selection,
+        "wait_for_return_selection_transition",
         lambda page_arg, deadline, **kwargs: True,
         raising=False,
     )
@@ -1941,13 +1969,13 @@ def test_round_trip_uses_bounded_timeout_for_final_total_reader(
         wait_for_capture,
     )
     monkeypatch.setattr(
-        traveloka_adapter,
-        "_wait_for_outbound_selection_transition",
+        traveloka_selection,
+        "wait_for_outbound_selection_transition",
         lambda *args, **kwargs: True,
     )
     monkeypatch.setattr(
-        traveloka_adapter,
-        "_wait_for_return_selection_transition",
+        traveloka_selection,
+        "wait_for_return_selection_transition",
         lambda *args, **kwargs: True,
     )
     monkeypatch.setattr(
@@ -1956,7 +1984,7 @@ def test_round_trip_uses_bounded_timeout_for_final_total_reader(
         lambda page_arg, **kwargs: options.pop(0),
         raising=False,
     )
-    monkeypatch.setattr(traveloka_adapter, "_read_final_total", read_final_total)
+    monkeypatch.setattr(traveloka_totals, "read_final_total", read_final_total)
     adapter = TravelokaAdapter(
         launch_browser=lambda **kwargs: FakeBrowser(FakeContext(page)),
         timeout_seconds=3,
@@ -2022,13 +2050,13 @@ def test_round_trip_polls_until_final_total_is_available(
         wait_for_capture,
     )
     monkeypatch.setattr(
-        traveloka_adapter,
-        "_wait_for_outbound_selection_transition",
+        traveloka_selection,
+        "wait_for_outbound_selection_transition",
         lambda *args, **kwargs: True,
     )
     monkeypatch.setattr(
-        traveloka_adapter,
-        "_wait_for_return_selection_transition",
+        traveloka_selection,
+        "wait_for_return_selection_transition",
         lambda *args, **kwargs: True,
     )
     monkeypatch.setattr(
@@ -2037,7 +2065,7 @@ def test_round_trip_polls_until_final_total_is_available(
         lambda page_arg, **kwargs: options.pop(0),
         raising=False,
     )
-    monkeypatch.setattr(traveloka_adapter, "_read_final_total", read_final_total)
+    monkeypatch.setattr(traveloka_totals, "read_final_total", read_final_total)
     adapter = TravelokaAdapter(
         launch_browser=lambda **kwargs: FakeBrowser(FakeContext(page)),
         timeout_seconds=3,
@@ -2105,7 +2133,7 @@ def test_round_trip_rejects_preexisting_return_marker_without_transition(
         poll_interval_seconds=0.001,
     )
     monkeypatch.setattr(
-        traveloka_adapter,
+        traveloka_selection,
         "SELECTION_TRANSITION_TIMEOUT_MS",
         1,
         raising=False,
@@ -2450,8 +2478,8 @@ def test_round_trip_returns_return_capture_partial_when_return_capture_is_timed_
         lambda page_arg, **kwargs: options.pop(0),
     )
     monkeypatch.setattr(
-        traveloka_adapter,
-        "_read_final_total",
+        traveloka_totals,
+        "read_final_total",
         lambda page_arg, **kwargs: (Decimal("321.09"), "USD"),
     )
     adapter = TravelokaAdapter(
@@ -2591,7 +2619,7 @@ def test_round_trip_returns_partial_when_outbound_activation_does_not_transition
     )
     outbound_click = EmittingFakeLocator()
     monkeypatch.setattr(
-        traveloka_adapter,
+        traveloka_selection,
         "SELECTION_TRANSITION_TIMEOUT_MS",
         1,
         raising=False,
@@ -2687,7 +2715,7 @@ def test_round_trip_ignores_duplicate_outbound_payload_after_noop_activation(
         )
     )
     monkeypatch.setattr(
-        traveloka_adapter,
+        traveloka_selection,
         "SELECTION_TRANSITION_TIMEOUT_MS",
         1,
         raising=False,
@@ -2739,7 +2767,7 @@ def test_round_trip_ignores_preexisting_selected_hash_after_noop_activation(
         )
     )
     monkeypatch.setattr(
-        traveloka_adapter,
+        traveloka_selection,
         "SELECTION_TRANSITION_TIMEOUT_MS",
         1,
         raising=False,
@@ -2783,7 +2811,7 @@ def test_outbound_transition_requires_exact_selected_url_fragment() -> None:
     page.url = "https://www.traveloka.com/en-en/flight/fulltwosearch#SCtv-10"
 
     assert (
-        traveloka_adapter._outbound_selection_transitioned(
+        traveloka_selection._outbound_selection_transitioned(
             page,
             "tv-1",
             before_url="https://www.traveloka.com/en-en/flight/fulltwosearch",
@@ -2801,7 +2829,7 @@ def test_outbound_transition_accepts_exact_selected_fragment_from_different_base
     page.url = "https://www.traveloka.com/en-en/flight/fulltwosearch#SCtv-1"
 
     assert (
-        traveloka_adapter._outbound_selection_transitioned(
+        traveloka_selection._outbound_selection_transitioned(
             page,
             "tv-1",
             before_url="https://www.traveloka.com/en-en/flight/fulltwosearch#SCtv-10",
@@ -2946,14 +2974,14 @@ def test_round_trip_returns_partial_when_final_total_is_unavailable(
         raising=False,
     )
     monkeypatch.setattr(
-        traveloka_adapter,
-        "_read_final_total",
+        traveloka_totals,
+        "read_final_total",
         lambda page_arg, **kwargs: None,
         raising=False,
     )
     monkeypatch.setattr(
-        traveloka_adapter,
-        "_wait_for_return_selection_transition",
+        traveloka_selection,
+        "wait_for_return_selection_transition",
         lambda page_arg, deadline, **kwargs: True,
         raising=False,
     )
