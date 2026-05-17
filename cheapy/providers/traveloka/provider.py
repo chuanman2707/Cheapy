@@ -17,15 +17,15 @@ from cheapy.providers.base import (
     ProviderExactRoundTripRequest,
     ProviderResult,
 )
-from cheapy.providers.traveloka.adapter import (
-    TravelokaAdapter,
-    TravelokaCaptureResult,
-    TravelokaProviderError,
-    TravelokaSelectedRoundTripResult,
-)
+from cheapy.providers.traveloka.adapter import TravelokaAdapter
+from cheapy.providers.traveloka.errors import TravelokaProviderError
 from cheapy.providers.traveloka.normalizer import (
     normalize_payload,
     normalize_selected_round_trip,
+)
+from cheapy.providers.traveloka.results import (
+    TravelokaCaptureResult,
+    TravelokaSelectedRoundTripResult,
 )
 
 

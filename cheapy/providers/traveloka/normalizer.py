@@ -16,7 +16,7 @@ from cheapy.models import (
     Severity,
 )
 from cheapy.providers.base import ProviderExactOneWayRequest, ProviderExactRoundTripRequest
-from cheapy.providers.traveloka.adapter import TravelokaSelectedRoundTripResult
+from cheapy.providers.traveloka.results import TravelokaSelectedRoundTripResult
 
 
 PROVIDER_NAME = "traveloka"
