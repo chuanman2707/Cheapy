@@ -14,8 +14,10 @@ from cheapy.providers.base import (
 )
 from cheapy.providers.traveloka import adapter as traveloka_adapter
 from cheapy.providers.traveloka import browser_helpers
+from cheapy.providers.traveloka import capture as traveloka_capture
 from cheapy.providers.traveloka import errors as traveloka_errors
 from cheapy.providers.traveloka import results as traveloka_results
+from cheapy.providers.traveloka import urls as traveloka_urls
 from cheapy.providers.traveloka.adapter import TravelokaAdapter, TravelokaProviderError
 from cheapy.providers.traveloka.results import (
     TravelokaCaptureResult,
@@ -310,7 +312,7 @@ def _visible_option(
 
 
 def test_build_full_search_url_maps_one_way_request_to_traveloka_route() -> None:
-    url = traveloka_adapter.build_full_search_url(
+    url = traveloka_urls.build_full_search_url(
         _one_way_request(),
         base_url="https://www.traveloka.com/en-en/flight/fulltwosearch",
     )
@@ -328,7 +330,7 @@ def test_build_full_search_url_maps_one_way_request_to_traveloka_route() -> None
 
 
 def test_build_full_search_url_maps_round_trip_request_to_traveloka_route() -> None:
-    url = traveloka_adapter.build_full_search_url(
+    url = traveloka_urls.build_full_search_url(
         _round_trip_request(),
         base_url="https://www.traveloka.com/en-en/flight/fulltwosearch",
     )
@@ -338,6 +340,18 @@ def test_build_full_search_url_maps_round_trip_request_to_traveloka_route() -> N
     assert params["dt"] == ["10-7-2026.17-7-2026"]
     assert params["ps"] == ["1.0.0"]
     assert params["sc"] == ["ECONOMY"]
+
+
+def test_traveloka_urls_module_builds_full_search_url() -> None:
+    url = traveloka_urls.build_full_search_url(
+        _round_trip_request(),
+        base_url="https://www.traveloka.com/en-en/flight/fulltwosearch",
+    )
+
+    assert not hasattr(traveloka_adapter, "build_full_search_url")
+    params = parse_qs(urlparse(url).query)
+    assert params["ap"] == ["SGN.BKK"]
+    assert params["dt"] == ["10-7-2026.17-7-2026"]
 
 
 def test_capture_result_carries_completion_and_timeout_state() -> None:
@@ -1588,8 +1602,8 @@ def test_round_trip_default_waits_conservatively_for_capture_completion(
         return captures.pop(0)
 
     monkeypatch.setattr(
-        traveloka_adapter,
-        "_wait_for_capture",
+        traveloka_capture,
+        "wait_for_capture",
         wait_for_capture,
     )
     monkeypatch.setattr(
@@ -1669,8 +1683,8 @@ def test_round_trip_fast_env_is_ignored_and_uses_conservative_capture(
 
     monkeypatch.setenv("TRAVELOKA_FAST_STABLE_OPTIONS", "1")
     monkeypatch.setattr(
-        traveloka_adapter,
-        "_wait_for_capture",
+        traveloka_capture,
+        "wait_for_capture",
         wait_for_capture,
     )
     monkeypatch.setattr(
@@ -1863,8 +1877,8 @@ def test_round_trip_uses_bounded_timeout_for_final_total_reader(
         return Decimal("321.09"), "USD"
 
     monkeypatch.setattr(
-        traveloka_adapter,
-        "_wait_for_capture",
+        traveloka_capture,
+        "wait_for_capture",
         wait_for_capture,
     )
     monkeypatch.setattr(
@@ -1944,8 +1958,8 @@ def test_round_trip_polls_until_final_total_is_available(
         return final_total_results.pop(0)
 
     monkeypatch.setattr(
-        traveloka_adapter,
-        "_wait_for_capture",
+        traveloka_capture,
+        "wait_for_capture",
         wait_for_capture,
     )
     monkeypatch.setattr(
@@ -2281,8 +2295,8 @@ def test_round_trip_returns_timeout_partial_when_outbound_capture_is_timed_out(
         )
 
     monkeypatch.setattr(
-        traveloka_adapter,
-        "_wait_for_capture",
+        traveloka_capture,
+        "wait_for_capture",
         wait_for_capture,
     )
     monkeypatch.setattr(
@@ -2352,8 +2366,8 @@ def test_round_trip_returns_return_capture_partial_when_return_capture_is_timed_
         return captures.pop(0)
 
     monkeypatch.setattr(
-        traveloka_adapter,
-        "_wait_for_capture",
+        traveloka_capture,
+        "wait_for_capture",
         wait_for_capture,
     )
     monkeypatch.setattr(
@@ -2962,7 +2976,7 @@ def test_capture_state_preserves_partial_failure_type_when_completion_upgrades_p
             "searchResults": [],
         }
     }
-    state = traveloka_adapter._CaptureState()
+    state = traveloka_capture.CaptureState()
     state.best_result = TravelokaCaptureResult(
         payload=non_empty_payload,
         source_path="/api/v2/flight/search/initial",
@@ -2981,6 +2995,23 @@ def test_capture_state_preserves_partial_failure_type_when_completion_upgrades_p
     assert state.best_result is not None
     assert state.best_result.search_completed is True
     assert state.best_result.partial_failure_type == partial_failure_type
+
+
+def test_traveloka_capture_state_lives_in_capture_module() -> None:
+    state = traveloka_capture.CaptureState()
+    response = FakeResponse(
+        url="https://www.traveloka.com/api/v2/flight/search/initial",
+        payload={"data": {"meta": {"searchCompleted": True}, "searchResults": []}},
+    )
+
+    state.handle_response(response)
+
+    assert state.completed is True
+    assert state.best_result is not None
+    assert state.best_result.source_path == "/api/v2/flight/search/initial"
+    assert not hasattr(traveloka_adapter, "CaptureState")
+    assert not hasattr(traveloka_adapter, "explicit_payload_item_ids")
+    assert not hasattr(traveloka_adapter, "wait_for_capture")
 
 
 def test_adapter_uses_empty_completion_payload_when_no_offers_were_seen() -> None:
@@ -3076,7 +3107,7 @@ def test_adapter_preserves_partial_failure_type_when_returning_timed_out_partial
         def handle_response(self, response: object) -> None:
             return
 
-    monkeypatch.setattr(traveloka_adapter, "_CaptureState", SeededCaptureState)
+    monkeypatch.setattr(traveloka_capture, "CaptureState", SeededCaptureState)
     page = FakePage([])
     adapter = TravelokaAdapter(
         launch_browser=lambda **kwargs: FakeBrowser(FakeContext(page)),

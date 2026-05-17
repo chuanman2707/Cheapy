@@ -3,18 +3,19 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import date
 from decimal import Decimal
 from time import monotonic
 from typing import Callable
-from urllib.parse import urlencode, urlparse
+from urllib.parse import urlparse
 
 from cheapy.providers.base import (
     ProviderExactOneWayRequest,
     ProviderExactRoundTripRequest,
 )
+from cheapy.providers.traveloka import capture as traveloka_capture
+from cheapy.providers.traveloka import urls as traveloka_urls
 from cheapy.providers.traveloka.browser_helpers import (
     close_quietly,
     dom_operation_timeout_ms,
@@ -24,16 +25,11 @@ from cheapy.providers.traveloka.browser_helpers import (
 )
 from cheapy.providers.traveloka.errors import (
     TravelokaProviderError,
-    blocked_error,
     browser_unavailable_error,
-    invalid_json_error,
     is_timeout_exception,
     navigation_failed_error,
     raise_blocked_if_terminal_page,
-    rate_limited_error,
     timeout_error,
-    transport_error,
-    unsupported_response_error,
 )
 from cheapy.providers.traveloka.results import (
     TravelokaCaptureResult,
@@ -46,13 +42,9 @@ from cheapy.providers.traveloka.timing import (
 )
 
 
-DEFAULT_BASE_URL = "https://www.traveloka.com/en-en/flight/fulltwosearch"
 DEFAULT_TIMEOUT_SECONDS = 45.0
 DEFAULT_CURRENCY = "USD"
 DEFAULT_LOCALE = "en-en"
-INITIAL_SEARCH_PATH = "/api/v2/flight/search/initial"
-POLL_SEARCH_PATH = "/api/v2/flight/search/poll"
-SUPPORTED_FARE_PATHS = {INITIAL_SEARCH_PATH, POLL_SEARCH_PATH}
 VISIBLE_OPTION_CLICK_TIMEOUT_MS = 10_000
 SELECTION_TRANSITION_TIMEOUT_MS = 10_000
 FINAL_TOTAL_READ_TIMEOUT_MS = 250
@@ -202,7 +194,7 @@ class TravelokaAdapter:
     def __init__(
         self,
         *,
-        base_url: str = DEFAULT_BASE_URL,
+        base_url: str = traveloka_urls.DEFAULT_BASE_URL,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         poll_interval_seconds: float = 0.25,
         launch_browser: BrowserLauncher | None = None,
@@ -238,7 +230,7 @@ class TravelokaAdapter:
     def _search(self, request: ProviderRequest) -> TravelokaCaptureResult:
         browser: object | None = None
         context: object | None = None
-        state = _CaptureState()
+        state = traveloka_capture.CaptureState()
         deadline = monotonic() + self._timeout_seconds
         try:
             try:
@@ -262,14 +254,17 @@ class TravelokaAdapter:
             with self._phase_recorder.phase("initial_navigation"):
                 remaining_timeout_ms(deadline)
                 page.goto(  # type: ignore[attr-defined]
-                    build_full_search_url(request, base_url=self._base_url),
+                    traveloka_urls.build_full_search_url(
+                        request,
+                        base_url=self._base_url,
+                    ),
                     wait_until="domcontentloaded",
                     timeout=remaining_timeout_ms(deadline),
                 )
 
             try:
                 with self._phase_recorder.phase("outbound_capture_wait"):
-                    return _wait_for_capture(
+                    return traveloka_capture.wait_for_capture(
                         state,
                         page,
                         deadline,
@@ -296,7 +291,7 @@ class TravelokaAdapter:
     ) -> TravelokaCaptureResult | TravelokaSelectedRoundTripResult:
         browser: object | None = None
         context: object | None = None
-        state = _CaptureState()
+        state = traveloka_capture.CaptureState()
         deadline = monotonic() + self._timeout_seconds
         try:
             try:
@@ -320,14 +315,17 @@ class TravelokaAdapter:
             with self._phase_recorder.phase("initial_navigation"):
                 remaining_timeout_ms(deadline)
                 page.goto(  # type: ignore[attr-defined]
-                    build_full_search_url(request, base_url=self._base_url),
+                    traveloka_urls.build_full_search_url(
+                        request,
+                        base_url=self._base_url,
+                    ),
                     wait_until="domcontentloaded",
                     timeout=remaining_timeout_ms(deadline),
                 )
 
             try:
                 with self._phase_recorder.phase("outbound_capture_wait"):
-                    outbound_capture = _wait_for_capture(
+                    outbound_capture = traveloka_capture.wait_for_capture(
                         state,
                         page,
                         deadline,
@@ -400,7 +398,7 @@ class TravelokaAdapter:
                     )
             try:
                 with self._phase_recorder.phase("return_capture_wait"):
-                    return_capture = _wait_for_capture(
+                    return_capture = traveloka_capture.wait_for_capture(
                         state,
                         page,
                         deadline,
@@ -522,87 +520,6 @@ class TravelokaAdapter:
                 close_quietly(browser)
 
 
-class _CaptureState:
-    def __init__(self) -> None:
-        self.best_result: TravelokaCaptureResult | None = None
-        self.completed = False
-
-    def reset(self) -> None:
-        self.best_result = None
-        self.completed = False
-
-    def handle_response(self, response: object) -> None:
-        response_url = str(getattr(response, "url", ""))
-        if not _is_traveloka_first_party_url(response_url):
-            return
-
-        path = urlparse(response_url).path
-        if path not in SUPPORTED_FARE_PATHS:
-            return
-
-        status = int(getattr(response, "status", 0))
-        if status in {401, 403}:
-            raise blocked_error(status)
-        if status == 429:
-            raise rate_limited_error(status)
-        if status >= 500:
-            raise transport_error(status)
-
-        payload: object
-        try:
-            payload = response.json()  # type: ignore[attr-defined]
-        except Exception as exc:
-            raise invalid_json_error(type(exc).__name__) from None
-
-        if not isinstance(payload, dict) or not _is_supported_fare_payload(payload):
-            raise unsupported_response_error()
-
-        search_completed = _search_completed(payload)
-        new_result = TravelokaCaptureResult(
-            payload=payload,
-            source_path=path,
-            search_completed=search_completed,
-            timed_out=False,
-        )
-        result_count = _search_result_count(payload)
-        if self.best_result is None or result_count > 0:
-            self.best_result = new_result
-        elif search_completed and _search_result_count(self.best_result.payload) > 0:
-            self.best_result = TravelokaCaptureResult(
-                payload=self.best_result.payload,
-                source_path=self.best_result.source_path,
-                search_completed=True,
-                timed_out=False,
-                partial_failure_type=self.best_result.partial_failure_type,
-            )
-        elif search_completed:
-            self.best_result = new_result
-        self.completed = self.completed or search_completed
-
-
-def build_full_search_url(
-    request: ProviderRequest,
-    *,
-    base_url: str = DEFAULT_BASE_URL,
-) -> str:
-    date_part = _traveloka_date(request.departure_date)
-    if isinstance(request, ProviderExactRoundTripRequest):
-        date_part = f"{date_part}.{_traveloka_date(request.return_date)}"
-    params = {
-        "ap": f"{request.origin}.{request.destination}",
-        "dt": date_part,
-        "ps": _passenger_spec(request),
-        "sc": "ECONOMY",
-        "funnelSource": "SEO-Homepage-SearchForm",
-    }
-    return f"{base_url}?{urlencode(params)}"
-
-
-def build_search_url(request: ProviderRequest, *, base_url: str = DEFAULT_BASE_URL) -> str:
-    """Legacy wrapper for callers that still use the old helper name."""
-    return build_full_search_url(request, base_url=base_url)
-
-
 def _cheapest_visible_option(
     options: Iterable[TravelokaVisibleOption],
 ) -> TravelokaVisibleOption | None:
@@ -710,7 +627,10 @@ def _bind_visible_option_to_payload(
     option: TravelokaVisibleOption,
     payload: dict[str, object],
 ) -> str | None:
-    if option.key is not None and option.key in _explicit_payload_item_ids(payload):
+    if (
+        option.key is not None
+        and option.key in traveloka_capture.explicit_payload_item_ids(payload)
+    ):
         return option.key
     return None
 
@@ -1130,60 +1050,10 @@ def _click_visible_option(
     option.locator.click(timeout=click_timeout_ms)  # type: ignore[attr-defined]
 
 
-def _traveloka_date(value: str) -> str:
-    parsed = date.fromisoformat(value)
-    return f"{parsed.day}-{parsed.month}-{parsed.year}"
-
-
-def _passenger_spec(request: ProviderRequest) -> str:
-    passengers = request.passengers
-    return (
-        f"{passengers.adults}."
-        f"{passengers.children}."
-        f"{passengers.infants_on_lap + passengers.infants_in_seat}"
-    )
-
-
 def _default_launch_browser(**kwargs: object) -> object:
     from cloakbrowser import launch
 
     return launch(**kwargs)
-
-
-def _is_supported_fare_payload(payload: dict[str, object]) -> bool:
-    data = payload.get("data")
-    if not isinstance(data, dict):
-        return False
-    return isinstance(data.get("searchResults"), list)
-
-
-def _is_traveloka_first_party_url(url: str) -> bool:
-    parsed = urlparse(url)
-    host = parsed.hostname
-    if host is None:
-        return False
-    host = host.lower().rstrip(".")
-    return host == "traveloka.com" or host.endswith(".traveloka.com")
-
-
-def _search_result_count(payload: dict[str, object]) -> int:
-    data = payload.get("data")
-    if not isinstance(data, dict):
-        return 0
-    search_results = data.get("searchResults")
-    if not isinstance(search_results, list):
-        return 0
-    return len(search_results)
-
-
-def _search_completed(payload: dict[str, object]) -> bool:
-    data = payload.get("data")
-    if not isinstance(data, dict):
-        return False
-    meta = data.get("meta")
-    if not isinstance(meta, dict):
-        return False
-    return meta.get("searchCompleted") is True
 
 
 def _price_amount_near_marker(
@@ -1198,94 +1068,6 @@ def _price_amount_near_marker(
     if before_marker_match is not None:
         return before_marker_match.group(1)
     return None
-
-
-def _explicit_payload_item_ids(payload: object) -> set[str]:
-    ids: set[str] = set()
-    for path in (
-        ("data", "searchResults"),
-        ("data", "itineraries"),
-        ("data", "flightSearchResult", "itineraries"),
-        ("itineraries",),
-        ("flightSearchResult", "itineraries"),
-    ):
-        items = _payload_list_at_path(payload, path)
-        if items is None:
-            continue
-        for item in items:
-            item_id = _explicit_item_id(item)
-            if item_id is not None:
-                ids.add(item_id)
-    return ids
-
-
-def _payload_list_at_path(payload: object, path: tuple[str, ...]) -> list[object] | None:
-    current = payload
-    for key in path:
-        if not isinstance(current, Mapping):
-            return None
-        current = current.get(key)
-    if isinstance(current, list):
-        return list(current)
-    if isinstance(current, tuple):
-        return list(current)
-    return None
-
-
-def _explicit_item_id(item: object) -> str | None:
-    if not isinstance(item, Mapping):
-        return None
-    for key in ("id", "offerId", "itineraryId"):
-        value = item.get(key)
-        if isinstance(value, str) and value:
-            return value
-    return None
-
-
-def _wait_for_capture(
-    state: _CaptureState,
-    page: object,
-    deadline: float,
-    *,
-    poll_interval_seconds: float,
-) -> TravelokaCaptureResult:
-    return _wait_for_conservative_capture_result(
-        state,
-        page,
-        deadline,
-        poll_interval_seconds=poll_interval_seconds,
-    )
-
-
-def _wait_for_conservative_capture_result(
-    state: _CaptureState,
-    page: object,
-    deadline: float,
-    *,
-    poll_interval_seconds: float,
-) -> TravelokaCaptureResult:
-    while not state.completed and monotonic() < deadline:
-        remaining_ms = remaining_timeout_ms(deadline, raise_on_expired=False)
-        if remaining_ms <= 0:
-            break
-        wait_ms = min(round(poll_interval_seconds * 1000), remaining_ms)
-        page.wait_for_timeout(wait_ms)  # type: ignore[attr-defined]
-
-    return _capture_result_after_wait(state)
-
-
-def _capture_result_after_wait(state: _CaptureState) -> TravelokaCaptureResult:
-    if state.best_result is None:
-        raise timeout_error()
-    if state.completed:
-        return state.best_result
-    return TravelokaCaptureResult(
-        payload=state.best_result.payload,
-        source_path=state.best_result.source_path,
-        search_completed=state.best_result.search_completed,
-        timed_out=True,
-        partial_failure_type=state.best_result.partial_failure_type,
-    )
 
 
 def _wait_for_return_selection_transition(
@@ -1419,7 +1201,7 @@ def _normalized_text_key(text: str) -> str:
 
 
 def _wait_for_outbound_selection_transition(
-    state: _CaptureState,
+    state: traveloka_capture.CaptureState,
     page: object,
     selected_key: str | None,
     deadline: float,
@@ -1473,8 +1255,8 @@ def _capture_looks_like_new_inventory(
 ) -> bool:
     if capture is None:
         return False
-    current_ids = _explicit_payload_item_ids(capture.payload)
-    previous_ids = _explicit_payload_item_ids(previous_payload)
+    current_ids = traveloka_capture.explicit_payload_item_ids(capture.payload)
+    previous_ids = traveloka_capture.explicit_payload_item_ids(previous_payload)
     return bool(current_ids and previous_ids and not current_ids.issubset(previous_ids))
 
 
