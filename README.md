@@ -163,10 +163,12 @@ CHEAPY_RUN_LIVE_TESTS=1 uv run cheapy providers test --live
 
 Traveloka is a fragile, default-enabled research provider in this codebase under
 the project owner's stated Traveloka support approval. It may time out or be
-blocked, and it is intentionally conservative: no login, no browser, no retries,
-no provider-internal fanout, and a 20 second per-call timeout. Do not deploy
-this default live provider set for user-facing search without Traveloka
-permission.
+blocked, and it is intentionally conservative: no login, no persistent browser
+profile, no retries, no provider-internal fanout, and a 45 second per-call
+timeout. The current implementation uses a fresh browser context to let
+Traveloka's own web app produce first-party fare payloads, then reads selected
+round-trip totals only after both legs are selected. Do not deploy this default
+live provider set for user-facing search without Traveloka permission.
 
 <p align="right"><a href="#top">back to top</a></p>
 
