@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from time import monotonic
+from time import monotonic as _monotonic
 from typing import Callable
 
 from cheapy.providers.base import (
@@ -11,6 +11,7 @@ from cheapy.providers.base import (
 )
 from cheapy.providers.traveloka import activation as traveloka_activation
 from cheapy.providers.traveloka import capture as traveloka_capture
+from cheapy.providers.traveloka import errors as traveloka_errors
 from cheapy.providers.traveloka import inventory as traveloka_inventory
 from cheapy.providers.traveloka import selection as traveloka_selection
 from cheapy.providers.traveloka import totals as traveloka_totals
@@ -19,14 +20,6 @@ from cheapy.providers.traveloka.browser_helpers import (
     close_quietly,
     read_body_text,
     remaining_timeout_ms,
-)
-from cheapy.providers.traveloka.errors import (
-    TravelokaProviderError,
-    browser_unavailable_error,
-    is_timeout_exception,
-    navigation_failed_error,
-    raise_blocked_if_terminal_page,
-    timeout_error,
 )
 from cheapy.providers.traveloka.results import (
     TravelokaCaptureResult,
@@ -41,7 +34,6 @@ from cheapy.providers.traveloka.timing import (
 
 DEFAULT_TIMEOUT_SECONDS = 45.0
 DEFAULT_CURRENCY = "USD"
-DEFAULT_LOCALE = "en-en"
 ProviderRequest = ProviderExactOneWayRequest | ProviderExactRoundTripRequest
 BrowserLauncher = Callable[..., object]
 
@@ -69,7 +61,7 @@ class TravelokaAdapter:
         self._launch_browser = (
             launch_browser if launch_browser is not None else _default_launch_browser
         )
-        self._phase_recorder = TravelokaPhaseRecorder(clock=monotonic)
+        self._phase_recorder = TravelokaPhaseRecorder(clock=_monotonic)
 
     @property
     def phase_timings(self) -> tuple[TravelokaPhaseTiming, ...]:
@@ -91,7 +83,7 @@ class TravelokaAdapter:
         browser: object | None = None
         context: object | None = None
         state = traveloka_capture.CaptureState()
-        deadline = monotonic() + self._timeout_seconds
+        deadline = _monotonic() + self._timeout_seconds
         try:
             try:
                 with self._phase_recorder.phase("browser_launch"):
@@ -100,9 +92,11 @@ class TravelokaAdapter:
                         timeout=remaining_timeout_ms(deadline),
                     )
             except Exception as exc:
-                if is_timeout_exception(exc):
-                    raise timeout_error(type(exc).__name__) from None
-                raise browser_unavailable_error(type(exc).__name__) from None
+                if traveloka_errors.is_timeout_exception(exc):
+                    raise traveloka_errors.timeout_error(type(exc).__name__) from None
+                raise traveloka_errors.browser_unavailable_error(
+                    type(exc).__name__
+                ) from None
 
             with self._phase_recorder.phase("context_page_setup"):
                 remaining_timeout_ms(deadline)
@@ -130,16 +124,20 @@ class TravelokaAdapter:
                         deadline,
                         poll_interval_seconds=self._poll_interval_seconds,
                     )
-            except TravelokaProviderError as exc:
+            except traveloka_errors.TravelokaProviderError as exc:
                 if exc.failure_type == "timeout":
-                    raise_blocked_if_terminal_page(page.content())  # type: ignore[attr-defined]
+                    traveloka_errors.raise_blocked_if_terminal_page(  # type: ignore[attr-defined]
+                        page.content()
+                    )
                 raise
-        except TravelokaProviderError:
+        except traveloka_errors.TravelokaProviderError:
             raise
         except Exception as exc:
-            if is_timeout_exception(exc):
-                raise timeout_error(type(exc).__name__) from None
-            raise navigation_failed_error(type(exc).__name__) from None
+            if traveloka_errors.is_timeout_exception(exc):
+                raise traveloka_errors.timeout_error(type(exc).__name__) from None
+            raise traveloka_errors.navigation_failed_error(
+                type(exc).__name__
+            ) from None
         finally:
             with self._phase_recorder.phase("cleanup"):
                 close_quietly(context)
@@ -152,7 +150,7 @@ class TravelokaAdapter:
         browser: object | None = None
         context: object | None = None
         state = traveloka_capture.CaptureState()
-        deadline = monotonic() + self._timeout_seconds
+        deadline = _monotonic() + self._timeout_seconds
         try:
             try:
                 with self._phase_recorder.phase("browser_launch"):
@@ -161,9 +159,11 @@ class TravelokaAdapter:
                         timeout=remaining_timeout_ms(deadline),
                     )
             except Exception as exc:
-                if is_timeout_exception(exc):
-                    raise timeout_error(type(exc).__name__) from None
-                raise browser_unavailable_error(type(exc).__name__) from None
+                if traveloka_errors.is_timeout_exception(exc):
+                    raise traveloka_errors.timeout_error(type(exc).__name__) from None
+                raise traveloka_errors.browser_unavailable_error(
+                    type(exc).__name__
+                ) from None
 
             with self._phase_recorder.phase("context_page_setup"):
                 remaining_timeout_ms(deadline)
@@ -191,9 +191,11 @@ class TravelokaAdapter:
                         deadline,
                         poll_interval_seconds=self._poll_interval_seconds,
                     )
-            except TravelokaProviderError as exc:
+            except traveloka_errors.TravelokaProviderError as exc:
                 if exc.failure_type == "timeout":
-                    raise_blocked_if_terminal_page(page.content())  # type: ignore[attr-defined]
+                    traveloka_errors.raise_blocked_if_terminal_page(  # type: ignore[attr-defined]
+                        page.content()
+                    )
                 raise
             if outbound_capture.timed_out:
                 return outbound_capture
@@ -264,18 +266,18 @@ class TravelokaAdapter:
                         deadline,
                         poll_interval_seconds=self._poll_interval_seconds,
                     )
-            except TravelokaProviderError as exc:
+                    if return_capture.timed_out:
+                        return partial_round_trip_result(
+                            outbound_capture,
+                            "return_capture_timeout",
+                        )
+            except traveloka_errors.TravelokaProviderError as exc:
                 if exc.failure_type == "timeout":
                     return partial_round_trip_result(
                         outbound_capture,
                         "return_capture_timeout",
                     )
                 raise
-            if return_capture.timed_out:
-                return partial_round_trip_result(
-                    outbound_capture,
-                    "return_capture_timeout",
-                )
 
             return_selection_timeout_ms = remaining_timeout_ms(
                 deadline,
@@ -356,11 +358,11 @@ class TravelokaAdapter:
                     poll_interval_seconds=self._poll_interval_seconds,
                     before_texts=before_final_total_texts,
                 )
-            if final_total is None:
-                return partial_round_trip_result(
-                    outbound_capture,
-                    "final_round_trip_total_unavailable",
-                )
+                if final_total is None:
+                    return partial_round_trip_result(
+                        outbound_capture,
+                        "final_round_trip_total_unavailable",
+                    )
 
             final_amount, final_currency = final_total
             return TravelokaSelectedRoundTripResult(
@@ -373,16 +375,19 @@ class TravelokaAdapter:
                 source_paths=(outbound_capture.source_path, return_capture.source_path),
                 timed_out=False,
             )
-        except TravelokaProviderError:
+        except traveloka_errors.TravelokaProviderError:
             raise
         except Exception as exc:
-            if is_timeout_exception(exc):
-                raise timeout_error(type(exc).__name__) from None
-            raise navigation_failed_error(type(exc).__name__) from None
+            if traveloka_errors.is_timeout_exception(exc):
+                raise traveloka_errors.timeout_error(type(exc).__name__) from None
+            raise traveloka_errors.navigation_failed_error(
+                type(exc).__name__
+            ) from None
         finally:
             with self._phase_recorder.phase("cleanup"):
                 close_quietly(context)
                 close_quietly(browser)
+
 
 def _default_launch_browser(**kwargs: object) -> object:
     from cloakbrowser import launch

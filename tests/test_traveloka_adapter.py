@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from time import sleep
+from time import monotonic, sleep
 from typing import get_type_hints
 from urllib.parse import parse_qs, urlparse
 
@@ -22,7 +22,7 @@ from cheapy.providers.traveloka import results as traveloka_results
 from cheapy.providers.traveloka import selection as traveloka_selection
 from cheapy.providers.traveloka import totals as traveloka_totals
 from cheapy.providers.traveloka import urls as traveloka_urls
-from cheapy.providers.traveloka.adapter import TravelokaAdapter, TravelokaProviderError
+from cheapy.providers.traveloka.adapter import TravelokaAdapter
 from cheapy.providers.traveloka.results import (
     TravelokaCaptureResult,
     TravelokaSelectedRoundTripResult,
@@ -463,10 +463,11 @@ def test_traveloka_error_factories_live_in_errors_module() -> None:
     assert blocked_error.failure_type == "blocked"
     assert blocked_error.http_status_code == 403
     assert "http" not in blocked_error.message_en.lower()
+    assert not hasattr(traveloka_adapter, "TravelokaProviderError")
 
 
 def test_browser_helpers_keep_deadline_and_dom_reads_together() -> None:
-    deadline = traveloka_adapter.monotonic() + 10
+    deadline = monotonic() + 10
 
     assert browser_helpers.remaining_timeout_ms(deadline) > 0
     assert browser_helpers.dom_operation_timeout_ms(
@@ -560,14 +561,14 @@ def test_phase_recorder_records_safe_phase_without_sensitive_metadata() -> None:
 def test_phase_recorder_records_safe_failure_type() -> None:
     now_values = iter([20.0, 20.25])
     recorder = TravelokaPhaseRecorder(clock=lambda: next(now_values))
-    error = traveloka_adapter.TravelokaProviderError(
+    error = traveloka_errors.TravelokaProviderError(
         failure_type="navigation_failed",
         message_en="Traveloka navigation failed at https://example.invalid/path",
         error_code=ErrorCode.PROVIDER_FAILED,
         retryable=True,
     )
 
-    with pytest.raises(traveloka_adapter.TravelokaProviderError):
+    with pytest.raises(traveloka_errors.TravelokaProviderError):
         with recorder.phase("initial_navigation"):
             raise error
 
@@ -1525,7 +1526,7 @@ def test_wait_for_return_selection_transition_recognizes_selected_summary() -> N
     assert (
         traveloka_selection.wait_for_return_selection_transition(
             page,
-            deadline=traveloka_adapter.monotonic() + 1,
+            deadline=monotonic() + 1,
             poll_interval_seconds=0.001,
         )
         is True
@@ -1546,7 +1547,7 @@ def test_wait_for_return_selection_transition_times_out_without_marker(
     assert (
         traveloka_selection.wait_for_return_selection_transition(
             page,
-            deadline=traveloka_adapter.monotonic() + 1,
+            deadline=monotonic() + 1,
             poll_interval_seconds=0.001,
         )
         is False
@@ -1576,7 +1577,7 @@ def test_wait_for_return_selection_transition_ignores_preexisting_marker(
     assert (
         traveloka_selection.wait_for_return_selection_transition(
             page,
-            deadline=traveloka_adapter.monotonic() + 1,
+            deadline=monotonic() + 1,
             poll_interval_seconds=0.001,
             before_marker_texts=(marker_text,),
             before_body_text=f"Choose\n{marker_text}",
@@ -3232,7 +3233,7 @@ def test_adapter_raises_timeout_when_no_fare_payload_arrives() -> None:
         poll_interval_seconds=0.001,
     )
 
-    with pytest.raises(TravelokaProviderError) as exc_info:
+    with pytest.raises(traveloka_errors.TravelokaProviderError) as exc_info:
         adapter.search_exact_one_way(_one_way_request())
 
     assert exc_info.value.failure_type == "timeout"
@@ -3246,7 +3247,7 @@ def test_adapter_maps_browser_launch_failure_to_browser_unavailable() -> None:
 
     adapter = TravelokaAdapter(launch_browser=fail_launch)
 
-    with pytest.raises(TravelokaProviderError) as exc_info:
+    with pytest.raises(traveloka_errors.TravelokaProviderError) as exc_info:
         adapter.search_exact_one_way(_one_way_request())
 
     assert exc_info.value.failure_type == "browser_unavailable"
@@ -3261,7 +3262,7 @@ def test_adapter_maps_browser_launch_timeout_to_timeout() -> None:
 
     adapter = TravelokaAdapter(launch_browser=fail_launch)
 
-    with pytest.raises(TravelokaProviderError) as exc_info:
+    with pytest.raises(traveloka_errors.TravelokaProviderError) as exc_info:
         adapter.search_exact_one_way(_one_way_request())
 
     assert exc_info.value.failure_type == "timeout"
@@ -3313,7 +3314,7 @@ def test_adapter_checks_deadline_after_launch_before_navigation() -> None:
         poll_interval_seconds=0.001,
     )
 
-    with pytest.raises(TravelokaProviderError) as exc_info:
+    with pytest.raises(traveloka_errors.TravelokaProviderError) as exc_info:
         adapter.search_exact_one_way(_one_way_request())
 
     assert exc_info.value.failure_type == "timeout"
@@ -3367,7 +3368,7 @@ def test_adapter_ignores_supported_path_from_non_traveloka_host() -> None:
         poll_interval_seconds=0.001,
     )
 
-    with pytest.raises(TravelokaProviderError) as exc_info:
+    with pytest.raises(traveloka_errors.TravelokaProviderError) as exc_info:
         adapter.search_exact_one_way(_one_way_request())
 
     assert exc_info.value.failure_type == "timeout"
@@ -3387,7 +3388,7 @@ def test_adapter_rejects_unsupported_json_on_fare_endpoint() -> None:
         launch_browser=lambda **kwargs: FakeBrowser(FakeContext(page))
     )
 
-    with pytest.raises(TravelokaProviderError) as exc_info:
+    with pytest.raises(traveloka_errors.TravelokaProviderError) as exc_info:
         adapter.search_exact_one_way(_one_way_request())
 
     assert exc_info.value.failure_type == "unsupported_response"
@@ -3408,7 +3409,7 @@ def test_adapter_rejects_invalid_json_from_fare_endpoint() -> None:
         launch_browser=lambda **kwargs: FakeBrowser(FakeContext(page))
     )
 
-    with pytest.raises(TravelokaProviderError) as exc_info:
+    with pytest.raises(traveloka_errors.TravelokaProviderError) as exc_info:
         adapter.search_exact_one_way(_one_way_request())
 
     assert exc_info.value.failure_type == "invalid_json"
@@ -3446,7 +3447,7 @@ def test_adapter_maps_fare_endpoint_http_status(
         launch_browser=lambda **kwargs: FakeBrowser(FakeContext(page))
     )
 
-    with pytest.raises(TravelokaProviderError) as exc_info:
+    with pytest.raises(traveloka_errors.TravelokaProviderError) as exc_info:
         adapter.search_exact_one_way(_one_way_request())
 
     assert exc_info.value.failure_type == failure_type
@@ -3468,7 +3469,7 @@ def test_adapter_closes_browser_when_response_handler_raises_provider_error() ->
     context, browser = _browser_for(page)
     adapter = TravelokaAdapter(launch_browser=lambda **kwargs: browser)
 
-    with pytest.raises(TravelokaProviderError) as exc_info:
+    with pytest.raises(traveloka_errors.TravelokaProviderError) as exc_info:
         adapter.search_exact_one_way(_one_way_request())
 
     assert exc_info.value.failure_type == "blocked"
@@ -3484,7 +3485,7 @@ def test_adapter_blocks_terminal_captcha_page_when_no_payload_arrives() -> None:
         poll_interval_seconds=0.001,
     )
 
-    with pytest.raises(TravelokaProviderError) as exc_info:
+    with pytest.raises(traveloka_errors.TravelokaProviderError) as exc_info:
         adapter.search_exact_one_way(_one_way_request())
 
     assert exc_info.value.failure_type == "blocked"
@@ -3501,7 +3502,7 @@ def test_adapter_maps_navigation_failure_after_launch() -> None:
     context, browser = _browser_for(page)
     adapter = TravelokaAdapter(launch_browser=lambda **kwargs: browser)
 
-    with pytest.raises(TravelokaProviderError) as exc_info:
+    with pytest.raises(traveloka_errors.TravelokaProviderError) as exc_info:
         adapter.search_exact_one_way(_one_way_request())
 
     assert exc_info.value.failure_type == "navigation_failed"
@@ -3521,7 +3522,7 @@ def test_adapter_maps_navigation_timeout_after_launch() -> None:
     context, browser = _browser_for(page)
     adapter = TravelokaAdapter(launch_browser=lambda **kwargs: browser)
 
-    with pytest.raises(TravelokaProviderError) as exc_info:
+    with pytest.raises(traveloka_errors.TravelokaProviderError) as exc_info:
         adapter.search_exact_one_way(_one_way_request())
 
     assert exc_info.value.failure_type == "timeout"
@@ -3542,7 +3543,7 @@ def test_adapter_maps_context_timeout_after_launch() -> None:
     browser = TimeoutBrowser(context)
     adapter = TravelokaAdapter(launch_browser=lambda **kwargs: browser)
 
-    with pytest.raises(TravelokaProviderError) as exc_info:
+    with pytest.raises(traveloka_errors.TravelokaProviderError) as exc_info:
         adapter.search_exact_one_way(_one_way_request())
 
     assert exc_info.value.failure_type == "timeout"
@@ -3562,7 +3563,7 @@ def test_adapter_does_not_classify_runtime_error_message_as_timeout() -> None:
     context, browser = _browser_for(page)
     adapter = TravelokaAdapter(launch_browser=lambda **kwargs: browser)
 
-    with pytest.raises(TravelokaProviderError) as exc_info:
+    with pytest.raises(traveloka_errors.TravelokaProviderError) as exc_info:
         adapter.search_exact_one_way(_one_way_request())
 
     assert exc_info.value.failure_type == "navigation_failed"
