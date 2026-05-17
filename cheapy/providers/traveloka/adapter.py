@@ -11,10 +11,29 @@ from time import monotonic
 from typing import Callable
 from urllib.parse import urlencode, urlparse
 
-from cheapy.models import ErrorCode
 from cheapy.providers.base import (
     ProviderExactOneWayRequest,
     ProviderExactRoundTripRequest,
+)
+from cheapy.providers.traveloka.browser_helpers import (
+    close_quietly,
+    dom_operation_timeout_ms,
+    locator_texts,
+    read_body_text,
+    remaining_timeout_ms,
+)
+from cheapy.providers.traveloka.errors import (
+    TravelokaProviderError,
+    blocked_error,
+    browser_unavailable_error,
+    invalid_json_error,
+    is_timeout_exception,
+    navigation_failed_error,
+    raise_blocked_if_terminal_page,
+    rate_limited_error,
+    timeout_error,
+    transport_error,
+    unsupported_response_error,
 )
 from cheapy.providers.traveloka.results import (
     TravelokaCaptureResult,
@@ -175,28 +194,6 @@ class TravelokaVisibleOption:
     locator: object
 
 
-class TravelokaProviderError(Exception):
-    """Structured provider-local error safe to map into Contract V1."""
-
-    def __init__(
-        self,
-        *,
-        failure_type: str,
-        message_en: str,
-        error_code: ErrorCode,
-        retryable: bool,
-        http_status_code: int | None = None,
-        exception_type: str | None = None,
-    ) -> None:
-        super().__init__(message_en)
-        self.failure_type = failure_type
-        self.message_en = message_en
-        self.error_code = error_code
-        self.retryable = retryable
-        self.http_status_code = http_status_code
-        self.exception_type = exception_type
-
-
 class TravelokaAdapter:
     """Sync browser adapter around Traveloka flight search capture surfaces."""
 
@@ -248,26 +245,26 @@ class TravelokaAdapter:
                 with self._phase_recorder.phase("browser_launch"):
                     browser = self._launch_browser(
                         headless=True,
-                        timeout=_remaining_timeout_ms(deadline),
+                        timeout=remaining_timeout_ms(deadline),
                     )
             except Exception as exc:
-                if _is_timeout_exception(exc):
-                    raise _timeout_error(type(exc).__name__) from None
-                raise _browser_unavailable_error(type(exc).__name__) from None
+                if is_timeout_exception(exc):
+                    raise timeout_error(type(exc).__name__) from None
+                raise browser_unavailable_error(type(exc).__name__) from None
 
             with self._phase_recorder.phase("context_page_setup"):
-                _remaining_timeout_ms(deadline)
+                remaining_timeout_ms(deadline)
                 context = browser.new_context(locale="en-US")  # type: ignore[attr-defined]
-                _remaining_timeout_ms(deadline)
+                remaining_timeout_ms(deadline)
                 page = context.new_page()  # type: ignore[attr-defined]
-                _remaining_timeout_ms(deadline)
+                remaining_timeout_ms(deadline)
                 page.on("response", state.handle_response)  # type: ignore[attr-defined]
             with self._phase_recorder.phase("initial_navigation"):
-                _remaining_timeout_ms(deadline)
+                remaining_timeout_ms(deadline)
                 page.goto(  # type: ignore[attr-defined]
                     build_full_search_url(request, base_url=self._base_url),
                     wait_until="domcontentloaded",
-                    timeout=_remaining_timeout_ms(deadline),
+                    timeout=remaining_timeout_ms(deadline),
                 )
 
             try:
@@ -280,18 +277,18 @@ class TravelokaAdapter:
                     )
             except TravelokaProviderError as exc:
                 if exc.failure_type == "timeout":
-                    _raise_blocked_if_terminal_page(page.content())  # type: ignore[attr-defined]
+                    raise_blocked_if_terminal_page(page.content())  # type: ignore[attr-defined]
                 raise
         except TravelokaProviderError:
             raise
         except Exception as exc:
-            if _is_timeout_exception(exc):
-                raise _timeout_error(type(exc).__name__) from None
-            raise _navigation_failed_error(type(exc).__name__) from None
+            if is_timeout_exception(exc):
+                raise timeout_error(type(exc).__name__) from None
+            raise navigation_failed_error(type(exc).__name__) from None
         finally:
             with self._phase_recorder.phase("cleanup"):
-                _close_quietly(context)
-                _close_quietly(browser)
+                close_quietly(context)
+                close_quietly(browser)
 
     def _search_selected_round_trip(
         self,
@@ -306,26 +303,26 @@ class TravelokaAdapter:
                 with self._phase_recorder.phase("browser_launch"):
                     browser = self._launch_browser(
                         headless=True,
-                        timeout=_remaining_timeout_ms(deadline),
+                        timeout=remaining_timeout_ms(deadline),
                     )
             except Exception as exc:
-                if _is_timeout_exception(exc):
-                    raise _timeout_error(type(exc).__name__) from None
-                raise _browser_unavailable_error(type(exc).__name__) from None
+                if is_timeout_exception(exc):
+                    raise timeout_error(type(exc).__name__) from None
+                raise browser_unavailable_error(type(exc).__name__) from None
 
             with self._phase_recorder.phase("context_page_setup"):
-                _remaining_timeout_ms(deadline)
+                remaining_timeout_ms(deadline)
                 context = browser.new_context(locale="en-US")  # type: ignore[attr-defined]
-                _remaining_timeout_ms(deadline)
+                remaining_timeout_ms(deadline)
                 page = context.new_page()  # type: ignore[attr-defined]
-                _remaining_timeout_ms(deadline)
+                remaining_timeout_ms(deadline)
                 page.on("response", state.handle_response)  # type: ignore[attr-defined]
             with self._phase_recorder.phase("initial_navigation"):
-                _remaining_timeout_ms(deadline)
+                remaining_timeout_ms(deadline)
                 page.goto(  # type: ignore[attr-defined]
                     build_full_search_url(request, base_url=self._base_url),
                     wait_until="domcontentloaded",
-                    timeout=_remaining_timeout_ms(deadline),
+                    timeout=remaining_timeout_ms(deadline),
                 )
 
             try:
@@ -338,12 +335,12 @@ class TravelokaAdapter:
                     )
             except TravelokaProviderError as exc:
                 if exc.failure_type == "timeout":
-                    _raise_blocked_if_terminal_page(page.content())  # type: ignore[attr-defined]
+                    raise_blocked_if_terminal_page(page.content())  # type: ignore[attr-defined]
                 raise
             if outbound_capture.timed_out:
                 return outbound_capture
 
-            outbound_selection_timeout_ms = _remaining_timeout_ms(
+            outbound_selection_timeout_ms = remaining_timeout_ms(
                 deadline,
                 raise_on_expired=False,
             )
@@ -377,7 +374,7 @@ class TravelokaAdapter:
 
             with self._phase_recorder.phase("outbound_click_transition"):
                 before_outbound_selection_url = str(getattr(page, "url", ""))
-                before_outbound_selection_body = _read_body_text(
+                before_outbound_selection_body = read_body_text(
                     page,
                     timeout_ms=250,
                     deadline=deadline,
@@ -385,7 +382,7 @@ class TravelokaAdapter:
                 state.reset()
                 _click_visible_option(
                     outbound_option,
-                    timeout_ms=_remaining_timeout_ms(deadline),
+                    timeout_ms=remaining_timeout_ms(deadline),
                 )
                 if not _wait_for_outbound_selection_transition(
                     state,
@@ -422,7 +419,7 @@ class TravelokaAdapter:
                     "return_capture_timeout",
                 )
 
-            return_selection_timeout_ms = _remaining_timeout_ms(
+            return_selection_timeout_ms = remaining_timeout_ms(
                 deadline,
                 raise_on_expired=False,
             )
@@ -455,7 +452,7 @@ class TravelokaAdapter:
                     )
 
             with self._phase_recorder.phase("return_click_transition"):
-                return_click_timeout_ms = _remaining_timeout_ms(
+                return_click_timeout_ms = remaining_timeout_ms(
                     deadline,
                     raise_on_expired=False,
                 )
@@ -469,7 +466,7 @@ class TravelokaAdapter:
                     page,
                     deadline=deadline,
                 )
-                before_return_selection_body = _read_body_text(
+                before_return_selection_body = read_body_text(
                     page,
                     timeout_ms=250,
                     deadline=deadline,
@@ -516,13 +513,13 @@ class TravelokaAdapter:
         except TravelokaProviderError:
             raise
         except Exception as exc:
-            if _is_timeout_exception(exc):
-                raise _timeout_error(type(exc).__name__) from None
-            raise _navigation_failed_error(type(exc).__name__) from None
+            if is_timeout_exception(exc):
+                raise timeout_error(type(exc).__name__) from None
+            raise navigation_failed_error(type(exc).__name__) from None
         finally:
             with self._phase_recorder.phase("cleanup"):
-                _close_quietly(context)
-                _close_quietly(browser)
+                close_quietly(context)
+                close_quietly(browser)
 
 
 class _CaptureState:
@@ -545,20 +542,20 @@ class _CaptureState:
 
         status = int(getattr(response, "status", 0))
         if status in {401, 403}:
-            raise _blocked_error(status)
+            raise blocked_error(status)
         if status == 429:
-            raise _rate_limited_error(status)
+            raise rate_limited_error(status)
         if status >= 500:
-            raise _transport_error(status)
+            raise transport_error(status)
 
         payload: object
         try:
             payload = response.json()  # type: ignore[attr-defined]
         except Exception as exc:
-            raise _invalid_json_error(type(exc).__name__) from None
+            raise invalid_json_error(type(exc).__name__) from None
 
         if not isinstance(payload, dict) or not _is_supported_fare_payload(payload):
-            raise _unsupported_response_error()
+            raise unsupported_response_error()
 
         search_completed = _search_completed(payload)
         new_result = TravelokaCaptureResult(
@@ -765,7 +762,7 @@ def _visible_options_from_inventory_cards(
             deadline=deadline,
         )
         try:
-            text_timeout_ms = _dom_operation_timeout_ms(
+            text_timeout_ms = dom_operation_timeout_ms(
                 timeout_ms=timeout_ms,
                 deadline=deadline,
             )
@@ -816,7 +813,7 @@ def _visible_options_from_legacy_buttons(
                     timeout_ms=timeout_ms,
                     deadline=deadline,
                 )
-            text_timeout_ms = _dom_operation_timeout_ms(
+            text_timeout_ms = dom_operation_timeout_ms(
                 timeout_ms=timeout_ms,
                 deadline=deadline,
             )
@@ -825,7 +822,7 @@ def _visible_options_from_legacy_buttons(
             text = ancestor_locator.inner_text(timeout=text_timeout_ms)
         except Exception:
             try:
-                text_timeout_ms = _dom_operation_timeout_ms(
+                text_timeout_ms = dom_operation_timeout_ms(
                     timeout_ms=timeout_ms,
                     deadline=deadline,
                 )
@@ -900,7 +897,7 @@ def _stable_key_from_locator(
     deadline: float | None = None,
 ) -> str | None:
     for attribute_name in _STABLE_OPTION_KEY_ATTRIBUTES:
-        attribute_timeout_ms = _dom_operation_timeout_ms(
+        attribute_timeout_ms = dom_operation_timeout_ms(
             timeout_ms=timeout_ms,
             deadline=deadline,
         )
@@ -1011,7 +1008,7 @@ def _read_final_total(
         selectors=_FINAL_TOTAL_SELECTED_SELECTORS,
         selector_cache=selector_cache,
     ):
-        for text in _locator_texts(
+        for text in locator_texts(
             page,
             selector,
             timeout_ms=timeout_ms,
@@ -1037,7 +1034,7 @@ def _read_final_total(
         selectors=_FINAL_TOTAL_SUMMARY_SELECTORS,
         selector_cache=selector_cache,
     ):
-        for text in _locator_texts(
+        for text in locator_texts(
             page,
             selector,
             timeout_ms=timeout_ms,
@@ -1069,7 +1066,7 @@ def _read_final_total(
             return parsed
 
     label_totals: list[tuple[Decimal, str]] = []
-    for text in _locator_texts(
+    for text in locator_texts(
         page,
         _FINAL_TOTAL_GLOBAL_LABEL_SELECTOR,
         timeout_ms=timeout_ms,
@@ -1095,11 +1092,11 @@ def _final_total_texts(
 ) -> tuple[str, ...]:
     texts: list[str] = []
     for selector, _allow_price_only in _FINAL_TOTAL_SELECTED_SELECTORS:
-        texts.extend(_locator_texts(page, selector, timeout_ms=250, deadline=deadline))
+        texts.extend(locator_texts(page, selector, timeout_ms=250, deadline=deadline))
     for selector in _FINAL_TOTAL_SUMMARY_SELECTORS:
-        texts.extend(_locator_texts(page, selector, timeout_ms=250, deadline=deadline))
+        texts.extend(locator_texts(page, selector, timeout_ms=250, deadline=deadline))
     texts.extend(
-        _locator_texts(
+        locator_texts(
             page,
             _FINAL_TOTAL_GLOBAL_LABEL_SELECTOR,
             timeout_ms=250,
@@ -1107,94 +1104,6 @@ def _final_total_texts(
         )
     )
     return tuple(texts)
-
-
-def _locator_texts(
-    page: object,
-    selector: str,
-    *,
-    timeout_ms: int,
-    deadline: float | None,
-) -> list[str]:
-    try:
-        locators = page.locator(selector)  # type: ignore[attr-defined]
-    except Exception:
-        return []
-
-    local_budget_ms = max(1, timeout_ms)
-
-    def next_timeout_ms() -> int | None:
-        if local_budget_ms <= 0:
-            return None
-        if deadline is None:
-            return local_budget_ms
-        remaining_ms = _remaining_timeout_ms(deadline, raise_on_expired=False)
-        if remaining_ms <= 0:
-            return None
-        return max(1, min(local_budget_ms, remaining_ms))
-
-    def read_text(locator: object) -> str | None:
-        nonlocal local_budget_ms
-        text_timeout_ms = next_timeout_ms()
-        if text_timeout_ms is None:
-            return None
-        started_at = monotonic()
-        try:
-            text = locator.inner_text(timeout=text_timeout_ms)
-        except Exception:
-            return None
-        finally:
-            elapsed_ms = int((monotonic() - started_at) * 1000)
-            local_budget_ms = max(0, local_budget_ms - elapsed_ms)
-        return text if isinstance(text, str) else None
-
-    first = getattr(locators, "first", None)
-    if callable(first):
-        try:
-            first_locator = first()
-        except Exception:
-            return []
-    else:
-        first_locator = locators
-
-    texts: list[str] = []
-    first_text = read_text(first_locator)
-    if first_text is not None:
-        texts.append(first_text)
-
-    count = getattr(locators, "count", None)
-    if not callable(count):
-        return texts
-
-    try:
-        locator_count = count()
-    except Exception:
-        return texts
-
-    for index in range(1, locator_count):
-        try:
-            locator = locators.nth(index)
-        except Exception:
-            continue
-        text = read_text(locator)
-        if text is None and next_timeout_ms() is None:
-            break
-        if text is not None:
-            texts.append(text)
-    return texts
-
-
-def _dom_operation_timeout_ms(
-    *,
-    timeout_ms: int,
-    deadline: float | None,
-) -> int | None:
-    if deadline is None:
-        return max(1, timeout_ms)
-    remaining_ms = _remaining_timeout_ms(deadline, raise_on_expired=False)
-    if remaining_ms <= 0:
-        return None
-    return max(1, min(timeout_ms, remaining_ms))
 
 
 def _click_visible_option(
@@ -1333,27 +1242,6 @@ def _explicit_item_id(item: object) -> str | None:
     return None
 
 
-def _close_quietly(target: object | None) -> None:
-    if target is None:
-        return
-    close = getattr(target, "close", None)
-    if close is None:
-        return
-    try:
-        close()
-    except Exception:
-        return
-
-
-def _remaining_timeout_ms(deadline: float, *, raise_on_expired: bool = True) -> int:
-    remaining_seconds = deadline - monotonic()
-    if remaining_seconds <= 0:
-        if not raise_on_expired:
-            return 0
-        raise _timeout_error()
-    return max(1, round(remaining_seconds * 1000))
-
-
 def _wait_for_capture(
     state: _CaptureState,
     page: object,
@@ -1377,7 +1265,7 @@ def _wait_for_conservative_capture_result(
     poll_interval_seconds: float,
 ) -> TravelokaCaptureResult:
     while not state.completed and monotonic() < deadline:
-        remaining_ms = _remaining_timeout_ms(deadline, raise_on_expired=False)
+        remaining_ms = remaining_timeout_ms(deadline, raise_on_expired=False)
         if remaining_ms <= 0:
             break
         wait_ms = min(round(poll_interval_seconds * 1000), remaining_ms)
@@ -1388,7 +1276,7 @@ def _wait_for_conservative_capture_result(
 
 def _capture_result_after_wait(state: _CaptureState) -> TravelokaCaptureResult:
     if state.best_result is None:
-        raise _timeout_error()
+        raise timeout_error()
     if state.completed:
         return state.best_result
     return TravelokaCaptureResult(
@@ -1425,7 +1313,7 @@ def _wait_for_return_selection_transition(
             deadline=transition_deadline,
         ):
             return True
-        remaining_ms = _remaining_timeout_ms(
+        remaining_ms = remaining_timeout_ms(
             transition_deadline,
             raise_on_expired=False,
         )
@@ -1452,7 +1340,7 @@ def _wait_for_final_total(
 ) -> tuple[Decimal, str] | None:
     selector_cache = _FinalTotalSelectorCache()
     while monotonic() < deadline:
-        remaining_ms = _remaining_timeout_ms(deadline, raise_on_expired=False)
+        remaining_ms = remaining_timeout_ms(deadline, raise_on_expired=False)
         if remaining_ms <= 0:
             break
         final_total = _read_final_total(
@@ -1464,7 +1352,7 @@ def _wait_for_final_total(
         )
         if final_total is not None:
             return final_total
-        remaining_ms = _remaining_timeout_ms(deadline, raise_on_expired=False)
+        remaining_ms = remaining_timeout_ms(deadline, raise_on_expired=False)
         if remaining_ms <= 0:
             break
         wait_ms = min(round(poll_interval_seconds * 1000), remaining_ms)
@@ -1485,7 +1373,7 @@ def _return_selection_marker_texts(
         "[data-testid='bundle-summary-tray']",
         "[data-testid='flight-summary-tray-routes-v2']",
     ):
-        for text in _locator_texts(
+        for text in locator_texts(
             page,
             selector,
             timeout_ms=250,
@@ -1507,7 +1395,7 @@ def _return_selection_transitioned(
     for text in _return_selection_marker_texts(page, deadline=deadline):
         if _return_selection_marker_key(text) not in before_marker_keys:
             return True
-    body_text = _read_body_text(
+    body_text = read_body_text(
         page,
         timeout_ms=250,
         deadline=deadline,
@@ -1559,7 +1447,7 @@ def _wait_for_outbound_selection_transition(
             deadline=transition_deadline,
         ):
             return True
-        remaining_ms = _remaining_timeout_ms(
+        remaining_ms = remaining_timeout_ms(
             transition_deadline,
             raise_on_expired=False,
         )
@@ -1605,7 +1493,7 @@ def _outbound_selection_transitioned(
         and _selected_url_fragment(page_url, selected_key)
     ):
         return True
-    body_text = _read_body_text(
+    body_text = read_body_text(
         page,
         timeout_ms=250,
         deadline=deadline,
@@ -1620,135 +1508,3 @@ def _selected_url_fragment(url: str, selected_key: str | None) -> bool:
     if not selected_key:
         return False
     return urlparse(url).fragment == f"SC{selected_key}"
-
-
-def _read_body_text(
-    page: object,
-    *,
-    timeout_ms: int,
-    deadline: float | None,
-) -> str:
-    if deadline is None:
-        text_timeout_ms: int | None = max(1, timeout_ms)
-    else:
-        remaining_ms = _remaining_timeout_ms(deadline, raise_on_expired=False)
-        if remaining_ms <= 0:
-            text_timeout_ms = None
-        else:
-            text_timeout_ms = max(1, min(timeout_ms, remaining_ms))
-    if text_timeout_ms is None:
-        return ""
-    try:
-        return page.locator("body").inner_text(timeout=text_timeout_ms)  # type: ignore[attr-defined]
-    except Exception:
-        return ""
-
-
-def _is_timeout_exception(exc: Exception) -> bool:
-    if isinstance(exc, TimeoutError):
-        return True
-    type_name = type(exc).__name__.lower()
-    module_name = type(exc).__module__.lower()
-    return "timeout" in type_name or (
-        "playwright" in module_name and "timeout" in type_name
-    )
-
-
-def _timeout_error(exception_type: str | None = None) -> TravelokaProviderError:
-    return TravelokaProviderError(
-        failure_type="timeout",
-        message_en="Traveloka request timed out.",
-        error_code=ErrorCode.PROVIDER_TIMEOUT,
-        retryable=True,
-        exception_type=exception_type,
-    )
-
-
-def _browser_unavailable_error(exception_type: str | None = None) -> TravelokaProviderError:
-    return TravelokaProviderError(
-        failure_type="browser_unavailable",
-        message_en="Traveloka browser runtime is unavailable.",
-        error_code=ErrorCode.PROVIDER_FAILED,
-        retryable=True,
-        exception_type=exception_type,
-    )
-
-
-def _navigation_failed_error(exception_type: str | None = None) -> TravelokaProviderError:
-    return TravelokaProviderError(
-        failure_type="navigation_failed",
-        message_en="Traveloka browser navigation failed.",
-        error_code=ErrorCode.PROVIDER_FAILED,
-        retryable=True,
-        exception_type=exception_type,
-    )
-
-
-def _blocked_error(http_status_code: int | None = None) -> TravelokaProviderError:
-    return TravelokaProviderError(
-        failure_type="blocked",
-        message_en="Traveloka returned an access challenge.",
-        error_code=ErrorCode.PROVIDER_BLOCKED,
-        retryable=False,
-        http_status_code=http_status_code,
-    )
-
-
-def _rate_limited_error(http_status_code: int | None = None) -> TravelokaProviderError:
-    return TravelokaProviderError(
-        failure_type="rate_limited",
-        message_en="Traveloka rate limited the request.",
-        error_code=ErrorCode.PROVIDER_RATE_LIMITED,
-        retryable=True,
-        http_status_code=http_status_code,
-    )
-
-
-def _transport_error(http_status_code: int | None = None) -> TravelokaProviderError:
-    return TravelokaProviderError(
-        failure_type="transport_error",
-        message_en="Traveloka transport failed.",
-        error_code=ErrorCode.PROVIDER_FAILED,
-        retryable=http_status_code is None or http_status_code >= 500,
-        http_status_code=http_status_code,
-    )
-
-
-def _invalid_json_error(exception_type: str | None = None) -> TravelokaProviderError:
-    return TravelokaProviderError(
-        failure_type="invalid_json",
-        message_en="Traveloka returned invalid JSON.",
-        error_code=ErrorCode.PROVIDER_FAILED,
-        retryable=False,
-        exception_type=exception_type,
-    )
-
-
-def _unsupported_response_error() -> TravelokaProviderError:
-    return TravelokaProviderError(
-        failure_type="unsupported_response",
-        message_en="Traveloka returned an unsupported response.",
-        error_code=ErrorCode.PROVIDER_FAILED,
-        retryable=False,
-    )
-
-
-def _raise_blocked_if_terminal_page(content: str) -> None:
-    sample = content[:4096].lower()
-    blocked_markers = (
-        "captcha required",
-        "captcha challenge",
-        "captcha-delivery",
-        "complete the captcha",
-        "solve captcha",
-        "automated bot traffic detected",
-        "bot challenge",
-        "robot check",
-        "verify you are not a bot",
-        "access challenge",
-        "access denied",
-        "please enable js and disable any ad blocker",
-        "unusual traffic",
-    )
-    if any(marker in sample for marker in blocked_markers):
-        raise _blocked_error()

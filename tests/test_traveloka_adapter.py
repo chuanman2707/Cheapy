@@ -13,6 +13,8 @@ from cheapy.providers.base import (
     ProviderExactRoundTripRequest,
 )
 from cheapy.providers.traveloka import adapter as traveloka_adapter
+from cheapy.providers.traveloka import browser_helpers
+from cheapy.providers.traveloka import errors as traveloka_errors
 from cheapy.providers.traveloka import results as traveloka_results
 from cheapy.providers.traveloka.adapter import TravelokaAdapter, TravelokaProviderError
 from cheapy.providers.traveloka.results import (
@@ -412,6 +414,28 @@ def test_traveloka_result_contracts_live_in_results_module() -> None:
     assert selected.final_total_currency == "USD"
 
 
+def test_traveloka_error_factories_live_in_errors_module() -> None:
+    timeout_error = traveloka_errors.timeout_error("PlaywrightTimeoutError")
+    blocked_error = traveloka_errors.blocked_error(403)
+
+    assert isinstance(timeout_error, traveloka_errors.TravelokaProviderError)
+    assert timeout_error.failure_type == "timeout"
+    assert timeout_error.exception_type == "PlaywrightTimeoutError"
+    assert blocked_error.failure_type == "blocked"
+    assert blocked_error.http_status_code == 403
+    assert "http" not in blocked_error.message_en.lower()
+
+
+def test_browser_helpers_keep_deadline_and_dom_reads_together() -> None:
+    deadline = traveloka_adapter.monotonic() + 10
+
+    assert browser_helpers.remaining_timeout_ms(deadline) > 0
+    assert browser_helpers.dom_operation_timeout_ms(
+        timeout_ms=250,
+        deadline=deadline,
+    ) <= 250
+
+
 def test_phase_recorder_records_safe_phase_without_sensitive_metadata() -> None:
     now_values = iter([10.0, 10.125])
     recorder = TravelokaPhaseRecorder(clock=lambda: next(now_values))
@@ -762,7 +786,7 @@ def test_visible_options_from_page_caps_far_future_deadline_to_local_timeout(
         attrs={"data-testid": "out-1"},
     )
     page = LocatorFakePage([], option_groups=[[locator]])
-    monkeypatch.setattr(traveloka_adapter, "monotonic", lambda: 0.0)
+    monkeypatch.setattr(browser_helpers, "monotonic", lambda: 0.0)
 
     options = traveloka_adapter._visible_options_from_page(
         page,
@@ -788,7 +812,7 @@ def test_visible_options_from_page_uses_fresh_remaining_deadline_for_each_read(
     )
     page = LocatorFakePage([], option_groups=[[first_locator, second_locator]])
     now_values = iter([9.0, 9.1, 9.2, 9.3])
-    monkeypatch.setattr(traveloka_adapter, "monotonic", lambda: next(now_values))
+    monkeypatch.setattr(browser_helpers, "monotonic", lambda: next(now_values))
 
     options = traveloka_adapter._visible_options_from_page(page, deadline=10.0)
 
@@ -830,7 +854,7 @@ def test_read_final_total_uses_fresh_remaining_deadline_for_each_read(
         },
     )
     now_values = iter([9.0, 9.0, 9.2, 9.2, 9.2, 9.2])
-    monkeypatch.setattr(traveloka_adapter, "monotonic", lambda: next(now_values))
+    monkeypatch.setattr(browser_helpers, "monotonic", lambda: next(now_values))
 
     result = traveloka_adapter._read_final_total(page, deadline=10.0)
 
@@ -1112,7 +1136,7 @@ def test_locator_texts_waits_on_first_locator_before_counting() -> None:
         selector_locators={"[data-testid='prices']": FirstThenCountCollection()},
     )
 
-    assert traveloka_adapter._locator_texts(
+    assert browser_helpers.locator_texts(
         page,
         "[data-testid='prices']",
         timeout_ms=456,
@@ -1128,9 +1152,9 @@ def test_locator_texts_caps_far_future_deadline_to_local_timeout(
         [],
         selector_locators={"[data-testid='prices']": price},
     )
-    monkeypatch.setattr(traveloka_adapter, "monotonic", lambda: 0.0)
+    monkeypatch.setattr(browser_helpers, "monotonic", lambda: 0.0)
 
-    assert traveloka_adapter._locator_texts(
+    assert browser_helpers.locator_texts(
         page,
         "[data-testid='prices']",
         timeout_ms=456,
@@ -1151,9 +1175,9 @@ def test_locator_texts_decrements_local_budget_with_deadline(
         },
     )
     now_values = iter([0.0, 0.0, 0.2, 0.2, 0.2, 0.2])
-    monkeypatch.setattr(traveloka_adapter, "monotonic", lambda: next(now_values))
+    monkeypatch.setattr(browser_helpers, "monotonic", lambda: next(now_values))
 
-    assert traveloka_adapter._locator_texts(
+    assert browser_helpers.locator_texts(
         page,
         "[data-testid='prices']",
         timeout_ms=456,
@@ -1366,9 +1390,9 @@ def test_read_body_text_caps_timeout_when_deadline_is_far_future(
 ) -> None:
     body = TextFakeLocator(text="Your Flights")
     page = LocatorFakePage([], selector_locators={"body": body})
-    monkeypatch.setattr(traveloka_adapter, "monotonic", lambda: 10.0)
+    monkeypatch.setattr(browser_helpers, "monotonic", lambda: 10.0)
 
-    result = traveloka_adapter._read_body_text(
+    result = browser_helpers.read_body_text(
         page,
         timeout_ms=250,
         deadline=999.0,
