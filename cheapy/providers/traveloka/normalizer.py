@@ -14,12 +14,16 @@ from cheapy.models import (
     OfferFlagsV1,
 )
 from cheapy.providers.base import ProviderExactOneWayRequest, ProviderExactRoundTripRequest
+from cheapy.providers.traveloka.normalization.canonical import (
+    _TravelokaSearchResultItem,
+)
 from cheapy.providers.traveloka.normalization.errors import (
     currency_unavailable_error,
     parse_error,
     return_details_unavailable_error,
     selected_round_trip_error,
 )
+from cheapy.providers.traveloka.normalization.payloads import itinerary_items
 from cheapy.providers.traveloka.normalization.ranking import rank_offers
 from cheapy.providers.traveloka.results import TravelokaSelectedRoundTripResult
 
@@ -35,7 +39,7 @@ def normalize_payload(
     """Convert parsed Traveloka payload mappings into Contract V1 offers."""
     offers: list[FlightOfferV1] = []
     errors: list[ErrorV1] = []
-    for item_index, item in enumerate(_itinerary_items(payload), start=1):
+    for item_index, item in enumerate(itinerary_items(payload), start=1):
         try:
             normalized = _normalize_item(
                 item,
@@ -166,11 +170,6 @@ class _ItemNormalizationError(Exception):
     def __init__(self, error: ErrorV1) -> None:
         super().__init__(error.message_en)
         self.error = error
-
-
-@dataclass(frozen=True)
-class _TravelokaSearchResultItem:
-    payload: Mapping[str, object]
 
 
 @dataclass(frozen=True)
@@ -316,23 +315,6 @@ def _normalize_item(
         raise _ItemNormalizationError(parse_error(item_index, request, exc)) from exc
 
 
-def _itinerary_items(payload: object) -> list[object]:
-    search_results = _list_at_path(payload, ("data", "searchResults"))
-    if search_results is not None:
-        return [_canonical_search_result(item) for item in search_results]
-
-    for path in (
-        ("data", "itineraries"),
-        ("data", "flightSearchResult", "itineraries"),
-        ("itineraries",),
-        ("flightSearchResult", "itineraries"),
-    ):
-        items = _list_at_path(payload, path)
-        if items is not None:
-            return items
-    return list(_recursive_offer_items(payload))
-
-
 def _selected_leg_item(
     payload: object,
     *,
@@ -341,7 +323,7 @@ def _selected_leg_item(
     end: str,
     departure_date: str,
 ) -> _SelectedLegItem:
-    for item_index, item in enumerate(_itinerary_items(payload), start=1):
+    for item_index, item in enumerate(itinerary_items(payload), start=1):
         raw_item = item.payload if isinstance(item, _TravelokaSearchResultItem) else item
         if not isinstance(raw_item, Mapping):
             continue
@@ -372,183 +354,6 @@ def _selected_failure_fallback(
     offers, errors = normalize_payload(result.outbound_payload, request)
     errors.append(selected_round_trip_error(failure_type, request))
     return offers, errors
-
-
-def _list_at_path(payload: object, path: tuple[str, ...]) -> list[object] | None:
-    current = payload
-    for key in path:
-        if not isinstance(current, Mapping):
-            return None
-        current = current.get(key)
-    if isinstance(current, list):
-        return list(current)
-    if isinstance(current, tuple):
-        return list(current)
-    return None
-
-
-def _canonical_search_result(item: object) -> object:
-    if not isinstance(item, Mapping):
-        return item
-
-    canonical: dict[str, object] = {}
-    if item.get("id") not in (None, ""):
-        canonical["id"] = item["id"]
-
-    price = _traveloka_search_result_price(item)
-    if price:
-        canonical["price"] = price
-
-    metadata = item.get("flightMetadata")
-    if isinstance(metadata, Mapping):
-        if metadata.get("tripDuration") is not None:
-            canonical["durationMinutes"] = metadata["tripDuration"]
-        if metadata.get("totalNumStop") is not None:
-            canonical["stops"] = metadata["totalNumStop"]
-
-    segments = _traveloka_search_result_segments(item)
-    if segments is not None:
-        canonical["segments"] = segments
-
-    return _TravelokaSearchResultItem(canonical)
-
-
-def _traveloka_search_result_price(item: Mapping[str, object]) -> dict[str, object]:
-    partial_price: dict[str, object] = {}
-    for price in (
-        _traveloka_price_at_path(item, ("fare", "display")),
-        _traveloka_price_at_path(
-            item,
-            ("flightMetadata", "totalCombinedPrice"),
-        ),
-    ):
-        if "amount" in price and "currency" in price:
-            return price
-        if price and not partial_price:
-            partial_price = price
-    return partial_price
-
-
-def _traveloka_price_at_path(
-    item: Mapping[str, object],
-    path: tuple[str, ...],
-) -> dict[str, object]:
-    value: object = item
-    for key in path:
-        if not isinstance(value, Mapping):
-            return {}
-        value = value.get(key)
-    if not isinstance(value, Mapping):
-        return {}
-
-    currency_value = value.get("currencyValue")
-    if not isinstance(currency_value, Mapping):
-        return {}
-
-    price: dict[str, object] = {}
-    if currency_value.get("currency") is not None:
-        price["currency"] = currency_value["currency"]
-    if currency_value.get("amount") is not None:
-        price["amount"] = _minor_units_amount(
-            currency_value["amount"],
-            value.get("numOfDecimalPoint"),
-        )
-    return price
-
-
-def _minor_units_amount(amount: object, decimal_points: object) -> object:
-    try:
-        scale = int(decimal_points) if decimal_points is not None else 0
-        return float(Decimal(str(amount)).scaleb(-scale))
-    except Exception:
-        return amount
-
-
-def _traveloka_search_result_segments(
-    item: Mapping[str, object],
-) -> list[dict[str, object]] | None:
-    routes = item.get("connectingFlightRoutes")
-    if not isinstance(routes, list):
-        return None
-
-    segments: list[dict[str, object]] = []
-    for route in routes:
-        if not isinstance(route, Mapping):
-            continue
-        route_segments = route.get("segments")
-        if not isinstance(route_segments, list):
-            continue
-        for segment in route_segments:
-            if isinstance(segment, Mapping):
-                segments.append(_canonical_search_result_segment(segment))
-    return segments
-
-
-def _canonical_search_result_segment(
-    segment: Mapping[str, object],
-) -> dict[str, object]:
-    canonical: dict[str, object] = {}
-    for source_key, target_key in (
-        ("departureAirport", "origin"),
-        ("arrivalAirport", "destination"),
-        ("airlineCode", "airlineCode"),
-        ("flightNumber", "flightNumber"),
-        ("durationMinutes", "durationMinutes"),
-    ):
-        if segment.get(source_key) is not None:
-            canonical[target_key] = segment[source_key]
-
-    departure_time = _traveloka_datetime(
-        segment.get("departureDate"),
-        segment.get("departureTime"),
-    )
-    if departure_time is not None:
-        canonical["departureTime"] = departure_time
-
-    arrival_time = _traveloka_datetime(
-        segment.get("arrivalDate"),
-        segment.get("arrivalTime"),
-    )
-    if arrival_time is not None:
-        canonical["arrivalTime"] = arrival_time
-
-    return canonical
-
-
-def _traveloka_datetime(date_value: object, time_value: object) -> str | None:
-    if not isinstance(date_value, Mapping) or not isinstance(time_value, Mapping):
-        return None
-    try:
-        timestamp = datetime(
-            int(date_value["year"]),
-            int(date_value["month"]),
-            int(date_value["day"]),
-            int(time_value["hour"]),
-            int(time_value["minute"]),
-        )
-    except Exception:
-        return None
-    return timestamp.isoformat(timespec="seconds")
-
-
-def _recursive_offer_items(value: object) -> list[object]:
-    if isinstance(value, Mapping):
-        if _is_offer_like(value):
-            return [value]
-        items: list[object] = []
-        for child in value.values():
-            items.extend(_recursive_offer_items(child))
-        return items
-    if isinstance(value, (list, tuple)):
-        items = []
-        for child in value:
-            items.extend(_recursive_offer_items(child))
-        return items
-    return []
-
-
-def _is_offer_like(value: Mapping[str, object]) -> bool:
-    return "price" in value and _segment_list(value) is not None
 
 
 def _price_mapping(item: Mapping[str, object]) -> Mapping[str, object]:
