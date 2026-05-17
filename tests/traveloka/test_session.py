@@ -57,6 +57,28 @@ class FakeBrowser:
         self.closed = True
 
 
+class FailingContextBrowser:
+    def __init__(self, exc: Exception) -> None:
+        self.exc = exc
+        self.closed = False
+
+    def new_context(self, **kwargs: object) -> object:
+        assert kwargs == {"locale": "en-US"}
+        raise self.exc
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class FailingGotoPage(FakePage):
+    def __init__(self, exc: Exception) -> None:
+        super().__init__()
+        self.exc = exc
+
+    def goto(self, url: str, *, wait_until: str, timeout: int) -> None:
+        raise self.exc
+
+
 def test_open_browser_session_sets_up_page_and_cleans_up() -> None:
     page = FakePage()
     context = FakeContext(page)
@@ -110,3 +132,94 @@ def test_open_browser_session_maps_launch_failure_to_provider_error() -> None:
 
     assert exc_info.value.failure_type == "browser_unavailable"
     assert exc_info.value.exception_type == "RuntimeError"
+
+
+def test_open_browser_session_maps_context_setup_failure_to_navigation_failed() -> None:
+    browser = FailingContextBrowser(ValueError("secret context failure"))
+
+    def launch_browser(**kwargs: object) -> FailingContextBrowser:
+        return browser
+
+    with pytest.raises(TravelokaProviderError) as exc_info:
+        with traveloka_session.open_browser_session(
+            _request(),
+            base_url="https://www.traveloka.com",
+            timeout_seconds=1.0,
+            launch_browser=launch_browser,
+            phase_recorder=TravelokaPhaseRecorder(clock=monotonic),
+        ):
+            raise AssertionError("session should not open")
+
+    assert exc_info.value.failure_type == "navigation_failed"
+    assert exc_info.value.exception_type == "ValueError"
+    assert browser.closed is True
+
+
+def test_open_browser_session_maps_navigation_failure_to_navigation_failed() -> None:
+    page = FailingGotoPage(RuntimeError("secret navigation failure"))
+    context = FakeContext(page)
+    browser = FakeBrowser(context)
+
+    def launch_browser(**kwargs: object) -> FakeBrowser:
+        return browser
+
+    with pytest.raises(TravelokaProviderError) as exc_info:
+        with traveloka_session.open_browser_session(
+            _request(),
+            base_url="https://www.traveloka.com",
+            timeout_seconds=1.0,
+            launch_browser=launch_browser,
+            phase_recorder=TravelokaPhaseRecorder(clock=monotonic),
+        ):
+            raise AssertionError("session should not open")
+
+    assert exc_info.value.failure_type == "navigation_failed"
+    assert exc_info.value.exception_type == "RuntimeError"
+    assert context.closed is True
+    assert browser.closed is True
+
+
+def test_open_browser_session_maps_timeout_like_navigation_failure_to_timeout() -> None:
+    page = FailingGotoPage(TimeoutError("secret timeout detail"))
+    context = FakeContext(page)
+    browser = FakeBrowser(context)
+
+    def launch_browser(**kwargs: object) -> FakeBrowser:
+        return browser
+
+    with pytest.raises(TravelokaProviderError) as exc_info:
+        with traveloka_session.open_browser_session(
+            _request(),
+            base_url="https://www.traveloka.com",
+            timeout_seconds=1.0,
+            launch_browser=launch_browser,
+            phase_recorder=TravelokaPhaseRecorder(clock=monotonic),
+        ):
+            raise AssertionError("session should not open")
+
+    assert exc_info.value.failure_type == "timeout"
+    assert exc_info.value.exception_type == "TimeoutError"
+    assert context.closed is True
+    assert browser.closed is True
+
+
+def test_open_browser_session_does_not_map_user_code_after_yield() -> None:
+    page = FakePage()
+    context = FakeContext(page)
+    browser = FakeBrowser(context)
+
+    def launch_browser(**kwargs: object) -> FakeBrowser:
+        return browser
+
+    with pytest.raises(RuntimeError, match="workflow failed"):
+        with traveloka_session.open_browser_session(
+            _request(),
+            base_url="https://www.traveloka.com",
+            timeout_seconds=1.0,
+            launch_browser=launch_browser,
+            phase_recorder=TravelokaPhaseRecorder(clock=monotonic),
+        ):
+            raise RuntimeError("workflow failed")
+
+    assert context.closed is True
+    assert browser.closed is True

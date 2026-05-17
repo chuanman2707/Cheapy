@@ -53,21 +53,30 @@ def open_browser_session(
                 type(exc).__name__
             ) from None
 
-        with phase_recorder.phase("context_page_setup"):
-            remaining_timeout_ms(deadline)
-            context = browser.new_context(locale="en-US")  # type: ignore[attr-defined]
-            remaining_timeout_ms(deadline)
-            page = context.new_page()  # type: ignore[attr-defined]
-            remaining_timeout_ms(deadline)
-            page.on("response", state.handle_response)  # type: ignore[attr-defined]
+        try:
+            with phase_recorder.phase("context_page_setup"):
+                remaining_timeout_ms(deadline)
+                context = browser.new_context(locale="en-US")  # type: ignore[attr-defined]
+                remaining_timeout_ms(deadline)
+                page = context.new_page()  # type: ignore[attr-defined]
+                remaining_timeout_ms(deadline)
+                page.on("response", state.handle_response)  # type: ignore[attr-defined]
 
-        with phase_recorder.phase("initial_navigation"):
-            remaining_timeout_ms(deadline)
-            page.goto(  # type: ignore[attr-defined]
-                traveloka_urls.build_full_search_url(request, base_url=base_url),
-                wait_until="domcontentloaded",
-                timeout=remaining_timeout_ms(deadline),
-            )
+            with phase_recorder.phase("initial_navigation"):
+                remaining_timeout_ms(deadline)
+                page.goto(  # type: ignore[attr-defined]
+                    traveloka_urls.build_full_search_url(request, base_url=base_url),
+                    wait_until="domcontentloaded",
+                    timeout=remaining_timeout_ms(deadline),
+                )
+        except traveloka_errors.TravelokaProviderError:
+            raise
+        except Exception as exc:
+            if traveloka_errors.is_timeout_exception(exc):
+                raise traveloka_errors.timeout_error(type(exc).__name__) from None
+            raise traveloka_errors.navigation_failed_error(
+                type(exc).__name__
+            ) from None
 
         yield TravelokaBrowserSession(page=page, state=state, deadline=deadline)
     finally:
