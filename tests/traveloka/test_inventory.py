@@ -336,6 +336,21 @@ def _inventory_card_option(
     )
 
 
+def test_traveloka_inventory_module_owns_visible_option_contract() -> None:
+    option = traveloka_inventory.TravelokaVisibleOption(
+        key="out-1",
+        airline_name="Traveloka Air",
+        departure_time_text=None,
+        arrival_time_text=None,
+        route_text=None,
+        price_amount=Decimal("10.00"),
+        currency="USD",
+        locator=FakeLocator(),
+    )
+
+    assert traveloka_inventory.cheapest_visible_option([option]) == option
+
+
 def test_cheapest_visible_option_returns_none_for_empty_options() -> None:
     assert traveloka_inventory.cheapest_visible_option([]) is None
 

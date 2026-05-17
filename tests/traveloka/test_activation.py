@@ -336,6 +336,27 @@ def _inventory_card_option(
     )
 
 
+def test_traveloka_activation_module_clicks_visible_option() -> None:
+    locator = ScrollableFakeLocator()
+    option = traveloka_inventory.TravelokaVisibleOption(
+        key="out-1",
+        airline_name=None,
+        departure_time_text=None,
+        arrival_time_text=None,
+        route_text=None,
+        price_amount=Decimal("10.00"),
+        currency="USD",
+        locator=locator,
+    )
+
+    traveloka_activation.click_visible_option(option, timeout_ms=1000)
+
+    assert locator.evaluate_scripts == [
+        traveloka_activation.TRAVELOKA_OPTION_ACTIVATION_SCRIPT
+    ]
+    assert locator.scroll_kwargs[0]["timeout"] == 1000
+
+
 def test_click_visible_option_dispatches_traveloka_activation_sequence() -> None:
     locator = FakeLocator()
     option = _visible_option(key="out-1", locator=locator)

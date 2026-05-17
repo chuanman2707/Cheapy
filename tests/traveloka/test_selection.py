@@ -336,6 +336,19 @@ def _inventory_card_option(
     )
 
 
+def test_traveloka_selection_module_detects_return_transition() -> None:
+    page = LocatorFakePage(
+        [],
+        selector_locators={
+            "[data-testid='flight-summary-container-1_selected']": FakeLocatorCollection(
+                [TextFakeLocator(text="Return\nChange return flight")]
+            )
+        },
+    )
+
+    assert traveloka_selection.return_selection_transitioned(page) is True
+
+
 def test_wait_for_return_selection_transition_recognizes_selected_summary() -> None:
     page = LocatorFakePage(
         [],

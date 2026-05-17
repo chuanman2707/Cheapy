@@ -336,6 +336,19 @@ def _inventory_card_option(
     )
 
 
+def test_traveloka_totals_module_reads_final_total() -> None:
+    page = LocatorFakePage(
+        [],
+        selector_locators={
+            "[data-testid*='checkout'][data-testid*='total']": FakeLocatorCollection(
+                [TextFakeLocator(text="Checkout total USD 321.09")]
+            )
+        },
+    )
+
+    assert traveloka_totals.read_final_total(page) == (Decimal("321.09"), "USD")
+
+
 def test_read_final_total_prefers_explicit_selected_total_and_uses_bounded_timeout() -> None:
     stale_total = TextFakeLocator(text="Trip total USD 999.00")
     selected_total = TextFakeLocator(text="Selected final total USD 321.09")

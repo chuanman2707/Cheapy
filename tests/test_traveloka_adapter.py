@@ -476,68 +476,6 @@ def test_browser_helpers_keep_deadline_and_dom_reads_together() -> None:
     ) <= 250
 
 
-def test_traveloka_totals_module_reads_final_total() -> None:
-    page = LocatorFakePage(
-        [],
-        selector_locators={
-            "[data-testid*='checkout'][data-testid*='total']": FakeLocatorCollection(
-                [TextFakeLocator(text="Checkout total USD 321.09")]
-            )
-        },
-    )
-
-    assert traveloka_totals.read_final_total(page) == (Decimal("321.09"), "USD")
-
-
-def test_traveloka_selection_module_detects_return_transition() -> None:
-    page = LocatorFakePage(
-        [],
-        selector_locators={
-            "[data-testid='flight-summary-container-1_selected']": FakeLocatorCollection(
-                [TextFakeLocator(text="Return\nChange return flight")]
-            )
-        },
-    )
-
-    assert traveloka_selection.return_selection_transitioned(page) is True
-
-
-def test_traveloka_inventory_module_owns_visible_option_contract() -> None:
-    option = traveloka_inventory.TravelokaVisibleOption(
-        key="out-1",
-        airline_name="Traveloka Air",
-        departure_time_text=None,
-        arrival_time_text=None,
-        route_text=None,
-        price_amount=Decimal("10.00"),
-        currency="USD",
-        locator=FakeLocator(),
-    )
-
-    assert traveloka_inventory.cheapest_visible_option([option]) == option
-
-
-def test_traveloka_activation_module_clicks_visible_option() -> None:
-    locator = ScrollableFakeLocator()
-    option = traveloka_inventory.TravelokaVisibleOption(
-        key="out-1",
-        airline_name=None,
-        departure_time_text=None,
-        arrival_time_text=None,
-        route_text=None,
-        price_amount=Decimal("10.00"),
-        currency="USD",
-        locator=locator,
-    )
-
-    traveloka_activation.click_visible_option(option, timeout_ms=1000)
-
-    assert locator.evaluate_scripts == [
-        traveloka_activation.TRAVELOKA_OPTION_ACTIVATION_SCRIPT
-    ]
-    assert locator.scroll_kwargs[0]["timeout"] == 1000
-
-
 def test_phase_recorder_records_safe_phase_without_sensitive_metadata() -> None:
     now_values = iter([10.0, 10.125])
     recorder = TravelokaPhaseRecorder(clock=lambda: next(now_values))
