@@ -33,19 +33,73 @@ def test_built_wheel_can_load_packaged_airport_and_provider_data(tmp_path: Path)
     wheel = wheels[0]
     with zipfile.ZipFile(wheel) as archive:
         names = set(archive.namelist())
+        metadata_paths = [
+            name for name in names if name.endswith(".dist-info/METADATA")
+        ]
+        assert len(metadata_paths) == 1
+        metadata = archive.read(metadata_paths[0]).decode("utf-8")
     assert "cheapy/data/airports.v1.json" in names
     assert "cheapy/data/hubs.v1.json" in names
     assert "cheapy/data/README.md" in names
     assert "cheapy/providers/manual_fixture/manifest.toml" in names
     assert "cheapy/providers/google_fli/manifest.toml" in names
     assert "cheapy/providers/traveloka/manifest.toml" in names
+    assert "Requires-Dist: cloakbrowser>=0.3.26" in metadata
+    assert "Requires-Dist: flights>=0.8.4" in metadata
+    assert (
+        "Requires-Dist: mcp<1.28,>=1.27.1" in metadata
+        or "Requires-Dist: mcp>=1.27.1,<1.28" in metadata
+    )
+    assert "Requires-Dist: pydantic>=2.10" in metadata
+    assert "Requires-Dist: tomlkit>=0.15.0" in metadata
+    assert "Requires-Dist: typer>=0.15" in metadata
 
     venv_dir = tmp_path / "venv"
     subprocess.run([sys.executable, "-m", "venv", str(venv_dir)], check=True)
 
     python = venv_dir / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+    requirements_path = tmp_path / "runtime-requirements.txt"
     subprocess.run(
-        ["uv", "pip", "install", "--python", str(python), "--offline", str(wheel)],
+        [
+            "uv",
+            "export",
+            "--no-dev",
+            "--no-emit-project",
+            "--format",
+            "requirements-txt",
+            "--output-file",
+            str(requirements_path),
+        ],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    subprocess.run(
+        [
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            str(python),
+            "--offline",
+            "--requirement",
+            str(requirements_path),
+        ],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    subprocess.run(
+        [
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            str(python),
+            "--offline",
+            "--no-deps",
+            str(wheel),
+        ],
         check=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

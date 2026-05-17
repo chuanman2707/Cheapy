@@ -281,6 +281,50 @@ def test_providers_test_live_reports_structured_provider_failure_without_crashin
     assert provider["live_smoke"] == "run"
 
 
+def test_providers_test_live_keeps_fixture_failures_failing(monkeypatch) -> None:
+    class FailingFixtureProvider:
+        name = "manual_fixture"
+        capabilities = ("exact_one_way",)
+
+        async def search_exact_one_way(
+            self,
+            request: ProviderExactOneWayRequest,
+        ) -> ProviderResult:
+            return ProviderResult(
+                provider_name=self.name,
+                capability="exact_one_way",
+                status=ProviderStatusCode.FAILED,
+                offers=[],
+                warnings=[],
+                errors=[
+                    ErrorV1(
+                        code=ErrorCode.PROVIDER_FAILED,
+                        severity=Severity.ERROR,
+                        message_en="Fixture provider failed.",
+                    )
+                ],
+                duration_ms=1,
+                retryable=False,
+            )
+
+    monkeypatch.setenv("CHEAPY_RUN_LIVE_TESTS", "1")
+    monkeypatch.setattr(
+        "cheapy.cli.load_live_test_providers",
+        lambda: [FailingFixtureProvider()],
+    )
+
+    result = runner.invoke(app, ["providers", "test", "--live"])
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert json.loads(result.stderr) == {
+        "error": True,
+        "code": "PROVIDER_TEST_FAILED",
+        "message": "One or more provider checks failed.",
+        "suggestion": "Run 'cheapy providers test --human' for a concise provider report.",
+    }
+
+
 def test_providers_test_live_reports_unexpected_provider_exception(monkeypatch) -> None:
     class RaisingLiveProvider:
         name = "google_fli"
