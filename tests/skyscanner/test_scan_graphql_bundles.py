@@ -539,3 +539,65 @@ def test_scan_url_sanitizes_entry_fetch_failure_details() -> None:
         "exception_type": "TimeoutError",
         "final_url": "https://www.skyscanner.net/login",
     }
+
+
+def test_main_prints_success_payload_to_stdout(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def fake_fetcher(url: str, **kwargs: object) -> scanner.FetchSuccess:
+        if url.endswith("/page"):
+            return _success(
+                url=url,
+                content_type="text/html",
+                body=b'<script src="/assets/app.js"></script>',
+            )
+        return _success(
+            url=url,
+            content_type="application/javascript",
+            body=b"query FlightSearchQuery { search { id } }",
+        )
+
+    exit_code = scanner.main(
+        [
+            "--url",
+            "https://www.skyscanner.net/page",
+            "--max-bundles",
+            "1",
+            "--max-bytes-per-bundle",
+            "1000",
+            "--timeout-seconds",
+            "3",
+        ],
+        fetcher=fake_fetcher,
+        now=lambda: "2026-05-18T00:00:00Z",
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.err == ""
+    assert '"schema_version": "1"' in captured.out
+    assert '"FlightSearchQuery"' in captured.out
+
+
+def test_main_prints_fatal_error_to_stderr(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = scanner.main(["--url", "http://example.test"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    assert '"error": true' in captured.err
+    assert '"error_type": "invalid_url"' in captured.err
+
+
+def test_main_prints_missing_url_as_json_error(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = scanner.main([])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    assert '"error": true' in captured.err
+    assert '"error_type": "invalid_url"' in captured.err

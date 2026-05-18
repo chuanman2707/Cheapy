@@ -7,7 +7,10 @@ provider registry.
 
 from __future__ import annotations
 
+import argparse
+import json
 import re
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -433,3 +436,52 @@ def scan_url(
         "bundles": bundles,
         "errors": errors,
     }
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Scan same-origin Skyscanner JavaScript bundles for GraphQL signals.",
+    )
+    parser.add_argument("--url", help="HTTPS Skyscanner entry URL.")
+    parser.add_argument("--max-bundles", type=int, default=DEFAULT_MAX_BUNDLES)
+    parser.add_argument(
+        "--max-bytes-per-bundle",
+        type=int,
+        default=DEFAULT_MAX_BYTES_PER_BUNDLE,
+    )
+    parser.add_argument("--timeout-seconds", type=float, default=DEFAULT_TIMEOUT_SECONDS)
+    return parser
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    fetcher: Fetcher = fetch_url,
+    now: Clock = utc_now_iso,
+) -> int:
+    args = _parser().parse_args(argv)
+    try:
+        if args.url is None:
+            raise ScannerFatalError(
+                error_type="invalid_url",
+                message="Entry URL must be an HTTPS URL with a host.",
+                details={"target_url": ""},
+            )
+        payload = scan_url(
+            args.url,
+            max_bundles=args.max_bundles,
+            max_bytes_per_bundle=args.max_bytes_per_bundle,
+            timeout_seconds=args.timeout_seconds,
+            fetcher=fetcher,
+            now=now,
+        )
+    except ScannerFatalError as exc:
+        print(json.dumps(exc.to_error_payload(), sort_keys=True), file=sys.stderr)
+        return 1
+
+    print(json.dumps(payload, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
