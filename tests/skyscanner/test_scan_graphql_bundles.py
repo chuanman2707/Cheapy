@@ -419,6 +419,49 @@ def test_scan_url_reports_bundle_failure_and_continues() -> None:
     ]
 
 
+def test_scan_url_sanitizes_bundle_failure_details() -> None:
+    responses = {
+        "https://www.skyscanner.net/page": _success(
+            url="https://www.skyscanner.net/page",
+            content_type="text/html",
+            body=b'<script src="/assets/a.js"></script>',
+        ),
+        "https://www.skyscanner.net/assets/a.js": scanner.FetchFailure(
+            error_type="fetch_failed",
+            message="Fetch failed.",
+            url="https://www.skyscanner.net/assets/a.js",
+            details={
+                "exception_type": "TimeoutError",
+                "final_url": "https://www.skyscanner.net/assets/a.js",
+                "body": "secret body",
+                "headers": {"authorization": "secret"},
+                "raw": b"raw bytes",
+                "snippet": "debug snippet",
+            },
+        ),
+    }
+
+    def fake_fetcher(
+        url: str,
+        **kwargs: object,
+    ) -> scanner.FetchSuccess | scanner.FetchFailure:
+        return responses[url]
+
+    payload = scanner.scan_url(
+        "https://www.skyscanner.net/page",
+        max_bundles=20,
+        max_bytes_per_bundle=1000,
+        timeout_seconds=15,
+        fetcher=fake_fetcher,
+        now=lambda: "2026-05-18T00:00:00Z",
+    )
+
+    assert payload["errors"][0]["details"] == {
+        "exception_type": "TimeoutError",
+        "final_url": "https://www.skyscanner.net/assets/a.js",
+    }
+
+
 def test_scan_url_rejects_non_html_entry_response() -> None:
     def fake_fetcher(url: str, **kwargs: object) -> scanner.FetchSuccess:
         return _success(
@@ -462,3 +505,37 @@ def test_scan_url_maps_entry_fetch_failure() -> None:
         )
 
     assert exc_info.value.to_error_payload()["error_type"] == "entry_fetch_failed"
+
+
+def test_scan_url_sanitizes_entry_fetch_failure_details() -> None:
+    def fake_fetcher(url: str, **kwargs: object) -> scanner.FetchFailure:
+        return scanner.FetchFailure(
+            error_type="fetch_failed",
+            message="Fetch failed.",
+            url=url,
+            details={
+                "exception_type": "TimeoutError",
+                "final_url": "https://www.skyscanner.net/login",
+                "body": "secret body",
+                "headers": {"authorization": "secret"},
+                "raw": b"raw bytes",
+                "snippet": "debug snippet",
+            },
+        )
+
+    with pytest.raises(scanner.ScannerFatalError) as exc_info:
+        scanner.scan_url(
+            "https://www.skyscanner.net/page",
+            max_bundles=20,
+            max_bytes_per_bundle=1000,
+            timeout_seconds=15,
+            fetcher=fake_fetcher,
+            now=lambda: "2026-05-18T00:00:00Z",
+        )
+
+    assert exc_info.value.to_error_payload()["details"] == {
+        "target_url": "https://www.skyscanner.net/page",
+        "status_code": None,
+        "exception_type": "TimeoutError",
+        "final_url": "https://www.skyscanner.net/login",
+    }

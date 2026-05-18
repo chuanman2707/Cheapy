@@ -298,6 +298,15 @@ def _decode_bytes(body: bytes) -> str:
     return body.decode("utf-8", errors="replace")
 
 
+def _safe_error_details(details: dict[str, object] | None) -> dict[str, object]:
+    safe_keys = {"exception_type", "final_url"}
+    return {
+        key: value
+        for key, value in (details or {}).items()
+        if key in safe_keys and isinstance(value, str | int | float | bool | None)
+    }
+
+
 def _entry_error_from_failure(failure: FetchFailure) -> ScannerFatalError:
     error_type = failure.error_type
     if failure.status_code in {401, 403}:
@@ -314,7 +323,7 @@ def _entry_error_from_failure(failure: FetchFailure) -> ScannerFatalError:
         details={
             "target_url": failure.url,
             "status_code": failure.status_code,
-            **(failure.details or {}),
+            **_safe_error_details(failure.details),
         },
     )
 
@@ -336,7 +345,7 @@ def _bundle_error_payload(failure: FetchFailure) -> dict[str, object]:
         "message": failure.message,
         "url": failure.url,
         "status_code": failure.status_code,
-        "details": failure.details or {},
+        "details": _safe_error_details(failure.details),
     }
 
 
