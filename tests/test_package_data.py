@@ -44,6 +44,9 @@ def test_built_wheel_can_load_packaged_airport_and_provider_data(tmp_path: Path)
     assert "cheapy/providers/manual_fixture/manifest.toml" in names
     assert "cheapy/providers/google_fli/manifest.toml" in names
     assert "cheapy/providers/traveloka/manifest.toml" in names
+    assert "cheapy/providers/skyscanner/__init__.py" in names
+    assert "cheapy/providers/skyscanner/scan_graphql_bundles.py" in names
+    assert "cheapy/providers/skyscanner/manifest.toml" not in names
     assert "Requires-Dist: cloakbrowser>=0.3.26" in metadata
     assert "Requires-Dist: flights>=0.8.4" in metadata
     assert (
@@ -116,6 +119,10 @@ readme = base.joinpath("README.md").read_text(encoding="utf-8")
 manual_manifest = files("cheapy.providers").joinpath("manual_fixture", "manifest.toml").read_text(encoding="utf-8")
 google_manifest = files("cheapy.providers").joinpath("google_fli", "manifest.toml").read_text(encoding="utf-8")
 traveloka_manifest = files("cheapy.providers").joinpath("traveloka", "manifest.toml").read_text(encoding="utf-8")
+skyscanner_root = files("cheapy.providers").joinpath("skyscanner")
+assert skyscanner_root.joinpath("__init__.py").is_file()
+assert skyscanner_root.joinpath("scan_graphql_bundles.py").is_file()
+assert not skyscanner_root.joinpath("manifest.toml").is_file()
 
 assert airports["version"] == 1
 assert hubs["version"] == 1
@@ -159,6 +166,7 @@ assert not installed_package.is_relative_to(repo_package), installed_package
     assert providers["google_fli"]["default_enabled"] is True
     assert providers["traveloka"]["provider_kind"] == "live"
     assert providers["traveloka"]["default_enabled"] is True
+    assert "skyscanner" not in providers
 
     test_result = subprocess.run(
         [str(python), "-m", "cheapy", "providers", "test"],
@@ -174,3 +182,4 @@ assert not installed_package.is_relative_to(repo_package), installed_package
     assert providers["manual_fixture"]["status"] == "success"
     assert providers["google_fli"]["live_smoke"] == "not_run"
     assert providers["traveloka"]["live_smoke"] == "not_run"
+    assert "skyscanner" not in providers

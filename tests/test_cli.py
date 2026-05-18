@@ -140,6 +140,7 @@ def test_providers_list_prints_json() -> None:
     assert result.stderr == ""
     payload = json.loads(result.stdout)
     providers = {provider["name"]: provider for provider in payload["providers"]}
+    assert "skyscanner" not in providers
     assert payload["status"] == "ok"
     assert providers == {
         "google_fli": {
@@ -176,6 +177,7 @@ def test_providers_test_prints_json() -> None:
     assert result.stderr == ""
     payload = json.loads(result.stdout)
     providers = {provider["name"]: provider for provider in payload["providers"]}
+    assert "skyscanner" not in providers
     assert payload["status"] == "ok"
     assert payload["providers_tested"] == 3
     assert providers["manual_fixture"]["status"] == "success"

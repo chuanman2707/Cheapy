@@ -228,6 +228,15 @@ def test_traveloka_manifest_is_discovered_from_package_resources() -> None:
     )
 
 
+def test_skyscanner_experimental_scanner_is_not_discovered_as_provider() -> None:
+    manifests = discover_provider_manifests()
+
+    assert "skyscanner" not in [manifest.name for manifest in manifests]
+    assert "skyscanner" not in [
+        provider.name for provider in registry.load_search_providers()
+    ]
+
+
 def test_registry_exposes_exact_one_way_as_stable_capability() -> None:
     manifest = _manifest_by_name("manual_fixture")
 
