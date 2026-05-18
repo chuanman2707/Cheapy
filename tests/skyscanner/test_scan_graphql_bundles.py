@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from cheapy.providers.skyscanner import scan_graphql_bundles as scanner
@@ -70,6 +72,28 @@ def test_discover_same_origin_scripts_resolves_and_filters_sources() -> None:
         "https://www.skyscanner.net/assets/vendor.js",
     ]
     assert discovery.skipped_cross_origin_script_count == 1
+
+
+def test_discover_same_origin_scripts_skips_unsupported_and_malformed_sources() -> None:
+    html = """
+    <html>
+      <head>
+        <script src="/assets/app.js"></script>
+        <script src="javascript:alert(1)"></script>
+        <script src="data:text/javascript,console.log(1)"></script>
+        <script src="https://www.skyscanner.net:bad/assets/broken.js"></script>
+      </head>
+    </html>
+    """
+
+    discovery = scanner.discover_same_origin_scripts(
+        html,
+        final_entry_url="https://www.skyscanner.net/page",
+    )
+
+    assert discovery.script_count == 4
+    assert discovery.same_origin_urls == ["https://www.skyscanner.net/assets/app.js"]
+    assert discovery.skipped_cross_origin_script_count == 3
 
 
 def test_extract_graphql_matches_finds_operation_names() -> None:
@@ -601,3 +625,62 @@ def test_main_prints_missing_url_as_json_error(
     assert captured.out == ""
     assert '"error": true' in captured.err
     assert '"error_type": "invalid_url"' in captured.err
+
+
+def test_main_prints_parse_errors_as_json_invalid_argument(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = scanner.main(
+        [
+            "--url",
+            "https://www.skyscanner.net/page",
+            "--max-bundles",
+            "nope",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    error = json.loads(captured.err)
+    assert exit_code == 1
+    assert captured.out == ""
+    assert error["schema_version"] == "1"
+    assert error["error"] is True
+    assert error["error_type"] == "invalid_argument"
+    assert error["message"] == "argument --max-bundles: invalid int value: 'nope'"
+    assert error["details"] == {}
+
+
+@pytest.mark.parametrize(
+    ("option", "value"),
+    [
+        ("--max-bundles", "0"),
+        ("--max-bundles", "-1"),
+        ("--max-bytes-per-bundle", "0"),
+        ("--max-bytes-per-bundle", "-1"),
+        ("--timeout-seconds", "0"),
+        ("--timeout-seconds", "-1"),
+    ],
+)
+def test_main_rejects_non_positive_numeric_options_as_json_invalid_argument(
+    option: str,
+    value: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = scanner.main(
+        [
+            "--url",
+            "https://www.skyscanner.net/page",
+            option,
+            value,
+        ]
+    )
+
+    captured = capsys.readouterr()
+    error = json.loads(captured.err)
+    assert exit_code == 1
+    assert captured.out == ""
+    assert error["schema_version"] == "1"
+    assert error["error"] is True
+    assert error["error_type"] == "invalid_argument"
+    assert error["message"] == f"{option} must be greater than 0."
+    assert error["details"]["argument"] == option

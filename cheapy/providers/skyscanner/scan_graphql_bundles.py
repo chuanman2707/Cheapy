@@ -52,6 +52,17 @@ class ScannerFatalError(Exception):
         }
 
 
+class ScannerArgumentParser(argparse.ArgumentParser):
+    """Argument parser that routes usage errors through scanner JSON errors."""
+
+    def error(self, message: str) -> None:
+        raise ScannerFatalError(
+            error_type="invalid_argument",
+            message=message,
+            details={},
+        )
+
+
 @dataclass(frozen=True)
 class ScriptDiscovery:
     script_count: int
@@ -199,11 +210,26 @@ def discover_same_origin_scripts(
     parser = _ScriptSrcParser()
     parser.feed(html)
 
+    try:
+        entry_origin = origin_tuple(final_entry_url)
+    except ValueError:
+        return ScriptDiscovery(
+            script_count=len(parser.sources),
+            same_origin_urls=[],
+            skipped_cross_origin_script_count=len(parser.sources),
+        )
+
     same_origin_urls: list[str] = []
     skipped_cross_origin_count = 0
     for source in parser.sources:
-        resolved = urljoin(final_entry_url, source)
-        if same_origin(resolved, final_entry_url):
+        try:
+            resolved = urljoin(final_entry_url, source)
+            source_origin = origin_tuple(resolved)
+        except ValueError:
+            skipped_cross_origin_count += 1
+            continue
+
+        if source_origin == entry_origin:
             same_origin_urls.append(resolved)
         else:
             skipped_cross_origin_count += 1
@@ -438,8 +464,8 @@ def scan_url(
     }
 
 
-def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+def _parser() -> ScannerArgumentParser:
+    parser = ScannerArgumentParser(
         description="Scan same-origin Skyscanner JavaScript bundles for GraphQL signals.",
     )
     parser.add_argument("--url", help="HTTPS Skyscanner entry URL.")
@@ -453,14 +479,43 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _validate_positive_argument(
+    *,
+    option_name: str,
+    value: int | float,
+) -> None:
+    if value <= 0:
+        raise ScannerFatalError(
+            error_type="invalid_argument",
+            message=f"{option_name} must be greater than 0.",
+            details={"argument": option_name, "value": value},
+        )
+
+
+def _validate_arguments(args: argparse.Namespace) -> None:
+    _validate_positive_argument(
+        option_name="--max-bundles",
+        value=args.max_bundles,
+    )
+    _validate_positive_argument(
+        option_name="--max-bytes-per-bundle",
+        value=args.max_bytes_per_bundle,
+    )
+    _validate_positive_argument(
+        option_name="--timeout-seconds",
+        value=args.timeout_seconds,
+    )
+
+
 def main(
     argv: list[str] | None = None,
     *,
     fetcher: Fetcher = fetch_url,
     now: Clock = utc_now_iso,
 ) -> int:
-    args = _parser().parse_args(argv)
     try:
+        args = _parser().parse_args(argv)
+        _validate_arguments(args)
         if args.url is None:
             raise ScannerFatalError(
                 error_type="invalid_url",
