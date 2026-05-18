@@ -11,7 +11,9 @@ import re
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import Any
+from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 SCHEMA_VERSION = "1"
@@ -50,6 +52,64 @@ class ScriptDiscovery:
     script_count: int
     same_origin_urls: list[str]
     skipped_cross_origin_script_count: int
+
+
+@dataclass(frozen=True)
+class FetchSuccess:
+    url: str
+    final_url: str
+    status_code: int
+    content_type: str
+    body: bytes
+    truncated: bool
+
+
+@dataclass(frozen=True)
+class FetchFailure:
+    error_type: str
+    message: str
+    url: str
+    status_code: int | None = None
+    details: dict[str, object] | None = None
+
+    def to_error_payload(self, *, scope: str) -> dict[str, object]:
+        return {
+            "scope": scope,
+            "error_type": self.error_type,
+            "message": self.message,
+            "url": self.url,
+            "status_code": self.status_code,
+            "details": self.details or {},
+        }
+
+
+class CrossOriginRedirectError(Exception):
+    """Raised when urllib sees a redirect outside the allowed origin."""
+
+    def __init__(self, new_url: str) -> None:
+        super().__init__(new_url)
+        self.new_url = new_url
+
+
+class SameOriginRedirectHandler(HTTPRedirectHandler):
+    """Redirect handler that refuses to follow cross-origin redirects."""
+
+    def __init__(self, allowed_origin_url: str) -> None:
+        super().__init__()
+        self._allowed_origin_url = allowed_origin_url
+
+    def redirect_request(
+        self,
+        req: object,
+        fp: object,
+        code: int,
+        msg: str,
+        headers: object,
+        newurl: str,
+    ) -> object:
+        if not same_origin(newurl, self._allowed_origin_url):
+            raise CrossOriginRedirectError(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 class _ScriptSrcParser(HTMLParser):
@@ -148,3 +208,70 @@ def discover_same_origin_scripts(
         same_origin_urls=same_origin_urls,
         skipped_cross_origin_script_count=skipped_cross_origin_count,
     )
+
+
+def fetch_url(
+    url: str,
+    *,
+    timeout_seconds: float,
+    max_bytes: int,
+    allowed_origin_url: str,
+    opener: object | None = None,
+) -> FetchSuccess | FetchFailure:
+    opener = (
+        opener
+        if opener is not None
+        else build_opener(SameOriginRedirectHandler(allowed_origin_url))
+    )
+    request = Request(
+        url,
+        headers={"User-Agent": "Cheapy experimental Skyscanner scanner/1"},
+    )
+
+    try:
+        response = opener.open(request, timeout=timeout_seconds)  # type: ignore[attr-defined]
+        final_url = str(response.geturl())
+        if not same_origin(final_url, allowed_origin_url):
+            return FetchFailure(
+                error_type="cross_origin_redirect",
+                message="Fetch redirected to a different origin.",
+                url=url,
+                status_code=None,
+                details={"final_url": final_url},
+            )
+        status_code = int(getattr(response, "status", 200))
+        raw = response.read(max_bytes + 1)
+        truncated = len(raw) > max_bytes
+        body = raw[:max_bytes]
+        return FetchSuccess(
+            url=url,
+            final_url=final_url,
+            status_code=status_code,
+            content_type=response.headers.get("content-type", ""),
+            body=body,
+            truncated=truncated,
+        )
+    except HTTPError as exc:
+        return FetchFailure(
+            error_type="http_error",
+            message="Fetch returned an HTTP error.",
+            url=url,
+            status_code=exc.code,
+            details={},
+        )
+    except (TimeoutError, URLError, OSError) as exc:
+        return FetchFailure(
+            error_type="fetch_failed",
+            message="Fetch failed.",
+            url=url,
+            status_code=None,
+            details={"exception_type": type(exc).__name__},
+        )
+    except CrossOriginRedirectError as exc:
+        return FetchFailure(
+            error_type="cross_origin_redirect",
+            message="Fetch redirected to a different origin.",
+            url=url,
+            status_code=None,
+            details={"final_url": exc.new_url},
+        )

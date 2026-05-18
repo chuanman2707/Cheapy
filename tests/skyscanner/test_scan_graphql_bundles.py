@@ -119,3 +119,132 @@ def test_extract_graphql_matches_finds_graphql_paths_and_deduplicates() -> None:
         "/graphql",
         "https://www.skyscanner.net/graphql",
     ]
+
+
+class FakeHeaders:
+    def __init__(self, values: dict[str, str]) -> None:
+        self._values = values
+
+    def get(self, name: str, default: str = "") -> str:
+        return self._values.get(name.lower(), default)
+
+
+class FakeResponse:
+    def __init__(
+        self,
+        *,
+        url: str,
+        status: int,
+        content_type: str,
+        body: bytes,
+    ) -> None:
+        self.url = url
+        self.status = status
+        self.headers = FakeHeaders({"content-type": content_type})
+        self._body = body
+
+    def geturl(self) -> str:
+        return self.url
+
+    def read(self, size: int = -1) -> bytes:
+        if size < 0:
+            return self._body
+        return self._body[:size]
+
+
+class FakeOpener:
+    def __init__(self, response: FakeResponse | Exception) -> None:
+        self.response = response
+        self.requests: list[object] = []
+        self.timeouts: list[float] = []
+
+    def open(self, request: object, *, timeout: float) -> FakeResponse:
+        self.requests.append(request)
+        self.timeouts.append(timeout)
+        if isinstance(self.response, Exception):
+            raise self.response
+        return self.response
+
+
+def test_fetch_url_reads_at_most_byte_limit_plus_one() -> None:
+    opener = FakeOpener(
+        FakeResponse(
+            url="https://www.skyscanner.net/assets/app.js",
+            status=200,
+            content_type="application/javascript",
+            body=b"abcdef",
+        )
+    )
+
+    result = scanner.fetch_url(
+        "https://www.skyscanner.net/assets/app.js",
+        timeout_seconds=3,
+        max_bytes=5,
+        allowed_origin_url="https://www.skyscanner.net/transport/flights/sgn/bkk/",
+        opener=opener,
+    )
+
+    assert isinstance(result, scanner.FetchSuccess)
+    assert result.body == b"abcde"
+    assert result.truncated is True
+    assert result.status_code == 200
+    assert result.content_type == "application/javascript"
+    assert result.final_url == "https://www.skyscanner.net/assets/app.js"
+    assert opener.timeouts == [3]
+
+
+def test_fetch_url_blocks_cross_origin_final_url() -> None:
+    opener = FakeOpener(
+        FakeResponse(
+            url="https://evil.example.test/assets/app.js",
+            status=200,
+            content_type="application/javascript",
+            body=b"console.log(1)",
+        )
+    )
+
+    result = scanner.fetch_url(
+        "https://www.skyscanner.net/assets/app.js",
+        timeout_seconds=3,
+        max_bytes=100,
+        allowed_origin_url="https://www.skyscanner.net/transport/flights/sgn/bkk/",
+        opener=opener,
+    )
+
+    assert isinstance(result, scanner.FetchFailure)
+    assert result.error_type == "cross_origin_redirect"
+    assert result.url == "https://www.skyscanner.net/assets/app.js"
+    assert result.details == {"final_url": "https://evil.example.test/assets/app.js"}
+
+
+def test_fetch_url_reports_network_failure() -> None:
+    opener = FakeOpener(TimeoutError("slow"))
+
+    result = scanner.fetch_url(
+        "https://www.skyscanner.net/assets/app.js",
+        timeout_seconds=3,
+        max_bytes=100,
+        allowed_origin_url="https://www.skyscanner.net/transport/flights/sgn/bkk/",
+        opener=opener,
+    )
+
+    assert isinstance(result, scanner.FetchFailure)
+    assert result.error_type == "fetch_failed"
+    assert result.message == "Fetch failed."
+    assert result.details == {"exception_type": "TimeoutError"}
+
+
+def test_same_origin_redirect_handler_blocks_cross_origin_redirect() -> None:
+    handler = scanner.SameOriginRedirectHandler("https://www.skyscanner.net/page")
+
+    with pytest.raises(scanner.CrossOriginRedirectError) as exc_info:
+        handler.redirect_request(
+            req=object(),
+            fp=object(),
+            code=302,
+            msg="Found",
+            headers={},
+            newurl="https://evil.example.test/assets/app.js",
+        )
+
+    assert exc_info.value.new_url == "https://evil.example.test/assets/app.js"
