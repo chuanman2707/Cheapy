@@ -7,6 +7,7 @@ provider registry.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import Any
@@ -92,6 +93,37 @@ def origin_tuple(url: str) -> tuple[str, str, int]:
 
 def same_origin(left_url: str, right_url: str) -> bool:
     return origin_tuple(left_url) == origin_tuple(right_url)
+
+
+_OPERATION_NAME_RE = re.compile(
+    r"\b(?:query|mutation|subscription)\s+([A-Za-z_][A-Za-z0-9_]*)"
+)
+_PERSISTED_ID_RE = re.compile(
+    r"""(?x)
+    ["'](?:sha256Hash|operationId|queryId)["']\s*:\s*
+    ["']([A-Za-z0-9_-]{8,128})["']
+    """
+)
+_GRAPHQL_STRING_RE = re.compile(r"""["']([^"']*graphql[^"']*)["']""", re.IGNORECASE)
+
+
+def _sorted_unique(values: list[str]) -> list[str]:
+    return sorted(set(values))
+
+
+def extract_graphql_matches(text: str) -> dict[str, list[str]]:
+    operation_names = _OPERATION_NAME_RE.findall(text)
+    persisted_query_ids = _PERSISTED_ID_RE.findall(text)
+    graphql_paths = [
+        value
+        for value in _GRAPHQL_STRING_RE.findall(text)
+        if value.startswith("/") or value.startswith("https://")
+    ]
+    return {
+        "operation_names": _sorted_unique(operation_names),
+        "persisted_query_ids": _sorted_unique(persisted_query_ids),
+        "graphql_paths": _sorted_unique(graphql_paths),
+    }
 
 
 def discover_same_origin_scripts(

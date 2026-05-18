@@ -70,3 +70,52 @@ def test_discover_same_origin_scripts_resolves_and_filters_sources() -> None:
         "https://www.skyscanner.net/assets/vendor.js",
     ]
     assert discovery.skipped_cross_origin_script_count == 1
+
+
+def test_extract_graphql_matches_finds_operation_names() -> None:
+    text = """
+    query FlightSearchQuery($input: FlightSearchInput!) { search(input: $input) { id } }
+    mutation TrackFlightSearchMutation { track { ok } }
+    subscription PriceAlertSubscription { priceChanged { amount } }
+    """
+
+    matches = scanner.extract_graphql_matches(text)
+
+    assert matches["operation_names"] == [
+        "FlightSearchQuery",
+        "PriceAlertSubscription",
+        "TrackFlightSearchMutation",
+    ]
+
+
+def test_extract_graphql_matches_finds_persisted_query_ids() -> None:
+    text = """
+    {"sha256Hash":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
+    {"operationId":"flightSearch_abc12345"}
+    {"queryId":"query_67890_xyz"}
+    """
+
+    matches = scanner.extract_graphql_matches(text)
+
+    assert matches["persisted_query_ids"] == [
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "flightSearch_abc12345",
+        "query_67890_xyz",
+    ]
+
+
+def test_extract_graphql_matches_finds_graphql_paths_and_deduplicates() -> None:
+    text = """
+    fetch("/graphql");
+    fetch('/graphql');
+    const endpoint = "/g/conductor/graphql";
+    const url = "https://www.skyscanner.net/graphql";
+    """
+
+    matches = scanner.extract_graphql_matches(text)
+
+    assert matches["graphql_paths"] == [
+        "/g/conductor/graphql",
+        "/graphql",
+        "https://www.skyscanner.net/graphql",
+    ]
