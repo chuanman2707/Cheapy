@@ -8,9 +8,11 @@ provider registry.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from html.parser import HTMLParser
-from typing import Any
+from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -275,3 +277,150 @@ def fetch_url(
             status_code=None,
             details={"final_url": exc.new_url},
         )
+
+
+class Fetcher(Protocol):
+    def __call__(self, url: str, **kwargs: object) -> FetchSuccess | FetchFailure:
+        raise NotImplementedError
+
+
+Clock = Callable[[], str]
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace(
+        "+00:00",
+        "Z",
+    )
+
+
+def _decode_bytes(body: bytes) -> str:
+    return body.decode("utf-8", errors="replace")
+
+
+def _entry_error_from_failure(failure: FetchFailure) -> ScannerFatalError:
+    error_type = failure.error_type
+    if failure.status_code in {401, 403}:
+        error_type = "blocked"
+    elif failure.status_code == 429:
+        error_type = "rate_limited"
+    elif failure.error_type == "fetch_failed":
+        error_type = "entry_fetch_failed"
+    elif failure.error_type == "http_error":
+        error_type = "entry_fetch_failed"
+    return ScannerFatalError(
+        error_type=error_type,
+        message=failure.message,
+        details={
+            "target_url": failure.url,
+            "status_code": failure.status_code,
+            **(failure.details or {}),
+        },
+    )
+
+
+def _bundle_error_type(failure: FetchFailure) -> str:
+    if failure.status_code in {401, 403}:
+        return "bundle_blocked"
+    if failure.status_code == 429:
+        return "bundle_rate_limited"
+    if failure.error_type == "fetch_failed":
+        return "bundle_fetch_failed"
+    return failure.error_type
+
+
+def _bundle_error_payload(failure: FetchFailure) -> dict[str, object]:
+    return {
+        "scope": "bundle",
+        "error_type": _bundle_error_type(failure),
+        "message": failure.message,
+        "url": failure.url,
+        "status_code": failure.status_code,
+        "details": failure.details or {},
+    }
+
+
+def scan_url(
+    target_url: str,
+    *,
+    max_bundles: int,
+    max_bytes_per_bundle: int,
+    timeout_seconds: float,
+    fetcher: Fetcher = fetch_url,
+    now: Clock = utc_now_iso,
+) -> dict[str, Any]:
+    validated_url = validate_https_url(target_url)
+    entry_result = fetcher(
+        validated_url,
+        timeout_seconds=timeout_seconds,
+        max_bytes=max_bytes_per_bundle,
+        allowed_origin_url=validated_url,
+    )
+    if isinstance(entry_result, FetchFailure):
+        raise _entry_error_from_failure(entry_result)
+
+    if "html" not in entry_result.content_type.lower():
+        raise ScannerFatalError(
+            error_type="unsupported_entry_content_type",
+            message="Entry response must be HTML.",
+            details={
+                "target_url": validated_url,
+                "content_type": entry_result.content_type,
+                "status_code": entry_result.status_code,
+            },
+        )
+
+    html = _decode_bytes(entry_result.body)
+    discovery = discover_same_origin_scripts(
+        html,
+        final_entry_url=entry_result.final_url,
+    )
+
+    bundles: list[dict[str, object]] = []
+    errors: list[dict[str, object]] = []
+    for bundle_url in discovery.same_origin_urls[:max_bundles]:
+        bundle_result = fetcher(
+            bundle_url,
+            timeout_seconds=timeout_seconds,
+            max_bytes=max_bytes_per_bundle,
+            allowed_origin_url=entry_result.final_url,
+        )
+        if isinstance(bundle_result, FetchFailure):
+            errors.append(_bundle_error_payload(bundle_result))
+            continue
+
+        text = _decode_bytes(bundle_result.body)
+        bundles.append(
+            {
+                "url": bundle_result.url,
+                "final_url": bundle_result.final_url,
+                "status_code": bundle_result.status_code,
+                "content_type": bundle_result.content_type,
+                "bytes_scanned": len(bundle_result.body),
+                "truncated": bundle_result.truncated,
+                "matches": extract_graphql_matches(text),
+            }
+        )
+
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "target_url": validated_url,
+        "fetched_at": now(),
+        "entry": {
+            "status_code": entry_result.status_code,
+            "final_url": entry_result.final_url,
+            "content_type": entry_result.content_type,
+            "script_count": discovery.script_count,
+            "same_origin_script_count": len(discovery.same_origin_urls),
+            "skipped_cross_origin_script_count": (
+                discovery.skipped_cross_origin_script_count
+            ),
+        },
+        "limits": {
+            "max_bundles": max_bundles,
+            "max_bytes_per_bundle": max_bytes_per_bundle,
+            "timeout_seconds": timeout_seconds,
+        },
+        "bundles": bundles,
+        "errors": errors,
+    }

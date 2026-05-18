@@ -248,3 +248,217 @@ def test_same_origin_redirect_handler_blocks_cross_origin_redirect() -> None:
         )
 
     assert exc_info.value.new_url == "https://evil.example.test/assets/app.js"
+
+
+def _success(
+    *,
+    url: str,
+    content_type: str,
+    body: bytes,
+    status_code: int = 200,
+    truncated: bool = False,
+) -> scanner.FetchSuccess:
+    return scanner.FetchSuccess(
+        url=url,
+        final_url=url,
+        status_code=status_code,
+        content_type=content_type,
+        body=body,
+        truncated=truncated,
+    )
+
+
+def test_scan_url_returns_stable_json_shape_for_no_match_scan() -> None:
+    responses = {
+        "https://www.skyscanner.net/transport/flights/sgn/bkk/": _success(
+            url="https://www.skyscanner.net/transport/flights/sgn/bkk/",
+            content_type="text/html; charset=utf-8",
+            body=b'<script src="/assets/app.js"></script>',
+        ),
+        "https://www.skyscanner.net/assets/app.js": _success(
+            url="https://www.skyscanner.net/assets/app.js",
+            content_type="application/javascript",
+            body=b"console.log('hello');",
+        ),
+    }
+
+    def fake_fetcher(url: str, **kwargs: object) -> scanner.FetchSuccess:
+        return responses[url]
+
+    payload = scanner.scan_url(
+        "https://www.skyscanner.net/transport/flights/sgn/bkk/",
+        max_bundles=20,
+        max_bytes_per_bundle=1000,
+        timeout_seconds=15,
+        fetcher=fake_fetcher,
+        now=lambda: "2026-05-18T00:00:00Z",
+    )
+
+    assert payload == {
+        "schema_version": "1",
+        "target_url": "https://www.skyscanner.net/transport/flights/sgn/bkk/",
+        "fetched_at": "2026-05-18T00:00:00Z",
+        "entry": {
+            "status_code": 200,
+            "final_url": "https://www.skyscanner.net/transport/flights/sgn/bkk/",
+            "content_type": "text/html; charset=utf-8",
+            "script_count": 1,
+            "same_origin_script_count": 1,
+            "skipped_cross_origin_script_count": 0,
+        },
+        "limits": {
+            "max_bundles": 20,
+            "max_bytes_per_bundle": 1000,
+            "timeout_seconds": 15,
+        },
+        "bundles": [
+            {
+                "url": "https://www.skyscanner.net/assets/app.js",
+                "final_url": "https://www.skyscanner.net/assets/app.js",
+                "status_code": 200,
+                "content_type": "application/javascript",
+                "bytes_scanned": 21,
+                "truncated": False,
+                "matches": {
+                    "operation_names": [],
+                    "persisted_query_ids": [],
+                    "graphql_paths": [],
+                },
+            }
+        ],
+        "errors": [],
+    }
+
+
+def test_scan_url_applies_bundle_cap_and_reports_graphql_matches() -> None:
+    html = b"""
+    <script src="/assets/a.js"></script>
+    <script src="/assets/b.js"></script>
+    """
+    responses = {
+        "https://www.skyscanner.net/page": _success(
+            url="https://www.skyscanner.net/page",
+            content_type="text/html",
+            body=html,
+        ),
+        "https://www.skyscanner.net/assets/a.js": _success(
+            url="https://www.skyscanner.net/assets/a.js",
+            content_type="application/javascript",
+            body=b'query FlightSearchQuery { search { id } } fetch("/graphql")',
+        ),
+    }
+
+    def fake_fetcher(url: str, **kwargs: object) -> scanner.FetchSuccess:
+        return responses[url]
+
+    payload = scanner.scan_url(
+        "https://www.skyscanner.net/page",
+        max_bundles=1,
+        max_bytes_per_bundle=1000,
+        timeout_seconds=15,
+        fetcher=fake_fetcher,
+        now=lambda: "2026-05-18T00:00:00Z",
+    )
+
+    assert len(payload["bundles"]) == 1
+    assert payload["entry"]["same_origin_script_count"] == 2
+    assert payload["bundles"][0]["matches"] == {
+        "operation_names": ["FlightSearchQuery"],
+        "persisted_query_ids": [],
+        "graphql_paths": ["/graphql"],
+    }
+
+
+def test_scan_url_reports_bundle_failure_and_continues() -> None:
+    responses = {
+        "https://www.skyscanner.net/page": _success(
+            url="https://www.skyscanner.net/page",
+            content_type="text/html",
+            body=b'<script src="/assets/a.js"></script><script src="/assets/b.js"></script>',
+        ),
+        "https://www.skyscanner.net/assets/a.js": scanner.FetchFailure(
+            error_type="fetch_failed",
+            message="Fetch failed.",
+            url="https://www.skyscanner.net/assets/a.js",
+            details={"exception_type": "TimeoutError"},
+        ),
+        "https://www.skyscanner.net/assets/b.js": _success(
+            url="https://www.skyscanner.net/assets/b.js",
+            content_type="application/javascript",
+            body=b"query FlightSearchQuery { search { id } }",
+        ),
+    }
+
+    def fake_fetcher(
+        url: str,
+        **kwargs: object,
+    ) -> scanner.FetchSuccess | scanner.FetchFailure:
+        return responses[url]
+
+    payload = scanner.scan_url(
+        "https://www.skyscanner.net/page",
+        max_bundles=20,
+        max_bytes_per_bundle=1000,
+        timeout_seconds=15,
+        fetcher=fake_fetcher,
+        now=lambda: "2026-05-18T00:00:00Z",
+    )
+
+    assert payload["errors"] == [
+        {
+            "scope": "bundle",
+            "error_type": "bundle_fetch_failed",
+            "message": "Fetch failed.",
+            "url": "https://www.skyscanner.net/assets/a.js",
+            "status_code": None,
+            "details": {"exception_type": "TimeoutError"},
+        }
+    ]
+    assert [bundle["url"] for bundle in payload["bundles"]] == [
+        "https://www.skyscanner.net/assets/b.js"
+    ]
+
+
+def test_scan_url_rejects_non_html_entry_response() -> None:
+    def fake_fetcher(url: str, **kwargs: object) -> scanner.FetchSuccess:
+        return _success(
+            url=url,
+            content_type="application/json",
+            body=b"{}",
+        )
+
+    with pytest.raises(scanner.ScannerFatalError) as exc_info:
+        scanner.scan_url(
+            "https://www.skyscanner.net/page",
+            max_bundles=20,
+            max_bytes_per_bundle=1000,
+            timeout_seconds=15,
+            fetcher=fake_fetcher,
+            now=lambda: "2026-05-18T00:00:00Z",
+        )
+
+    assert exc_info.value.to_error_payload()["error_type"] == (
+        "unsupported_entry_content_type"
+    )
+
+
+def test_scan_url_maps_entry_fetch_failure() -> None:
+    def fake_fetcher(url: str, **kwargs: object) -> scanner.FetchFailure:
+        return scanner.FetchFailure(
+            error_type="fetch_failed",
+            message="Fetch failed.",
+            url=url,
+            details={"exception_type": "TimeoutError"},
+        )
+
+    with pytest.raises(scanner.ScannerFatalError) as exc_info:
+        scanner.scan_url(
+            "https://www.skyscanner.net/page",
+            max_bundles=20,
+            max_bytes_per_bundle=1000,
+            timeout_seconds=15,
+            fetcher=fake_fetcher,
+            now=lambda: "2026-05-18T00:00:00Z",
+        )
+
+    assert exc_info.value.to_error_payload()["error_type"] == "entry_fetch_failed"
