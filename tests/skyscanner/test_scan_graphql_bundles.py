@@ -7,6 +7,13 @@ import pytest
 from cheapy.providers.skyscanner import scan_graphql_bundles as scanner
 
 
+def _loads_strict_json(value: str) -> dict[str, object]:
+    def reject_constant(constant: str) -> None:
+        raise ValueError(f"non-strict JSON constant: {constant}")
+
+    return json.loads(value, parse_constant=reject_constant)
+
+
 def test_validate_https_url_accepts_https_url_with_host() -> None:
     assert (
         scanner.validate_https_url(
@@ -25,6 +32,20 @@ def test_validate_https_url_accepts_https_url_with_host() -> None:
     ],
 )
 def test_validate_https_url_rejects_invalid_or_non_https_urls(url: str) -> None:
+    with pytest.raises(scanner.ScannerFatalError) as exc_info:
+        scanner.validate_https_url(url)
+
+    error = exc_info.value.to_error_payload()
+    assert error["schema_version"] == "1"
+    assert error["error"] is True
+    assert error["error_type"] == "invalid_url"
+    assert error["message"] == "Entry URL must be an HTTPS URL with a host."
+    assert error["details"] == {"target_url": url}
+
+
+def test_validate_https_url_rejects_malformed_port() -> None:
+    url = "https://www.skyscanner.net:bad/page"
+
     with pytest.raises(scanner.ScannerFatalError) as exc_info:
         scanner.validate_https_url(url)
 
@@ -509,6 +530,90 @@ def test_scan_url_rejects_non_html_entry_response() -> None:
     )
 
 
+def test_scan_url_rejects_not_htmlish_entry_content_type() -> None:
+    def fake_fetcher(url: str, **kwargs: object) -> scanner.FetchSuccess:
+        return _success(
+            url=url,
+            content_type="application/not-htmlish",
+            body=b"not html",
+        )
+
+    with pytest.raises(scanner.ScannerFatalError) as exc_info:
+        scanner.scan_url(
+            "https://www.skyscanner.net/page",
+            max_bundles=20,
+            max_bytes_per_bundle=1000,
+            timeout_seconds=15,
+            fetcher=fake_fetcher,
+            now=lambda: "2026-05-18T00:00:00Z",
+        )
+
+    assert exc_info.value.to_error_payload()["error_type"] == (
+        "unsupported_entry_content_type"
+    )
+
+
+def test_scan_url_accepts_xhtml_entry_content_type() -> None:
+    def fake_fetcher(url: str, **kwargs: object) -> scanner.FetchSuccess:
+        if url.endswith("/page"):
+            return _success(
+                url=url,
+                content_type="application/xhtml+xml; charset=utf-8",
+                body=b'<script src="/assets/app.js"></script>',
+            )
+        return _success(
+            url=url,
+            content_type="application/javascript",
+            body=b"query FlightSearchQuery { search { id } }",
+        )
+
+    payload = scanner.scan_url(
+        "https://www.skyscanner.net/page",
+        max_bundles=20,
+        max_bytes_per_bundle=1000,
+        timeout_seconds=15,
+        fetcher=fake_fetcher,
+        now=lambda: "2026-05-18T00:00:00Z",
+    )
+
+    assert payload["entry"]["content_type"] == "application/xhtml+xml; charset=utf-8"
+    assert payload["entry"]["same_origin_script_count"] == 1
+
+
+def test_scan_url_rejects_malformed_entry_final_url_as_structured_error() -> None:
+    def fake_fetcher(url: str, **kwargs: object) -> scanner.FetchSuccess:
+        return scanner.FetchSuccess(
+            url=url,
+            final_url="https://www.skyscanner.net:bad/page",
+            status_code=200,
+            content_type="text/html",
+            body=b'<script src="/assets/app.js"></script>',
+            truncated=False,
+        )
+
+    with pytest.raises(scanner.ScannerFatalError) as exc_info:
+        scanner.scan_url(
+            "https://www.skyscanner.net/page",
+            max_bundles=20,
+            max_bytes_per_bundle=1000,
+            timeout_seconds=15,
+            fetcher=fake_fetcher,
+            now=lambda: "2026-05-18T00:00:00Z",
+        )
+
+    assert exc_info.value.to_error_payload() == {
+        "schema_version": "1",
+        "error": True,
+        "error_type": "cross_origin_redirect",
+        "message": "Fetch redirected to a different origin.",
+        "details": {
+            "target_url": "https://www.skyscanner.net/page",
+            "status_code": 200,
+            "final_url": "https://www.skyscanner.net:bad/page",
+        },
+    }
+
+
 def test_scan_url_maps_entry_fetch_failure() -> None:
     def fake_fetcher(url: str, **kwargs: object) -> scanner.FetchFailure:
         return scanner.FetchFailure(
@@ -640,7 +745,7 @@ def test_main_prints_parse_errors_as_json_invalid_argument(
     )
 
     captured = capsys.readouterr()
-    error = json.loads(captured.err)
+    error = _loads_strict_json(captured.err)
     assert exit_code == 1
     assert captured.out == ""
     assert error["schema_version"] == "1"
@@ -648,6 +753,73 @@ def test_main_prints_parse_errors_as_json_invalid_argument(
     assert error["error_type"] == "invalid_argument"
     assert error["message"] == "argument --max-bundles: invalid int value: 'nope'"
     assert error["details"] == {}
+
+
+@pytest.mark.parametrize("value", ["nan", "inf"])
+def test_main_rejects_non_finite_timeout_seconds_as_json_invalid_argument(
+    value: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def fake_fetcher(
+        url: str,
+        **kwargs: object,
+    ) -> scanner.FetchFailure:
+        return scanner.FetchFailure(
+            error_type="fetch_failed",
+            message="Fetch failed.",
+            url=url,
+        )
+
+    exit_code = scanner.main(
+        [
+            "--url",
+            "https://www.skyscanner.net/page",
+            "--timeout-seconds",
+            value,
+        ],
+        fetcher=fake_fetcher,
+    )
+
+    captured = capsys.readouterr()
+    error = _loads_strict_json(captured.err)
+    assert exit_code == 1
+    assert captured.out == ""
+    assert error["schema_version"] == "1"
+    assert error["error"] is True
+    assert error["error_type"] == "invalid_argument"
+    assert error["message"] == "--timeout-seconds must be finite."
+    assert error["details"] == {"argument": "--timeout-seconds", "value": value}
+
+
+def test_main_rejects_malformed_entry_port_as_json_invalid_url(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def fake_fetcher(
+        url: str,
+        **kwargs: object,
+    ) -> scanner.FetchFailure:
+        return scanner.FetchFailure(
+            error_type="fetch_failed",
+            message="Fetch failed.",
+            url=url,
+        )
+
+    exit_code = scanner.main(
+        ["--url", "https://www.skyscanner.net:bad/page"],
+        fetcher=fake_fetcher,
+    )
+
+    captured = capsys.readouterr()
+    error = _loads_strict_json(captured.err)
+    assert exit_code == 1
+    assert captured.out == ""
+    assert error["schema_version"] == "1"
+    assert error["error"] is True
+    assert error["error_type"] == "invalid_url"
+    assert error["message"] == "Entry URL must be an HTTPS URL with a host."
+    assert error["details"] == {
+        "target_url": "https://www.skyscanner.net:bad/page"
+    }
 
 
 @pytest.mark.parametrize(
@@ -676,7 +848,7 @@ def test_main_rejects_non_positive_numeric_options_as_json_invalid_argument(
     )
 
     captured = capsys.readouterr()
-    error = json.loads(captured.err)
+    error = _loads_strict_json(captured.err)
     assert exit_code == 1
     assert captured.out == ""
     assert error["schema_version"] == "1"

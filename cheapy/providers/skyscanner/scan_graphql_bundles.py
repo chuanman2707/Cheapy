@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import sys
 from collections.abc import Callable
@@ -17,7 +18,7 @@ from datetime import datetime, timezone
 from html.parser import HTMLParser
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
-from urllib.parse import urljoin, urlparse
+from urllib.parse import ParseResult, urljoin, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
@@ -146,29 +147,63 @@ class _ScriptSrcParser(HTMLParser):
                 return
 
 
+def _invalid_url_error(url: str) -> ScannerFatalError:
+    return ScannerFatalError(
+        error_type="invalid_url",
+        message="Entry URL must be an HTTPS URL with a host.",
+        details={"target_url": url},
+    )
+
+
+def _parsed_port_or_error(parsed: ParseResult, *, url: str) -> int | None:
+    try:
+        return parsed.port
+    except ValueError as exc:
+        raise ValueError(f"URL has an invalid port: {url!r}") from exc
+
+
+def _is_supported_html_content_type(content_type: str) -> bool:
+    media_type = content_type.split(";", 1)[0].strip().lower()
+    return media_type in {"text/html", "application/xhtml+xml"}
+
+
+def _json_dumps(payload: object) -> str:
+    return json.dumps(payload, sort_keys=True, allow_nan=False)
+
+
 def validate_https_url(url: str) -> str:
-    parsed = urlparse(url)
-    if parsed.scheme != "https" or parsed.hostname is None:
-        raise ScannerFatalError(
-            error_type="invalid_url",
-            message="Entry URL must be an HTTPS URL with a host.",
-            details={"target_url": url},
-        )
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+        _parsed_port_or_error(parsed, url=url)
+    except ValueError as exc:
+        raise _invalid_url_error(url) from exc
+
+    if parsed.scheme != "https" or hostname is None:
+        raise _invalid_url_error(url)
     return url
 
 
 def origin_tuple(url: str) -> tuple[str, str, int]:
-    parsed = urlparse(url)
-    if parsed.scheme == "" or parsed.hostname is None:
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+        port = _parsed_port_or_error(parsed, url=url)
+    except ValueError as exc:
+        raise ValueError(f"URL has no origin: {url!r}") from exc
+
+    if parsed.scheme == "" or hostname is None:
         raise ValueError(f"URL has no origin: {url!r}")
-    port = parsed.port
     if port is None:
         port = 443 if parsed.scheme == "https" else 80
-    return (parsed.scheme, parsed.hostname.lower(), port)
+    return (parsed.scheme, hostname.lower(), port)
 
 
 def same_origin(left_url: str, right_url: str) -> bool:
-    return origin_tuple(left_url) == origin_tuple(right_url)
+    try:
+        return origin_tuple(left_url) == origin_tuple(right_url)
+    except ValueError:
+        return False
 
 
 _OPERATION_NAME_RE = re.compile(
@@ -357,6 +392,23 @@ def _entry_error_from_failure(failure: FetchFailure) -> ScannerFatalError:
     )
 
 
+def _cross_origin_entry_error(
+    *,
+    target_url: str,
+    final_url: str,
+    status_code: int | None,
+) -> ScannerFatalError:
+    return ScannerFatalError(
+        error_type="cross_origin_redirect",
+        message="Fetch redirected to a different origin.",
+        details={
+            "target_url": target_url,
+            "status_code": status_code,
+            "final_url": final_url,
+        },
+    )
+
+
 def _bundle_error_type(failure: FetchFailure) -> str:
     if failure.status_code in {401, 403}:
         return "bundle_blocked"
@@ -378,6 +430,21 @@ def _bundle_error_payload(failure: FetchFailure) -> dict[str, object]:
     }
 
 
+def _cross_origin_bundle_failure(
+    *,
+    url: str,
+    final_url: str,
+    status_code: int | None,
+) -> FetchFailure:
+    return FetchFailure(
+        error_type="cross_origin_redirect",
+        message="Fetch redirected to a different origin.",
+        url=url,
+        status_code=status_code,
+        details={"final_url": final_url},
+    )
+
+
 def scan_url(
     target_url: str,
     *,
@@ -397,7 +464,14 @@ def scan_url(
     if isinstance(entry_result, FetchFailure):
         raise _entry_error_from_failure(entry_result)
 
-    if "html" not in entry_result.content_type.lower():
+    if not same_origin(entry_result.final_url, validated_url):
+        raise _cross_origin_entry_error(
+            target_url=validated_url,
+            final_url=entry_result.final_url,
+            status_code=entry_result.status_code,
+        )
+
+    if not _is_supported_html_content_type(entry_result.content_type):
         raise ScannerFatalError(
             error_type="unsupported_entry_content_type",
             message="Entry response must be HTML.",
@@ -425,6 +499,18 @@ def scan_url(
         )
         if isinstance(bundle_result, FetchFailure):
             errors.append(_bundle_error_payload(bundle_result))
+            continue
+
+        if not same_origin(bundle_result.final_url, entry_result.final_url):
+            errors.append(
+                _bundle_error_payload(
+                    _cross_origin_bundle_failure(
+                        url=bundle_result.url,
+                        final_url=bundle_result.final_url,
+                        status_code=bundle_result.status_code,
+                    )
+                )
+            )
             continue
 
         text = _decode_bytes(bundle_result.body)
@@ -484,6 +570,12 @@ def _validate_positive_argument(
     option_name: str,
     value: int | float,
 ) -> None:
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ScannerFatalError(
+            error_type="invalid_argument",
+            message=f"{option_name} must be finite.",
+            details={"argument": option_name, "value": str(value)},
+        )
     if value <= 0:
         raise ScannerFatalError(
             error_type="invalid_argument",
@@ -531,10 +623,10 @@ def main(
             now=now,
         )
     except ScannerFatalError as exc:
-        print(json.dumps(exc.to_error_payload(), sort_keys=True), file=sys.stderr)
+        print(_json_dumps(exc.to_error_payload()), file=sys.stderr)
         return 1
 
-    print(json.dumps(payload, sort_keys=True))
+    print(_json_dumps(payload))
     return 0
 
 
