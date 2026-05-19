@@ -395,6 +395,18 @@ def test_build_search_body_maps_round_trip_with_place_of_stay() -> None:
     }
 
 
+def test_build_search_body_rejects_return_before_departure() -> None:
+    with pytest.raises(probe.ProbeError) as exc_info:
+        probe.build_search_body(
+            origin=entity("SIN", "95673375"),
+            destination=entity("SGN", "95673379"),
+            departure_date="2026-06-11",
+            return_date="2026-06-10",
+        )
+
+    assert exc_info.value.code == "invalid_argument"
+
+
 def test_search_posts_minimal_headers_and_uuid_view_id(monkeypatch: pytest.MonkeyPatch) -> None:
     client = FakeClient(FakeResponse(payload={"context": {"status": "complete"}, "itineraries": {"results": []}}))
     monkeypatch.setattr(probe.uuid, "uuid4", lambda: "11111111-2222-4333-8444-555555555555")
@@ -412,9 +424,15 @@ def test_search_posts_minimal_headers_and_uuid_view_id(monkeypatch: pytest.Monke
     assert exc_info.value.code == "no_usable_results"
     post = client.post_calls[0]
     assert post["url"] == "https://www.skyscanner.com.sg/g/radar/api/v2/web-unified-search/"
-    assert post["headers"]["content-type"] == "application/json"
-    assert post["headers"]["x-skyscanner-viewid"] == "11111111-2222-4333-8444-555555555555"
-    assert "origin" not in post["headers"]
+    assert post["headers"] == {
+        "cookie": "traveller_context=abc; __Secure-anon_token=secret",
+        "x-skyscanner-channelid": "website",
+        "x-skyscanner-currency": "SGD",
+        "x-skyscanner-locale": "en-GB",
+        "x-skyscanner-market": "SG",
+        "content-type": "application/json",
+        "x-skyscanner-viewid": "11111111-2222-4333-8444-555555555555",
+    }
 
 
 def test_fetch_flights_maps_search_http_error() -> None:
@@ -451,7 +469,14 @@ def test_fetch_flights_maps_search_invalid_json() -> None:
 
 
 def test_fetch_flights_maps_incomplete_status() -> None:
-    client = FakeClient(FakeResponse(payload={"context": {"status": "pending"}, "itineraries": {"results": []}}))
+    client = FakeClient(
+        FakeResponse(
+            payload={
+                "context": {"status": "pending token-secret-body"},
+                "itineraries": {"results": []},
+            }
+        )
+    )
 
     with pytest.raises(probe.ProbeError) as exc_info:
         probe.fetch_flights(
@@ -464,6 +489,7 @@ def test_fetch_flights_maps_incomplete_status() -> None:
         )
 
     assert exc_info.value.code == "search_incomplete"
+    assert "token-secret-body" not in exc_info.value.message
 
 
 def test_fetch_flights_maps_missing_results_path() -> None:

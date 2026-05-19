@@ -337,6 +337,7 @@ def build_search_body(
     departure_date: str,
     return_date: str | None,
 ) -> dict[str, object]:
+    validate_date_range(departure_date, return_date)
     outbound_leg: dict[str, object] = {
         "legOrigin": _entity_ref(origin),
         "legDestination": _entity_ref(destination),
@@ -414,7 +415,7 @@ def _search_payload(
         raise ProbeError("search_parse_error", "Search response was not a JSON object.")
     status = _field(payload.get("context"), ("status",))
     if status != "complete":
-        raise ProbeError("search_incomplete", f"Search did not complete; status={status!r}.")
+        raise ProbeError("search_incomplete", "Search did not complete.")
     itineraries = payload.get("itineraries")
     results = _field(itineraries, ("results",))
     if not isinstance(results, list):
