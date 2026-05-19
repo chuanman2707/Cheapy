@@ -407,6 +407,18 @@ def test_build_search_body_rejects_return_before_departure() -> None:
     assert exc_info.value.code == "invalid_argument"
 
 
+def test_build_search_body_maps_invalid_return_date_to_probe_error() -> None:
+    with pytest.raises(probe.ProbeError) as exc_info:
+        probe.build_search_body(
+            origin=entity("SIN", "95673375"),
+            destination=entity("SGN", "95673379"),
+            departure_date="2026-06-11",
+            return_date="2026-02-30",
+        )
+
+    assert exc_info.value.code == "invalid_argument"
+
+
 def test_search_posts_minimal_headers_and_uuid_view_id(monkeypatch: pytest.MonkeyPatch) -> None:
     client = FakeClient(FakeResponse(payload={"context": {"status": "complete"}, "itineraries": {"results": []}}))
     monkeypatch.setattr(probe.uuid, "uuid4", lambda: "11111111-2222-4333-8444-555555555555")

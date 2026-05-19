@@ -111,8 +111,10 @@ def date_parts(value: str) -> dict[str, str]:
 
 
 def validate_date_range(departure_date: str, return_date: str | None) -> None:
+    date_parts(departure_date)
     if return_date is None:
         return
+    date_parts(return_date)
     departure = datetime.strptime(departure_date, "%Y-%m-%d")
     returning = datetime.strptime(return_date, "%Y-%m-%d")
     if returning < departure:
