@@ -331,6 +331,7 @@ def test_get_entity_id_maps_invalid_json() -> None:
 
     assert exc_info.value.code == "autosuggest_parse_error"
     assert "raw secret body" not in exc_info.value.message
+    assert exc_info.value.__cause__ is None
 
 
 def test_get_entity_id_maps_transport_error() -> None:
@@ -341,6 +342,7 @@ def test_get_entity_id_maps_transport_error() -> None:
 
     assert exc_info.value.code == "autosuggest_transport_error"
     assert "transport token secret" not in exc_info.value.message
+    assert exc_info.value.__cause__ is None
 
 
 def entity(
@@ -478,6 +480,7 @@ def test_fetch_flights_maps_search_invalid_json() -> None:
 
     assert exc_info.value.code == "search_parse_error"
     assert "jwt secret body" not in exc_info.value.message
+    assert exc_info.value.__cause__ is None
 
 
 def test_fetch_flights_maps_incomplete_status() -> None:
@@ -767,10 +770,19 @@ def test_print_results_respects_limit(capsys: pytest.CaptureFixture[str]) -> Non
     probe.print_results(results, limit=1)
 
     captured = capsys.readouterr()
-    assert "VJ" in captured.out
-    assert "220.96 SGD" in captured.out
-    assert "https://example.test/1" in captured.out
-    assert "SQ" not in captured.out
+    assert captured.out == "1. VJ | 220.96 SGD | https://example.test/1\n"
+    assert captured.err == ""
+
+
+def test_print_results_rejects_non_positive_limit() -> None:
+    results = [
+        probe.FlightProbeResult("VJ", 220.96, "SGD", "https://example.test/1"),
+    ]
+
+    with pytest.raises(probe.ProbeError) as exc_info:
+        probe.print_results(results, limit=0)
+
+    assert exc_info.value.code == "invalid_argument"
 
 
 def test_main_prints_safe_error_for_missing_cookie(
@@ -792,6 +804,7 @@ def test_main_prints_safe_error_for_missing_cookie(
 
     captured = capsys.readouterr()
     assert exit_code == 1
+    assert captured.out == ""
     assert "missing_cookie" in captured.err
     assert "__Secure-anon_token" not in captured.err
 

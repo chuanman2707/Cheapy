@@ -285,7 +285,7 @@ def get_entity_id(
         raise ProbeError(
             "autosuggest_transport_error",
             f"Autosuggest request failed with {type(exc).__name__}.",
-        ) from exc
+        ) from None
 
     if response.status_code < 200 or response.status_code >= 300:
         raise ProbeError(
@@ -302,7 +302,7 @@ def get_entity_id(
         raise ProbeError(
             "autosuggest_parse_error",
             f"Autosuggest response could not be parsed as JSON: {type(exc).__name__}.",
-        ) from exc
+        ) from None
 
     entities = [
         entity
@@ -402,7 +402,7 @@ def _search_payload(
         raise ProbeError(
             "search_transport_error",
             f"Search request failed with {type(exc).__name__}.",
-        ) from exc
+        ) from None
 
     if response.status_code < 200 or response.status_code >= 300:
         raise ProbeError("search_http_error", f"Search returned HTTP {response.status_code}.")
@@ -413,7 +413,7 @@ def _search_payload(
         raise ProbeError(
             "search_parse_error",
             f"Search response could not be parsed as JSON: {type(exc).__name__}.",
-        ) from exc
+        ) from None
 
     if not isinstance(payload, dict):
         raise ProbeError("search_parse_error", "Search response was not a JSON object.")
@@ -576,7 +576,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def print_results(results: list[FlightProbeResult], *, limit: int) -> None:
-    for index, result in enumerate(results[:limit], start=1):
+    safe_limit = validate_limit(limit)
+    for index, result in enumerate(results[:safe_limit], start=1):
         print(
             f"{index}. {result.airline} | "
             f"{result.price_amount:.2f} {result.currency} | "
