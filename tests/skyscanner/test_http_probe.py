@@ -128,3 +128,174 @@ def test_main_rejects_non_positive_limit(monkeypatch: pytest.MonkeyPatch) -> Non
     )
 
     assert result == 1
+
+
+class FakeResponse:
+    def __init__(self, *, status_code: int = 200, payload: object = None, json_error: Exception | None = None) -> None:
+        self.status_code = status_code
+        self._payload = payload
+        self._json_error = json_error
+
+    def json(self) -> object:
+        if self._json_error is not None:
+            raise self._json_error
+        return self._payload
+
+
+class FakeClient:
+    def __init__(self, response: FakeResponse | Exception) -> None:
+        self.response = response
+        self.get_calls: list[dict[str, object]] = []
+        self.post_calls: list[dict[str, object]] = []
+
+    def get(self, url: str, *, params: dict[str, object], headers: dict[str, str], timeout: float) -> FakeResponse:
+        self.get_calls.append(
+            {"url": url, "params": params, "headers": headers, "timeout": timeout}
+        )
+        if isinstance(self.response, Exception):
+            raise self.response
+        return self.response
+
+    def post(self, url: str, *, json: dict[str, object], headers: dict[str, str], timeout: float) -> FakeResponse:
+        self.post_calls.append(
+            {"url": url, "json": json, "headers": headers, "timeout": timeout}
+        )
+        if isinstance(self.response, Exception):
+            raise self.response
+        return self.response
+
+
+def config(cookie: str = "traveller_context=abc; __Secure-anon_token=secret") -> object:
+    return probe.ProbeConfig(
+        base_url="https://www.skyscanner.com.sg",
+        market="SG",
+        locale="en-GB",
+        currency="SGD",
+        cookie=cookie,
+        timeout_seconds=7.0,
+    )
+
+
+def test_get_entity_id_resolves_web_style_airport_and_parent() -> None:
+    client = FakeClient(
+        FakeResponse(
+            payload={
+                "Places": [
+                    {
+                        "IataCode": "HAN",
+                        "EntityId": "128668079",
+                        "PlaceName": "Hanoi",
+                        "PlaceType": "Airport",
+                        "CityId": "27542680",
+                    }
+                ]
+            }
+        )
+    )
+
+    result = probe.get_entity_id(
+        "han",
+        config=config(),
+        client=client,
+        is_destination=True,
+    )
+
+    assert result == probe.EntityResult(
+        iata="HAN",
+        entity_id="128668079",
+        name="Hanoi",
+        place_type="Airport",
+        parent_entity_id="27542680",
+        place_of_stay_entity_id="27542680",
+    )
+    assert client.get_calls[0]["url"] == (
+        "https://www.skyscanner.com.sg/g/autosuggest-search/api/v1/search-flight/SG/en-GB/HAN"
+    )
+    assert client.get_calls[0]["params"] == {
+        "isDestination": "true",
+        "enable_general_search_v2": "false",
+    }
+    assert client.get_calls[0]["headers"]["x-skyscanner-market"] == "SG"
+
+
+def test_get_entity_id_resolves_partner_style_airport() -> None:
+    client = FakeClient(
+        FakeResponse(
+            payload={
+                "places": [
+                    {
+                        "iataCode": "SGN",
+                        "entityId": "95673379",
+                        "name": "Ho Chi Minh City",
+                        "type": "PLACE_TYPE_AIRPORT",
+                        "parentId": "27546329",
+                    }
+                ]
+            }
+        )
+    )
+
+    result = probe.get_entity_id("SGN", config=config(), client=client)
+
+    assert result.iata == "SGN"
+    assert result.entity_id == "95673379"
+    assert result.parent_entity_id == "27546329"
+    assert result.place_of_stay_entity_id is None
+
+
+def test_get_entity_id_maps_no_match_to_entity_not_found() -> None:
+    client = FakeClient(FakeResponse(payload={"places": []}))
+
+    with pytest.raises(probe.ProbeError) as exc_info:
+        probe.get_entity_id("HAN", config=config(), client=client)
+
+    assert exc_info.value.code == "entity_not_found"
+
+
+def test_get_entity_id_maps_ambiguous_airports() -> None:
+    client = FakeClient(
+        FakeResponse(
+            payload={
+                "places": [
+                    {"iataCode": "HAN", "entityId": "1", "name": "Hanoi A", "type": "PLACE_TYPE_AIRPORT"},
+                    {"iataCode": "HAN", "entityId": "2", "name": "Hanoi B", "type": "PLACE_TYPE_AIRPORT"},
+                ]
+            }
+        )
+    )
+
+    with pytest.raises(probe.ProbeError) as exc_info:
+        probe.get_entity_id("HAN", config=config(), client=client)
+
+    assert exc_info.value.code == "entity_ambiguous"
+    assert "Hanoi A" in exc_info.value.message
+    assert "secret" not in exc_info.value.message
+
+
+def test_get_entity_id_maps_http_error() -> None:
+    client = FakeClient(FakeResponse(status_code=403, payload={"error": "blocked"}))
+
+    with pytest.raises(probe.ProbeError) as exc_info:
+        probe.get_entity_id("HAN", config=config(), client=client)
+
+    assert exc_info.value.code == "autosuggest_http_error"
+
+
+def test_get_entity_id_maps_invalid_json() -> None:
+    client = FakeClient(FakeResponse(json_error=ValueError("raw secret body")))
+
+    with pytest.raises(probe.ProbeError) as exc_info:
+        probe.get_entity_id("HAN", config=config(), client=client)
+
+    assert exc_info.value.code == "autosuggest_parse_error"
+    assert "raw secret body" not in exc_info.value.message
+
+
+def test_get_entity_id_maps_transport_error() -> None:
+    client = FakeClient(RuntimeError("transport token secret"))
+
+    with pytest.raises(probe.ProbeError) as exc_info:
+        probe.get_entity_id("HAN", config=config(), client=client)
+
+    assert exc_info.value.code == "autosuggest_transport_error"
+    assert "transport token secret" not in exc_info.value.message
