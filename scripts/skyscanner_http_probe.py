@@ -16,7 +16,7 @@ import os
 import re
 import sys
 from typing import Mapping, Protocol
-from urllib.parse import quote, urljoin
+from urllib.parse import quote, urljoin, urlsplit
 import uuid
 
 
@@ -486,6 +486,23 @@ def _positive_price_option(itinerary: object) -> tuple[float, str] | None:
     return None
 
 
+def _safe_deeplink_url(raw_url: str, *, config: ProbeConfig) -> str | None:
+    parsed = urlsplit(raw_url)
+    if parsed.scheme == "" and parsed.netloc == "":
+        if raw_url.startswith("/transport_deeplink/"):
+            return urljoin(config.base_url + "/", raw_url)
+        return None
+
+    base = urlsplit(config.base_url)
+    if (
+        parsed.scheme == base.scheme
+        and parsed.netloc.lower() == base.netloc.lower()
+        and parsed.path.startswith("/transport_deeplink/")
+    ):
+        return raw_url
+    return None
+
+
 def _extract_results(payload: object, *, config: ProbeConfig) -> list[FlightProbeResult]:
     results = _field(_field(payload, ("itineraries",)), ("results",))
     if not isinstance(results, list):
@@ -503,12 +520,15 @@ def _extract_results(payload: object, *, config: ProbeConfig) -> list[FlightProb
         if option is None:
             continue
         _, deeplink = option
+        safe_deeplink = _safe_deeplink_url(deeplink, config=config)
+        if safe_deeplink is None:
+            continue
         extracted.append(
             FlightProbeResult(
                 airline=_airline_label(itinerary),
                 price_amount=canonical_price,
                 currency=config.currency,
-                deeplink_url=urljoin(config.base_url + "/", deeplink),
+                deeplink_url=safe_deeplink,
             )
         )
 

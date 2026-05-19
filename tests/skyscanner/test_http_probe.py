@@ -623,6 +623,89 @@ def test_fetch_flights_ignores_zero_amount_options_and_missing_deeplinks() -> No
     assert results[0].deeplink_url == "https://www.skyscanner.com.sg/transport_deeplink/usable"
 
 
+def test_fetch_flights_skips_hostile_absolute_and_protocol_deeplinks() -> None:
+    client = FakeClient(
+        FakeResponse(
+            payload=search_payload(
+                [
+                    itinerary(price=100.0, option_amount=100.0, url="https://evil.example/transport_deeplink/steal"),
+                    itinerary(price=110.0, option_amount=110.0, url="//evil.example/transport_deeplink/steal"),
+                    itinerary(price=120.0, option_amount=120.0, url="javascript:alert(1)"),
+                    itinerary(price=130.0, option_amount=130.0, url="/transport_deeplink/usable"),
+                ]
+            )
+        )
+    )
+
+    results = probe.fetch_flights(
+        origin=entity("SIN", "95673375"),
+        destination=entity("SGN", "95673379"),
+        departure_date="2026-06-11",
+        return_date=None,
+        config=config(),
+        client=client,
+    )
+
+    assert results == [
+        probe.FlightProbeResult(
+            airline="VJ",
+            price_amount=130.0,
+            currency="SGD",
+            deeplink_url="https://www.skyscanner.com.sg/transport_deeplink/usable",
+        )
+    ]
+
+
+def test_fetch_flights_accepts_same_origin_absolute_deeplink() -> None:
+    client = FakeClient(
+        FakeResponse(
+            payload=search_payload(
+                [
+                    itinerary(
+                        price=130.0,
+                        option_amount=130.0,
+                        url="https://www.skyscanner.com.sg/transport_deeplink/usable",
+                    )
+                ]
+            )
+        )
+    )
+
+    results = probe.fetch_flights(
+        origin=entity("SIN", "95673375"),
+        destination=entity("SGN", "95673379"),
+        departure_date="2026-06-11",
+        return_date=None,
+        config=config(),
+        client=client,
+    )
+
+    assert results[0].deeplink_url == "https://www.skyscanner.com.sg/transport_deeplink/usable"
+
+
+def test_fetch_flights_accepts_relative_transport_deeplink() -> None:
+    client = FakeClient(
+        FakeResponse(
+            payload=search_payload(
+                [
+                    itinerary(price=130.0, option_amount=130.0, url="/transport_deeplink/usable"),
+                ]
+            )
+        )
+    )
+
+    results = probe.fetch_flights(
+        origin=entity("SIN", "95673375"),
+        destination=entity("SGN", "95673379"),
+        departure_date="2026-06-11",
+        return_date=None,
+        config=config(),
+        client=client,
+    )
+
+    assert results[0].deeplink_url == "https://www.skyscanner.com.sg/transport_deeplink/usable"
+
+
 def test_fetch_flights_skips_itinerary_when_cheapest_positive_option_has_no_deeplink() -> None:
     fallback_itinerary = itinerary(
         price=120.0,
