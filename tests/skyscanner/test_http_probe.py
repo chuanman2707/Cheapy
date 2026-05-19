@@ -758,6 +758,117 @@ def test_fetch_flights_skips_itinerary_when_cheapest_positive_option_has_no_deep
     ]
 
 
+def test_print_results_respects_limit(capsys: pytest.CaptureFixture[str]) -> None:
+    results = [
+        probe.FlightProbeResult("VJ", 220.96, "SGD", "https://example.test/1"),
+        probe.FlightProbeResult("SQ", 300.0, "SGD", "https://example.test/2"),
+    ]
+
+    probe.print_results(results, limit=1)
+
+    captured = capsys.readouterr()
+    assert "VJ" in captured.out
+    assert "220.96 SGD" in captured.out
+    assert "https://example.test/1" in captured.out
+    assert "SQ" not in captured.out
+
+
+def test_main_prints_safe_error_for_missing_cookie(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CHEAPY_SKYSCANNER_COOKIE", raising=False)
+
+    exit_code = probe.main(
+        [
+            "--origin",
+            "SIN",
+            "--destination",
+            "SGN",
+            "--departure-date",
+            "2026-06-11",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "missing_cookie" in captured.err
+    assert "__Secure-anon_token" not in captured.err
+
+
+def test_run_probe_resolves_entities_and_prints_results(capsys: pytest.CaptureFixture[str]) -> None:
+    class ScriptedClient:
+        def __init__(self) -> None:
+            self.responses = [
+                FakeResponse(
+                    payload={
+                        "places": [
+                            {
+                                "iataCode": "SIN",
+                                "entityId": "95673375",
+                                "name": "Singapore Changi",
+                                "type": "PLACE_TYPE_AIRPORT",
+                            }
+                        ]
+                    }
+                ),
+                FakeResponse(
+                    payload={
+                        "places": [
+                            {
+                                "iataCode": "SGN",
+                                "entityId": "95673379",
+                                "name": "Ho Chi Minh City",
+                                "type": "PLACE_TYPE_AIRPORT",
+                                "parentId": "27546329",
+                            }
+                        ]
+                    }
+                ),
+                FakeResponse(
+                    payload=search_payload(
+                        [
+                            itinerary(
+                                price=220.96,
+                                option_amount=220.96,
+                                url="/transport_deeplink/cheap",
+                                carrier="VJ",
+                            )
+                        ]
+                    )
+                ),
+            ]
+
+        def get(self, url: str, *, params: dict[str, object], headers: dict[str, str], timeout: float) -> FakeResponse:
+            return self.responses.pop(0)
+
+        def post(
+            self,
+            url: str,
+            *,
+            json: dict[str, object],
+            headers: dict[str, str],
+            timeout: float,
+        ) -> FakeResponse:
+            return self.responses.pop(0)
+
+    exit_code = probe.run_probe(
+        origin_iata="SIN",
+        destination_iata="SGN",
+        departure_date="2026-06-11",
+        return_date="2026-06-16",
+        limit=3,
+        config=config(),
+        client=ScriptedClient(),
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "VJ" in captured.out
+    assert "220.96 SGD" in captured.out
+    assert "transport_deeplink/cheap" in captured.out
+
+
 def test_fetch_flights_maps_no_usable_results() -> None:
     client = FakeClient(
         FakeResponse(

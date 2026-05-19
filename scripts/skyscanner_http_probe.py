@@ -19,6 +19,8 @@ from typing import Mapping, Protocol
 from urllib.parse import quote, urljoin, urlsplit
 import uuid
 
+import httpx
+
 
 DEFAULT_BASE_URL = "https://www.skyscanner.com.sg"
 DEFAULT_TIMEOUT_SECONDS = 20.0
@@ -573,27 +575,76 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def print_results(results: list[FlightProbeResult], *, limit: int) -> None:
+    for index, result in enumerate(results[:limit], start=1):
+        print(
+            f"{index}. {result.airline} | "
+            f"{result.price_amount:.2f} {result.currency} | "
+            f"{result.deeplink_url}"
+        )
+
+
+def run_probe(
+    *,
+    origin_iata: str,
+    destination_iata: str,
+    departure_date: str,
+    return_date: str | None,
+    limit: int,
+    config: ProbeConfig,
+    client: HttpClient,
+) -> int:
+    origin = get_entity_id(
+        origin_iata,
+        config=config,
+        client=client,
+        is_destination=False,
+    )
+    destination = get_entity_id(
+        destination_iata,
+        config=config,
+        client=client,
+        is_destination=True,
+    )
+    results = fetch_flights(
+        origin=origin,
+        destination=destination,
+        departure_date=departure_date,
+        return_date=return_date,
+        config=config,
+        client=client,
+    )
+    print_results(results, limit=limit)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
     try:
-        normalize_iata(args.origin)
-        normalize_iata(args.destination)
-        date_parts(args.departure_date)
-        if args.return_date is not None:
-            date_parts(args.return_date)
+        origin_iata = normalize_iata(args.origin)
+        destination_iata = normalize_iata(args.destination)
         validate_date_range(args.departure_date, args.return_date)
-        validate_limit(args.limit)
-        config_from_env(
+        limit = validate_limit(args.limit)
+        config = config_from_env(
             os.environ,
             market=args.market,
             locale=args.locale,
             currency=args.currency,
         )
+        with httpx.Client() as client:
+            return run_probe(
+                origin_iata=origin_iata,
+                destination_iata=destination_iata,
+                departure_date=args.departure_date,
+                return_date=args.return_date,
+                limit=limit,
+                config=config,
+                client=client,
+            )
     except ProbeError as exc:
         print(exc.safe_text(), file=sys.stderr)
         return 1
-    return 0
 
 
 if __name__ == "__main__":
