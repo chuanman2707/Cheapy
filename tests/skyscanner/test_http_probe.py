@@ -341,3 +341,142 @@ def test_get_entity_id_maps_transport_error() -> None:
 
     assert exc_info.value.code == "autosuggest_transport_error"
     assert "transport token secret" not in exc_info.value.message
+
+
+def entity(
+    iata: str,
+    entity_id: str,
+    *,
+    place_of_stay_entity_id: str | None = None,
+) -> object:
+    return probe.EntityResult(
+        iata=iata,
+        entity_id=entity_id,
+        name=iata,
+        place_type="Airport",
+        parent_entity_id=place_of_stay_entity_id,
+        place_of_stay_entity_id=place_of_stay_entity_id,
+    )
+
+
+def test_build_search_body_maps_one_way_without_place_of_stay() -> None:
+    body = probe.build_search_body(
+        origin=entity("HAN", "128668079"),
+        destination=entity("SGN", "95673379"),
+        departure_date="2026-06-11",
+        return_date=None,
+    )
+
+    assert body["cabinClass"] == "ECONOMY"
+    assert body["adults"] == 1
+    assert len(body["legs"]) == 1
+    assert body["legs"][0]["legOrigin"]["entityId"] == "128668079"
+    assert body["legs"][0]["legDestination"]["entityId"] == "95673379"
+    assert "placeOfStay" not in body["legs"][0]
+
+
+def test_build_search_body_maps_round_trip_with_place_of_stay() -> None:
+    body = probe.build_search_body(
+        origin=entity("SIN", "95673375"),
+        destination=entity("SGN", "95673379", place_of_stay_entity_id="27546329"),
+        departure_date="2026-06-11",
+        return_date="2026-06-16",
+    )
+
+    assert len(body["legs"]) == 2
+    assert body["legs"][0]["placeOfStay"] == "27546329"
+    assert body["legs"][1]["legOrigin"]["entityId"] == "95673379"
+    assert body["legs"][1]["legDestination"]["entityId"] == "95673375"
+    assert body["legs"][1]["dates"] == {
+        "@type": "date",
+        "year": "2026",
+        "month": "06",
+        "day": "16",
+    }
+
+
+def test_search_posts_minimal_headers_and_uuid_view_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeClient(FakeResponse(payload={"context": {"status": "complete"}, "itineraries": {"results": []}}))
+    monkeypatch.setattr(probe.uuid, "uuid4", lambda: "11111111-2222-4333-8444-555555555555")
+
+    with pytest.raises(probe.ProbeError) as exc_info:
+        probe.fetch_flights(
+            origin=entity("SIN", "95673375"),
+            destination=entity("SGN", "95673379"),
+            departure_date="2026-06-11",
+            return_date=None,
+            config=config(),
+            client=client,
+        )
+
+    assert exc_info.value.code == "no_usable_results"
+    post = client.post_calls[0]
+    assert post["url"] == "https://www.skyscanner.com.sg/g/radar/api/v2/web-unified-search/"
+    assert post["headers"]["content-type"] == "application/json"
+    assert post["headers"]["x-skyscanner-viewid"] == "11111111-2222-4333-8444-555555555555"
+    assert "origin" not in post["headers"]
+
+
+def test_fetch_flights_maps_search_http_error() -> None:
+    client = FakeClient(FakeResponse(status_code=429, payload={}))
+
+    with pytest.raises(probe.ProbeError) as exc_info:
+        probe.fetch_flights(
+            origin=entity("SIN", "95673375"),
+            destination=entity("SGN", "95673379"),
+            departure_date="2026-06-11",
+            return_date=None,
+            config=config(),
+            client=client,
+        )
+
+    assert exc_info.value.code == "search_http_error"
+
+
+def test_fetch_flights_maps_search_invalid_json() -> None:
+    client = FakeClient(FakeResponse(json_error=ValueError("jwt secret body")))
+
+    with pytest.raises(probe.ProbeError) as exc_info:
+        probe.fetch_flights(
+            origin=entity("SIN", "95673375"),
+            destination=entity("SGN", "95673379"),
+            departure_date="2026-06-11",
+            return_date=None,
+            config=config(),
+            client=client,
+        )
+
+    assert exc_info.value.code == "search_parse_error"
+    assert "jwt secret body" not in exc_info.value.message
+
+
+def test_fetch_flights_maps_incomplete_status() -> None:
+    client = FakeClient(FakeResponse(payload={"context": {"status": "pending"}, "itineraries": {"results": []}}))
+
+    with pytest.raises(probe.ProbeError) as exc_info:
+        probe.fetch_flights(
+            origin=entity("SIN", "95673375"),
+            destination=entity("SGN", "95673379"),
+            departure_date="2026-06-11",
+            return_date=None,
+            config=config(),
+            client=client,
+        )
+
+    assert exc_info.value.code == "search_incomplete"
+
+
+def test_fetch_flights_maps_missing_results_path() -> None:
+    client = FakeClient(FakeResponse(payload={"context": {"status": "complete"}, "itineraries": {}}))
+
+    with pytest.raises(probe.ProbeError) as exc_info:
+        probe.fetch_flights(
+            origin=entity("SIN", "95673375"),
+            destination=entity("SGN", "95673379"),
+            departure_date="2026-06-11",
+            return_date=None,
+            config=config(),
+            client=client,
+        )
+
+    assert exc_info.value.code == "search_parse_error"

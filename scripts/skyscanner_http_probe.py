@@ -16,7 +16,8 @@ import os
 import re
 import sys
 from typing import Mapping, Protocol
-from urllib.parse import quote
+from urllib.parse import quote, urljoin
+import uuid
 
 
 DEFAULT_BASE_URL = "https://www.skyscanner.com.sg"
@@ -65,6 +66,15 @@ class HttpClient(Protocol):
         url: str,
         *,
         params: dict[str, object],
+        headers: dict[str, str],
+        timeout: float,
+    ) -> HttpResponse: ...
+
+    def post(
+        self,
+        url: str,
+        *,
+        json: dict[str, object],
         headers: dict[str, str],
         timeout: float,
     ) -> HttpResponse: ...
@@ -148,6 +158,7 @@ def config_from_env(
 
 
 AUTOSUGGEST_PATH = "/g/autosuggest-search/api/v1/search-flight"
+SEARCH_PATH = "/g/radar/api/v2/web-unified-search/"
 
 
 def request_headers(config: ProbeConfig, *, accept_json: bool = True) -> dict[str, str]:
@@ -313,6 +324,125 @@ def get_entity_id(
             f"Multiple Skyscanner entities matched {requested_iata}: {_safe_candidate_summary(preferred)}",
         )
     return preferred[0]
+
+
+def _entity_ref(entity: EntityResult) -> dict[str, str]:
+    return {"@type": "entity", "entityId": entity.entity_id}
+
+
+def build_search_body(
+    *,
+    origin: EntityResult,
+    destination: EntityResult,
+    departure_date: str,
+    return_date: str | None,
+) -> dict[str, object]:
+    outbound_leg: dict[str, object] = {
+        "legOrigin": _entity_ref(origin),
+        "legDestination": _entity_ref(destination),
+        "dates": date_parts(departure_date),
+    }
+    if destination.place_of_stay_entity_id is not None:
+        outbound_leg["placeOfStay"] = destination.place_of_stay_entity_id
+
+    legs: list[dict[str, object]] = [outbound_leg]
+    if return_date is not None:
+        legs.append(
+            {
+                "legOrigin": _entity_ref(destination),
+                "legDestination": _entity_ref(origin),
+                "dates": date_parts(return_date),
+            }
+        )
+
+    return {
+        "cabinClass": "ECONOMY",
+        "childAges": [],
+        "adults": 1,
+        "legs": legs,
+    }
+
+
+def search_headers(config: ProbeConfig, *, view_id: str) -> dict[str, str]:
+    headers = request_headers(config, accept_json=False)
+    headers["content-type"] = "application/json"
+    headers["x-skyscanner-viewid"] = view_id
+    return headers
+
+
+def _search_payload(
+    *,
+    origin: EntityResult,
+    destination: EntityResult,
+    departure_date: str,
+    return_date: str | None,
+    config: ProbeConfig,
+    client: HttpClient,
+) -> object:
+    url = urljoin(config.base_url + "/", SEARCH_PATH.lstrip("/"))
+    body = build_search_body(
+        origin=origin,
+        destination=destination,
+        departure_date=departure_date,
+        return_date=return_date,
+    )
+    try:
+        response = client.post(
+            url,
+            json=body,
+            headers=search_headers(config, view_id=str(uuid.uuid4())),
+            timeout=config.timeout_seconds,
+        )
+    except Exception as exc:
+        raise ProbeError(
+            "search_transport_error",
+            f"Search request failed with {type(exc).__name__}.",
+        ) from exc
+
+    if response.status_code < 200 or response.status_code >= 300:
+        raise ProbeError("search_http_error", f"Search returned HTTP {response.status_code}.")
+
+    try:
+        payload = response.json()
+    except Exception as exc:
+        raise ProbeError(
+            "search_parse_error",
+            f"Search response could not be parsed as JSON: {type(exc).__name__}.",
+        ) from exc
+
+    if not isinstance(payload, dict):
+        raise ProbeError("search_parse_error", "Search response was not a JSON object.")
+    status = _field(payload.get("context"), ("status",))
+    if status != "complete":
+        raise ProbeError("search_incomplete", f"Search did not complete; status={status!r}.")
+    itineraries = payload.get("itineraries")
+    results = _field(itineraries, ("results",))
+    if not isinstance(results, list):
+        raise ProbeError("search_parse_error", "Search response did not contain itineraries.results.")
+    return payload
+
+
+def fetch_flights(
+    origin: EntityResult,
+    destination: EntityResult,
+    departure_date: str,
+    return_date: str | None = None,
+    *,
+    config: ProbeConfig,
+    client: HttpClient,
+) -> list[FlightProbeResult]:
+    _search_payload(
+        origin=origin,
+        destination=destination,
+        departure_date=departure_date,
+        return_date=return_date,
+        config=config,
+        client=client,
+    )
+    raise ProbeError(
+        "no_usable_results",
+        "Search completed but no itinerary had a positive price and deep link.",
+    )
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
