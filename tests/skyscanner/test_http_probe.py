@@ -73,3 +73,58 @@ def test_default_config_from_env_uses_safe_defaults() -> None:
     assert config.currency == "SGD"
     assert config.cookie.startswith("abgroup=1")
     assert config.timeout_seconds == 20.0
+
+
+def test_config_repr_redacts_cookie() -> None:
+    config = probe.config_from_env(
+        {"CHEAPY_SKYSCANNER_COOKIE": "abgroup=1; __Secure-anon_token=secret"},
+        market="SG",
+        locale="en-GB",
+        currency="SGD",
+    )
+
+    text = repr(config)
+
+    assert "__Secure-anon_token" not in text
+    assert "secret" not in text
+    assert "cookie" not in text
+
+
+def test_main_rejects_return_date_before_departure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CHEAPY_SKYSCANNER_COOKIE", "abgroup=1")
+
+    result = probe.main(
+        [
+            "--origin",
+            "HAN",
+            "--destination",
+            "SIN",
+            "--departure-date",
+            "2026-06-11",
+            "--return-date",
+            "2026-06-10",
+        ]
+    )
+
+    assert result == 1
+
+
+def test_main_rejects_non_positive_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CHEAPY_SKYSCANNER_COOKIE", "abgroup=1")
+
+    result = probe.main(
+        [
+            "--origin",
+            "HAN",
+            "--destination",
+            "SIN",
+            "--departure-date",
+            "2026-06-11",
+            "--limit",
+            "0",
+        ]
+    )
+
+    assert result == 1

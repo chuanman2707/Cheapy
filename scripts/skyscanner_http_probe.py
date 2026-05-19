@@ -9,7 +9,7 @@ small terminal report for manual inspection.
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 import os
 import re
@@ -29,7 +29,7 @@ class ProbeConfig:
     market: str
     locale: str
     currency: str
-    cookie: str
+    cookie: str = field(repr=False)
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
 
 
@@ -79,6 +79,24 @@ def date_parts(value: str) -> dict[str, str]:
         raise ProbeError("invalid_argument", "Date must use YYYY-MM-DD format.") from exc
     year, month, day = value.split("-")
     return {"@type": "date", "year": year, "month": month, "day": day}
+
+
+def validate_date_range(departure_date: str, return_date: str | None) -> None:
+    if return_date is None:
+        return
+    departure = datetime.strptime(departure_date, "%Y-%m-%d")
+    returning = datetime.strptime(return_date, "%Y-%m-%d")
+    if returning < departure:
+        raise ProbeError(
+            "invalid_argument",
+            "Return date must not be earlier than departure date.",
+        )
+
+
+def validate_limit(value: int) -> int:
+    if value < 1:
+        raise ProbeError("invalid_argument", "Limit must be at least 1.")
+    return value
 
 
 def require_cookie(env: Mapping[str, str]) -> str:
@@ -132,6 +150,8 @@ def main(argv: list[str] | None = None) -> int:
         date_parts(args.departure_date)
         if args.return_date is not None:
             date_parts(args.return_date)
+        validate_date_range(args.departure_date, args.return_date)
+        validate_limit(args.limit)
         config_from_env(
             os.environ,
             market=args.market,
