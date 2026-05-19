@@ -425,6 +425,100 @@ def _search_payload(
     return payload
 
 
+def _float_value(value: object) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return None
+    return amount if amount > 0 else None
+
+
+def _iter_segments(itinerary: object) -> list[object]:
+    if not isinstance(itinerary, dict):
+        return []
+    segments: list[object] = []
+    legs = itinerary.get("legs")
+    if not isinstance(legs, list):
+        return []
+    for leg in legs:
+        if not isinstance(leg, dict):
+            continue
+        leg_segments = leg.get("segments")
+        if isinstance(leg_segments, list):
+            segments.extend(leg_segments)
+    return segments
+
+
+def _airline_label(itinerary: object) -> str:
+    labels: list[str] = []
+    for segment in _iter_segments(itinerary):
+        carrier = _field(segment, ("marketingCarrier",))
+        label = _as_str(_field(carrier, ("displayCode", "name")))
+        if label is not None and label not in labels:
+            labels.append(label)
+    return "+".join(labels) if labels else "unknown"
+
+
+def _positive_price_option(itinerary: object) -> tuple[float, str] | None:
+    if not isinstance(itinerary, dict):
+        return None
+    options = itinerary.get("pricingOptions")
+    if not isinstance(options, list):
+        return None
+    candidates: list[tuple[float, str]] = []
+    for option in options:
+        amount = _float_value(_field(option, ("price.amount",)))
+        if amount is None or not isinstance(option, dict):
+            continue
+        items = option.get("items")
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            url = _as_str(_field(item, ("url",)))
+            if url is not None:
+                candidates.append((amount, url))
+                break
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda item: item[0])[0]
+
+
+def _extract_results(payload: object, *, config: ProbeConfig) -> list[FlightProbeResult]:
+    results = _field(_field(payload, ("itineraries",)), ("results",))
+    if not isinstance(results, list):
+        raise ProbeError("search_parse_error", "Search response did not contain itineraries.results.")
+
+    extracted: list[FlightProbeResult] = []
+    for itinerary in sorted(
+        results,
+        key=lambda item: _float_value(_field(item, ("price.raw",))) or float("inf"),
+    ):
+        canonical_price = _float_value(_field(itinerary, ("price.raw",)))
+        if canonical_price is None:
+            continue
+        option = _positive_price_option(itinerary)
+        if option is None:
+            continue
+        _, deeplink = option
+        extracted.append(
+            FlightProbeResult(
+                airline=_airline_label(itinerary),
+                price_amount=canonical_price,
+                currency=config.currency,
+                deeplink_url=urljoin(config.base_url + "/", deeplink),
+            )
+        )
+
+    if not extracted:
+        raise ProbeError(
+            "no_usable_results",
+            "Search completed but no itinerary had a positive price and deep link.",
+        )
+    return extracted
+
+
 def fetch_flights(
     origin: EntityResult,
     destination: EntityResult,
@@ -434,7 +528,7 @@ def fetch_flights(
     config: ProbeConfig,
     client: HttpClient,
 ) -> list[FlightProbeResult]:
-    _search_payload(
+    payload = _search_payload(
         origin=origin,
         destination=destination,
         departure_date=departure_date,
@@ -442,10 +536,7 @@ def fetch_flights(
         config=config,
         client=client,
     )
-    raise ProbeError(
-        "no_usable_results",
-        "Search completed but no itinerary had a positive price and deep link.",
-    )
+    return _extract_results(payload, config=config)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:

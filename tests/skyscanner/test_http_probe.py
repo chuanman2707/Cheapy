@@ -518,3 +518,131 @@ def test_fetch_flights_maps_missing_results_path() -> None:
         )
 
     assert exc_info.value.code == "search_parse_error"
+
+
+def itinerary(
+    *,
+    price: float,
+    option_amount: float,
+    url: str | None,
+    carrier: str = "VJ",
+) -> dict[str, object]:
+    item: dict[str, object] = {"price": {"amount": option_amount}}
+    if url is not None:
+        item["url"] = url
+    return {
+        "id": f"itinerary-{price}",
+        "price": {"raw": price, "formatted": f"${price}"},
+        "legs": [
+            {
+                "stopCount": 0,
+                "segments": [
+                    {
+                        "marketingCarrier": {
+                            "displayCode": carrier,
+                            "name": carrier,
+                        }
+                    }
+                ],
+            }
+        ],
+        "pricingOptions": [
+            {
+                "price": {"amount": option_amount},
+                "items": [item],
+            }
+        ],
+    }
+
+
+def search_payload(results: list[dict[str, object]]) -> dict[str, object]:
+    return {"context": {"status": "complete"}, "itineraries": {"results": results}}
+
+
+def test_fetch_flights_extracts_sorted_fares_and_absolute_deeplinks() -> None:
+    client = FakeClient(
+        FakeResponse(
+            payload=search_payload(
+                [
+                    itinerary(price=300.0, option_amount=300.0, url="/transport_deeplink/expensive", carrier="SQ"),
+                    itinerary(price=220.96, option_amount=220.96, url="/transport_deeplink/cheap", carrier="VJ"),
+                ]
+            )
+        )
+    )
+
+    results = probe.fetch_flights(
+        origin=entity("SIN", "95673375"),
+        destination=entity("SGN", "95673379"),
+        departure_date="2026-06-11",
+        return_date="2026-06-16",
+        config=config(),
+        client=client,
+    )
+
+    assert results == [
+        probe.FlightProbeResult(
+            airline="VJ",
+            price_amount=220.96,
+            currency="SGD",
+            deeplink_url="https://www.skyscanner.com.sg/transport_deeplink/cheap",
+        ),
+        probe.FlightProbeResult(
+            airline="SQ",
+            price_amount=300.0,
+            currency="SGD",
+            deeplink_url="https://www.skyscanner.com.sg/transport_deeplink/expensive",
+        ),
+    ]
+
+
+def test_fetch_flights_ignores_zero_amount_options_and_missing_deeplinks() -> None:
+    client = FakeClient(
+        FakeResponse(
+            payload=search_payload(
+                [
+                    itinerary(price=100.0, option_amount=0.0, url="/transport_deeplink/free"),
+                    itinerary(price=120.0, option_amount=120.0, url=None),
+                    itinerary(price=130.0, option_amount=130.0, url="https://www.skyscanner.com.sg/transport_deeplink/usable"),
+                ]
+            )
+        )
+    )
+
+    results = probe.fetch_flights(
+        origin=entity("SIN", "95673375"),
+        destination=entity("SGN", "95673379"),
+        departure_date="2026-06-11",
+        return_date=None,
+        config=config(),
+        client=client,
+    )
+
+    assert len(results) == 1
+    assert results[0].price_amount == 130.0
+    assert results[0].deeplink_url == "https://www.skyscanner.com.sg/transport_deeplink/usable"
+
+
+def test_fetch_flights_maps_no_usable_results() -> None:
+    client = FakeClient(
+        FakeResponse(
+            payload=search_payload(
+                [
+                    itinerary(price=0.0, option_amount=0.0, url="/transport_deeplink/free"),
+                    itinerary(price=120.0, option_amount=120.0, url=None),
+                ]
+            )
+        )
+    )
+
+    with pytest.raises(probe.ProbeError) as exc_info:
+        probe.fetch_flights(
+            origin=entity("SIN", "95673375"),
+            destination=entity("SGN", "95673379"),
+            departure_date="2026-06-11",
+            return_date=None,
+            config=config(),
+            client=client,
+        )
+
+    assert exc_info.value.code == "no_usable_results"
