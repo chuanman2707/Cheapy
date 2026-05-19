@@ -623,6 +623,58 @@ def test_fetch_flights_ignores_zero_amount_options_and_missing_deeplinks() -> No
     assert results[0].deeplink_url == "https://www.skyscanner.com.sg/transport_deeplink/usable"
 
 
+def test_fetch_flights_skips_itinerary_when_cheapest_positive_option_has_no_deeplink() -> None:
+    fallback_itinerary = itinerary(
+        price=120.0,
+        option_amount=120.0,
+        url=None,
+        carrier="SQ",
+    )
+    fallback_itinerary["pricingOptions"] = [
+        {
+            "price": {"amount": 120.0},
+            "items": [{"price": {"amount": 120.0}}],
+        },
+        {
+            "price": {"amount": 150.0},
+            "items": [
+                {
+                    "price": {"amount": 150.0},
+                    "url": "/transport_deeplink/more-expensive",
+                }
+            ],
+        },
+    ]
+    client = FakeClient(
+        FakeResponse(
+            payload=search_payload(
+                [
+                    fallback_itinerary,
+                    itinerary(price=180.0, option_amount=180.0, url="/transport_deeplink/usable", carrier="VJ"),
+                ]
+            )
+        )
+    )
+
+    results = probe.fetch_flights(
+        origin=entity("SIN", "95673375"),
+        destination=entity("SGN", "95673379"),
+        departure_date="2026-06-11",
+        return_date=None,
+        config=config(),
+        client=client,
+    )
+
+    assert results == [
+        probe.FlightProbeResult(
+            airline="VJ",
+            price_amount=180.0,
+            currency="SGD",
+            deeplink_url="https://www.skyscanner.com.sg/transport_deeplink/usable",
+        )
+    ]
+
+
 def test_fetch_flights_maps_no_usable_results() -> None:
     client = FakeClient(
         FakeResponse(

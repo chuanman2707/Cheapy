@@ -467,22 +467,23 @@ def _positive_price_option(itinerary: object) -> tuple[float, str] | None:
     options = itinerary.get("pricingOptions")
     if not isinstance(options, list):
         return None
-    candidates: list[tuple[float, str]] = []
+    candidates: list[tuple[float, dict[str, object]]] = []
     for option in options:
         amount = _float_value(_field(option, ("price.amount",)))
         if amount is None or not isinstance(option, dict):
             continue
-        items = option.get("items")
-        if not isinstance(items, list):
-            continue
-        for item in items:
-            url = _as_str(_field(item, ("url",)))
-            if url is not None:
-                candidates.append((amount, url))
-                break
+        candidates.append((amount, option))
     if not candidates:
         return None
-    return sorted(candidates, key=lambda item: item[0])[0]
+    amount, option = sorted(candidates, key=lambda item: item[0])[0]
+    items = option.get("items")
+    if not isinstance(items, list):
+        return None
+    for item in items:
+        url = _as_str(_field(item, ("url",)))
+        if url is not None:
+            return amount, url
+    return None
 
 
 def _extract_results(payload: object, *, config: ProbeConfig) -> list[FlightProbeResult]:
