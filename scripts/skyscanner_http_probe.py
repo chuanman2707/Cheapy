@@ -15,10 +15,8 @@ from datetime import datetime
 import os
 import re
 import sys
-from typing import Mapping
+from typing import Mapping, Protocol
 from urllib.parse import quote
-
-import httpx
 
 
 DEFAULT_BASE_URL = "https://www.skyscanner.com.sg"
@@ -53,6 +51,23 @@ class FlightProbeResult:
     price_amount: float
     currency: str
     deeplink_url: str
+
+
+class HttpResponse(Protocol):
+    status_code: int
+
+    def json(self) -> object: ...
+
+
+class HttpClient(Protocol):
+    def get(
+        self,
+        url: str,
+        *,
+        params: dict[str, object],
+        headers: dict[str, str],
+        timeout: float,
+    ) -> HttpResponse: ...
 
 
 class ProbeError(Exception):
@@ -232,13 +247,14 @@ def get_entity_id(
     iata_code: str,
     *,
     config: ProbeConfig,
-    client: httpx.Client,
+    client: HttpClient,
     is_destination: bool = False,
 ) -> EntityResult:
     requested_iata = normalize_iata(iata_code)
     url = (
         f"{config.base_url}{AUTOSUGGEST_PATH}/"
-        f"{quote(config.market)}/{quote(config.locale)}/{quote(requested_iata)}"
+        f"{quote(config.market, safe='')}/{quote(config.locale, safe='')}/"
+        f"{quote(requested_iata, safe='')}"
     )
     try:
         response = client.get(

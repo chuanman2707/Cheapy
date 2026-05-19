@@ -176,6 +176,38 @@ def config(cookie: str = "traveller_context=abc; __Secure-anon_token=secret") ->
     )
 
 
+def test_get_entity_id_encodes_path_components_with_slashes() -> None:
+    client = FakeClient(
+        FakeResponse(
+            payload={
+                "places": [
+                    {
+                        "iataCode": "HAN",
+                        "entityId": "128668079",
+                        "name": "Hanoi",
+                        "type": "PLACE_TYPE_AIRPORT",
+                    }
+                ]
+            }
+        )
+    )
+    slash_config = probe.ProbeConfig(
+        base_url="https://www.skyscanner.com.sg",
+        market="S/G",
+        locale="en/GB",
+        currency="SGD",
+        cookie="traveller_context=abc",
+        timeout_seconds=7.0,
+    )
+
+    result = probe.get_entity_id("HAN", config=slash_config, client=client)
+
+    assert result.entity_id == "128668079"
+    assert client.get_calls[0]["url"] == (
+        "https://www.skyscanner.com.sg/g/autosuggest-search/api/v1/search-flight/S%2FG/en%2FGB/HAN"
+    )
+
+
 def test_get_entity_id_resolves_web_style_airport_and_parent() -> None:
     client = FakeClient(
         FakeResponse(
@@ -250,6 +282,16 @@ def test_get_entity_id_maps_no_match_to_entity_not_found() -> None:
         probe.get_entity_id("HAN", config=config(), client=client)
 
     assert exc_info.value.code == "entity_not_found"
+
+
+@pytest.mark.parametrize("payload", [{}, {"places": {}}, {"Places": "not a list"}])
+def test_get_entity_id_maps_missing_or_non_list_places_to_parse_error(payload: object) -> None:
+    client = FakeClient(FakeResponse(payload=payload))
+
+    with pytest.raises(probe.ProbeError) as exc_info:
+        probe.get_entity_id("HAN", config=config(), client=client)
+
+    assert exc_info.value.code == "autosuggest_parse_error"
 
 
 def test_get_entity_id_maps_ambiguous_airports() -> None:
