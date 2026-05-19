@@ -595,6 +595,7 @@ def run_probe(
     config: ProbeConfig,
     client: HttpClient,
 ) -> int:
+    validate_limit(limit)
     origin = get_entity_id(
         origin_iata,
         config=config,

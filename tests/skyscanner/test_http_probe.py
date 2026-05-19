@@ -805,8 +805,47 @@ def test_main_prints_safe_error_for_missing_cookie(
     captured = capsys.readouterr()
     assert exit_code == 1
     assert captured.out == ""
-    assert "missing_cookie" in captured.err
+    assert captured.err == (
+        "missing_cookie: Set CHEAPY_SKYSCANNER_COOKIE before running the Skyscanner probe.\n"
+    )
     assert "__Secure-anon_token" not in captured.err
+
+
+def test_run_probe_rejects_non_positive_limit_before_network_calls() -> None:
+    class NoNetworkClient:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def get(self, url: str, *, params: dict[str, object], headers: dict[str, str], timeout: float) -> FakeResponse:
+            self.calls.append("get")
+            raise AssertionError("get should not be called")
+
+        def post(
+            self,
+            url: str,
+            *,
+            json: dict[str, object],
+            headers: dict[str, str],
+            timeout: float,
+        ) -> FakeResponse:
+            self.calls.append("post")
+            raise AssertionError("post should not be called")
+
+    client = NoNetworkClient()
+
+    with pytest.raises(probe.ProbeError) as exc_info:
+        probe.run_probe(
+            origin_iata="SIN",
+            destination_iata="SGN",
+            departure_date="2026-06-11",
+            return_date=None,
+            limit=0,
+            config=config(),
+            client=client,
+        )
+
+    assert exc_info.value.code == "invalid_argument"
+    assert client.calls == []
 
 
 def test_run_probe_resolves_entities_and_prints_results(capsys: pytest.CaptureFixture[str]) -> None:
@@ -877,9 +916,10 @@ def test_run_probe_resolves_entities_and_prints_results(capsys: pytest.CaptureFi
 
     captured = capsys.readouterr()
     assert exit_code == 0
-    assert "VJ" in captured.out
-    assert "220.96 SGD" in captured.out
-    assert "transport_deeplink/cheap" in captured.out
+    assert captured.out == (
+        "1. VJ | 220.96 SGD | https://www.skyscanner.com.sg/transport_deeplink/cheap\n"
+    )
+    assert captured.err == ""
 
 
 def test_fetch_flights_maps_no_usable_results() -> None:
