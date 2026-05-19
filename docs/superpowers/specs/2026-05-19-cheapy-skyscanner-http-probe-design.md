@@ -63,13 +63,57 @@ scripts/
 The script contains two main functions:
 
 ```python
-get_entity_id(iata_code: str) -> EntityResult
+get_entity_id(
+    iata_code: str,
+    *,
+    config: ProbeConfig,
+    client: httpx.Client,
+    is_destination: bool = False,
+) -> EntityResult
 fetch_flights(
-    origin_entity: str,
-    dest_entity: str,
+    origin: EntityResult,
+    destination: EntityResult,
     departure_date: str,
     return_date: str | None = None,
+    *,
+    config: ProbeConfig,
+    client: httpx.Client,
 ) -> list[FlightProbeResult]
+```
+
+The CLI may wrap these with defaults from arguments and environment variables,
+but the testable core takes explicit config and HTTP client arguments. It must
+not hide network dependencies in module-level globals.
+
+Core data shapes:
+
+```python
+@dataclass(frozen=True)
+class ProbeConfig:
+    base_url: str
+    market: str
+    locale: str
+    currency: str
+    cookie: str
+    timeout_seconds: float
+
+
+@dataclass(frozen=True)
+class EntityResult:
+    iata: str
+    entity_id: str
+    name: str
+    place_type: str | None = None
+    parent_entity_id: str | None = None
+    place_of_stay_entity_id: str | None = None
+
+
+@dataclass(frozen=True)
+class FlightProbeResult:
+    airline: str
+    price_amount: float
+    currency: str
+    deeplink_url: str
 ```
 
 The script uses `httpx` for browserless HTTP. If `httpx` is not already
@@ -124,8 +168,8 @@ The script prints one compact table or line-oriented report containing at least:
 1. Parse CLI arguments.
 2. Read `CHEAPY_SKYSCANNER_COOKIE`.
 3. Validate IATA and date shapes.
-4. Resolve origin IATA through Autosuggest.
-5. Resolve destination IATA through Autosuggest.
+4. Resolve origin IATA through Autosuggest with `is_destination=False`.
+5. Resolve destination IATA through Autosuggest with `is_destination=True`.
 6. Generate a `viewId` with `uuid.uuid4()`.
 7. Build the minimal `web-unified-search` JSON body.
 8. Send the POST with minimal headers:
@@ -155,24 +199,64 @@ The route body uses Skyscanner entity IDs:
 ```
 
 Round trips include a second leg with origin and destination reversed. One-way
-searches include only the departure leg. The script should include
-`placeOfStay` only when Autosuggest or known response data provides a reliable
-destination city entity. It must not invent a `placeOfStay` value for unknown
-routes.
+searches include only the departure leg.
+
+`placeOfStay` handling is explicit:
+
+- `get_entity_id(..., is_destination=True)` fills
+  `EntityResult.place_of_stay_entity_id` from a destination's parent or city
+  entity when the Autosuggest response exposes one.
+- `fetch_flights()` includes `placeOfStay` on the outbound leg only when
+  `destination.place_of_stay_entity_id` is present.
+- `fetch_flights()` omits `placeOfStay` when the destination resolver cannot
+  prove a city or parent entity. It must not invent one for unknown routes.
 
 ## Autosuggest Resolution
 
-`get_entity_id(iata_code)` calls a Skyscanner Autosuggest endpoint that returns
-candidate places for the supplied IATA code.
+`get_entity_id(iata_code, ..., is_destination)` calls Skyscanner's web
+Autosuggest endpoint candidate:
+
+```text
+GET {base_url}/g/autosuggest-search/api/v1/search-flight/{market}/{locale}/{search_term}
+```
+
+Query parameters:
+
+- `isDestination=true|false`
+- `enable_general_search_v2=false`
+
+Request headers:
+
+- `accept: application/json`
+- `cookie: <CHEAPY_SKYSCANNER_COOKIE>`
+- `x-skyscanner-channelid: website`
+- `x-skyscanner-currency: <currency>`
+- `x-skyscanner-locale: <locale>`
+- `x-skyscanner-market: <market>`
+
+The implementation should keep the endpoint path in one constant so it can be
+updated if Skyscanner moves the web Autosuggest surface.
+
+The parser accepts the observed web-style field names and the documented
+partner Autosuggest-style field names:
+
+| Meaning | Accepted field names |
+| --- | --- |
+| result collection | `places`, `Places` |
+| IATA code | `iataCode`, `IataCode`, `iata`, `IATA` |
+| entity ID | `entityId`, `EntityId`, `PlaceId` |
+| display name | `name`, `Name`, `PlaceName` |
+| place type | `type`, `Type`, `placeType`, `PlaceType` |
+| parent or city entity | `parentId`, `ParentId`, `CityId`, `cityId`, nested `parent.entityId` |
 
 Resolution rules:
 
 1. Match candidates by exact IATA code after uppercasing input.
 2. Prefer airport candidates over city or country candidates when candidate
    type metadata is present.
-3. Return the candidate's Skyscanner entity ID.
-4. Return a destination city or parent entity only when the Autosuggest payload
-   exposes it clearly enough to support `placeOfStay`.
+3. Return the candidate's Skyscanner entity ID as `EntityResult.entity_id`.
+4. For destination airport candidates, set `place_of_stay_entity_id` from a
+   clear parent or city entity field when present.
 5. If no exact IATA candidate exists, raise `entity_not_found`.
 6. If multiple exact plausible candidates remain after airport preference,
    raise `entity_ambiguous` and show safe candidate metadata.
@@ -197,11 +281,16 @@ Pricing option handling:
 - inspect `.pricingOptions[]`
 - ignore options where `.price.amount <= 0`
 - choose the lowest positive option
-- find an item URL from the chosen pricing option
+- inspect only `.items[]` under the chosen pricing option
+- choose the first item whose `.url` is a non-empty string; ties preserve
+  response order
 - turn relative URLs into absolute URLs under `https://www.skyscanner.com.sg`
 - skip itineraries that do not provide a usable deep link URL
 
 The script must not trust response order. It always sorts by canonical price.
+Full deep link URLs may contain opaque Skyscanner tracking query parameters.
+The probe may print them because deep links are one of the requested outputs,
+but it must not persist them to committed fixtures or logs.
 
 ## Error Handling
 
@@ -214,9 +303,12 @@ Expected failures:
 | missing `CHEAPY_SKYSCANNER_COOKIE` | `missing_cookie` |
 | invalid IATA or date argument | `invalid_argument` |
 | Autosuggest HTTP non-2xx | `autosuggest_http_error` |
+| Autosuggest timeout or transport failure | `autosuggest_transport_error` |
+| Autosuggest response is not valid JSON or has an unexpected shape | `autosuggest_parse_error` |
 | no exact IATA candidate | `entity_not_found` |
 | multiple plausible candidates | `entity_ambiguous` |
 | search HTTP non-2xx | `search_http_error` |
+| search timeout or transport failure | `search_transport_error` |
 | response is not valid JSON | `search_parse_error` |
 | `context.status` is not `complete` | `search_incomplete` |
 | results path is missing or not a list | `search_parse_error` |
@@ -248,19 +340,38 @@ Required coverage:
 - fake Autosuggest response resolving `SGN` to an entity ID
 - fake no-match Autosuggest response
 - fake ambiguous Autosuggest response
+- fake Autosuggest HTTP non-2xx
+- fake Autosuggest invalid JSON or missing result collection
 - minimal search request body for one-way
 - minimal search request body for round-trip
+- outbound leg includes `placeOfStay` when destination entity has
+  `place_of_stay_entity_id`
+- outbound leg omits `placeOfStay` when destination entity has no reliable
+  parent or city entity
 - generated `x-skyscanner-viewid` is UUID-shaped
+- fake search HTTP non-2xx
+- fake search invalid JSON
+- fake search response with missing or non-list `.itineraries.results`
 - fake `web-unified-search` response extracts fares sorted by `.price.raw`
 - pricing options with `amount == 0` are ignored
 - missing deep link skips the itinerary
 - relative deep link becomes an absolute Skyscanner URL
 - `context.status != "complete"` maps to `search_incomplete`
+- no positive-price itinerary with deep link maps to `no_usable_results`
 - cookie and token-like strings do not appear in error output
 
 Tests may use a fake HTTP client object injected into the two core functions.
 The script should avoid making live network calls unless it is run manually by a
 developer with `CHEAPY_SKYSCANNER_COOKIE` set.
+
+## References
+
+- Official Skyscanner Autosuggest documentation describes the partner
+  `autosuggest/flights` response fields, including `places`, `entityId`,
+  `iataCode`, `parentId`, `name`, and `type`.
+- The web Autosuggest endpoint path is a researched same-origin browser surface,
+  not the authenticated partner API. If live verification shows the path has
+  moved, update the endpoint constant before implementing the resolver.
 
 ## Future Provider Path
 
