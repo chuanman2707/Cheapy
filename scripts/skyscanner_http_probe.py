@@ -205,6 +205,8 @@ def _as_str(value: object | None) -> str | None:
 
 
 def _places_from_payload(payload: object) -> list[object]:
+    if isinstance(payload, list):
+        return payload
     if not isinstance(payload, dict):
         raise ProbeError(
             "autosuggest_parse_error",
@@ -221,17 +223,30 @@ def _places_from_payload(payload: object) -> list[object]:
 
 def _candidate_to_entity(candidate: object, *, requested_iata: str, is_destination: bool) -> EntityResult | None:
     iata = _as_str(_field(candidate, ("iataCode", "IataCode", "iata", "IATA")))
+    place_id = _as_str(_field(candidate, ("placeId", "PlaceId")))
+    if iata is None and place_id is not None and IATA_RE.fullmatch(place_id.upper()):
+        iata = place_id
     if iata is None or iata.upper() != requested_iata:
         return None
-    entity_id = _as_str(_field(candidate, ("entityId", "EntityId", "PlaceId")))
+    entity_id = _as_str(_field(candidate, ("entityId", "EntityId", "GeoId", "geoId", "PlaceId")))
     name = _as_str(_field(candidate, ("name", "Name", "PlaceName")))
     if entity_id is None or name is None:
         return None
     place_type = _as_str(_field(candidate, ("type", "Type", "placeType", "PlaceType")))
+    if place_type is None and place_id is not None and place_id.upper() == requested_iata:
+        place_type = "Airport"
     parent_id = _as_str(
         _field(
             candidate,
-            ("parentId", "ParentId", "CityId", "cityId", "parent.entityId"),
+            (
+                "parentId",
+                "ParentId",
+                "GeoContainerId",
+                "geoContainerId",
+                "CityId",
+                "cityId",
+                "parent.entityId",
+            ),
         )
     )
     return EntityResult(

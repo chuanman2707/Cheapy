@@ -275,6 +275,47 @@ def test_get_entity_id_resolves_partner_style_airport() -> None:
     assert result.place_of_stay_entity_id is None
 
 
+def test_get_entity_id_resolves_live_top_level_autosuggest_list() -> None:
+    client = FakeClient(
+        FakeResponse(
+            payload=[
+                {
+                    "PlaceId": "SGNS",
+                    "PlaceName": "Ho Chi Minh City",
+                    "IataCode": "SGN",
+                    "GeoId": "27546329",
+                    "GeoContainerId": "27546329",
+                    "CityId": "SGNS",
+                },
+                {
+                    "PlaceId": "SGN",
+                    "PlaceName": "Ho Chi Minh City",
+                    "IataCode": "",
+                    "GeoId": "95673379",
+                    "GeoContainerId": "27546329",
+                    "CityId": "SGNS",
+                },
+            ]
+        )
+    )
+
+    result = probe.get_entity_id(
+        "SGN",
+        config=config(),
+        client=client,
+        is_destination=True,
+    )
+
+    assert result == probe.EntityResult(
+        iata="SGN",
+        entity_id="95673379",
+        name="Ho Chi Minh City",
+        place_type="Airport",
+        parent_entity_id="27546329",
+        place_of_stay_entity_id="27546329",
+    )
+
+
 def test_get_entity_id_maps_no_match_to_entity_not_found() -> None:
     client = FakeClient(FakeResponse(payload={"places": []}))
 
