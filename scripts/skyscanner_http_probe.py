@@ -18,6 +18,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from typing import Mapping, Protocol
 from urllib.parse import quote, urlencode, urljoin, urlsplit
 import uuid
@@ -27,6 +28,8 @@ import httpx
 
 DEFAULT_BASE_URL = "https://www.skyscanner.com.sg"
 DEFAULT_TIMEOUT_SECONDS = 20.0
+SEARCH_POLL_ATTEMPTS = 8
+SEARCH_POLL_INTERVAL_SECONDS = 1.0
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -631,6 +634,10 @@ def _poll_search_session(
     return _read_search_response(response, operation="Search poll")
 
 
+def _sleep_between_search_polls() -> None:
+    time.sleep(SEARCH_POLL_INTERVAL_SECONDS)
+
+
 def _search_payload(
     *,
     origin: EntityResult,
@@ -674,14 +681,19 @@ def _search_payload(
         session_id = _as_str(_field(payload.get("context"), ("sessionId",)))
         if session_id is None:
             raise ProbeError("search_incomplete", "Search did not complete.")
-        payload = _poll_search_session(
-            session_id=session_id,
-            config=config,
-            client=client,
-            view_id=view_id,
-            referer=referer,
-        )
-        status = _field(payload.get("context"), ("status",))
+        for poll_index in range(SEARCH_POLL_ATTEMPTS):
+            payload = _poll_search_session(
+                session_id=session_id,
+                config=config,
+                client=client,
+                view_id=view_id,
+                referer=referer,
+            )
+            status = _field(payload.get("context"), ("status",))
+            if status != "incomplete":
+                break
+            if poll_index < SEARCH_POLL_ATTEMPTS - 1:
+                _sleep_between_search_polls()
     if status != "complete":
         raise ProbeError("search_incomplete", "Search did not complete.")
     itineraries = payload.get("itineraries")

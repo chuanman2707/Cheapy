@@ -722,6 +722,55 @@ def test_fetch_flights_polls_incomplete_search_session() -> None:
     assert "content-type" not in client.get_calls[0]["headers"]
 
 
+def test_fetch_flights_retries_until_polled_search_completes(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(probe, "_sleep_between_search_polls", lambda: None, raising=False)
+
+    class SlowPollingClient:
+        def __init__(self) -> None:
+            self.get_calls: list[dict[str, object]] = []
+            self.post_calls: list[dict[str, object]] = []
+            self.poll_responses = [
+                FakeResponse(
+                    payload={
+                        "context": {"status": "incomplete", "sessionId": "session/id=secret"},
+                        "itineraries": {"results": []},
+                    }
+                ),
+                FakeResponse(payload=search_payload([itinerary(price=220.96, option_amount=220.96, url="/transport_deeplink/cheap")])),
+            ]
+
+        def get(self, url: str, *, params: dict[str, object], headers: dict[str, str], timeout: float) -> FakeResponse:
+            self.get_calls.append(
+                {"url": url, "params": params, "headers": headers, "timeout": timeout}
+            )
+            return self.poll_responses.pop(0)
+
+        def post(self, url: str, *, json: dict[str, object], headers: dict[str, str], timeout: float) -> FakeResponse:
+            self.post_calls.append(
+                {"url": url, "json": json, "headers": headers, "timeout": timeout}
+            )
+            return FakeResponse(
+                payload={
+                    "context": {"status": "incomplete", "sessionId": "session/id=secret"},
+                    "itineraries": {"results": []},
+                }
+            )
+
+    client = SlowPollingClient()
+
+    results = probe.fetch_flights(
+        origin=entity("SIN", "95673375"),
+        destination=entity("SGN", "95673379"),
+        departure_date="2026-06-11",
+        return_date="2026-06-16",
+        config=config(),
+        client=client,
+    )
+
+    assert results[0].price_amount == 220.96
+    assert len(client.get_calls) == 2
+
+
 def test_fetch_flights_maps_missing_results_path() -> None:
     client = FakeClient(FakeResponse(payload={"context": {"status": "complete"}, "itineraries": {}}))
 
