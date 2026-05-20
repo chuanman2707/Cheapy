@@ -74,6 +74,21 @@ def test_default_config_from_env_uses_safe_defaults() -> None:
     assert config.currency == "SGD"
     assert config.cookie.startswith("abgroup=1")
     assert config.timeout_seconds == 20.0
+    assert config.user_agent == probe.DEFAULT_USER_AGENT
+
+
+def test_config_from_env_accepts_runtime_user_agent_override() -> None:
+    config = probe.config_from_env(
+        {
+            "CHEAPY_SKYSCANNER_COOKIE": "abgroup=1; __Secure-anon_token=secret",
+            "CHEAPY_SKYSCANNER_USER_AGENT": " Browserless-UA ",
+        },
+        market="SG",
+        locale="en-GB",
+        currency="SGD",
+    )
+
+    assert config.user_agent == "Browserless-UA"
 
 
 def test_config_repr_redacts_cookie() -> None:
@@ -166,7 +181,10 @@ class FakeClient:
         return self.response
 
 
-def config(cookie: str = "traveller_context=abc; __Secure-anon_token=secret") -> object:
+def config(
+    cookie: str = "traveller_context=abc; __Secure-anon_token=secret",
+    user_agent: str = probe.DEFAULT_USER_AGENT,
+) -> object:
     return probe.ProbeConfig(
         base_url="https://www.skyscanner.com.sg",
         market="SG",
@@ -174,6 +192,7 @@ def config(cookie: str = "traveller_context=abc; __Secure-anon_token=secret") ->
         currency="SGD",
         cookie=cookie,
         timeout_seconds=7.0,
+        user_agent=user_agent,
     )
 
 
@@ -586,7 +605,7 @@ def test_search_posts_minimal_headers_and_uuid_view_id(monkeypatch: pytest.Monke
             destination=entity("SGN", "95673379"),
             departure_date="2026-06-11",
             return_date=None,
-            config=config(),
+            config=config(user_agent="Browserless-UA"),
             client=client,
         )
 
@@ -603,7 +622,7 @@ def test_search_posts_minimal_headers_and_uuid_view_id(monkeypatch: pytest.Monke
             "?adultsv2=1&cabinclass=economy&childrenv2=&ref=home&rtn=0"
             "&preferdirects=false&outboundaltsenabled=false&inboundaltsenabled=false"
         ),
-        "user-agent": probe.DEFAULT_USER_AGENT,
+        "user-agent": "Browserless-UA",
         "x-skyscanner-channelid": "website",
         "x-skyscanner-consent-adverts": "true",
         "x-skyscanner-currency": "SGD",
@@ -769,6 +788,52 @@ def test_fetch_flights_retries_until_polled_search_completes(monkeypatch: pytest
 
     assert results[0].price_amount == 220.96
     assert len(client.get_calls) == 2
+
+
+def test_fetch_flights_keeps_initial_results_when_poll_completes_empty() -> None:
+    class EmptyPollingClient:
+        def __init__(self) -> None:
+            self.get_calls: list[dict[str, object]] = []
+            self.post_calls: list[dict[str, object]] = []
+
+        def get(self, url: str, *, params: dict[str, object], headers: dict[str, str], timeout: float) -> FakeResponse:
+            self.get_calls.append(
+                {"url": url, "params": params, "headers": headers, "timeout": timeout}
+            )
+            return FakeResponse(payload=search_payload([]))
+
+        def post(self, url: str, *, json: dict[str, object], headers: dict[str, str], timeout: float) -> FakeResponse:
+            self.post_calls.append(
+                {"url": url, "json": json, "headers": headers, "timeout": timeout}
+            )
+            payload = search_payload(
+                [
+                    itinerary(
+                        price=220.96,
+                        option_amount=220.96,
+                        url="/transport_deeplink/cheap",
+                        carrier="VJ",
+                        flight_number="814",
+                    )
+                ]
+            )
+            payload["context"] = {"status": "incomplete", "sessionId": "session/id=secret"}
+            return FakeResponse(payload=payload)
+
+    client = EmptyPollingClient()
+
+    results = probe.fetch_flights(
+        origin=entity("SIN", "95673375"),
+        destination=entity("SGN", "95673379"),
+        departure_date="2026-06-11",
+        return_date="2026-06-16",
+        config=config(),
+        client=client,
+    )
+
+    assert len(client.get_calls) == 1
+    assert results[0].flight_numbers == "VJ814"
+    assert results[0].price_amount == 220.96
 
 
 def test_fetch_flights_maps_missing_results_path() -> None:

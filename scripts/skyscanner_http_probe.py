@@ -47,6 +47,7 @@ class ProbeConfig:
     currency: str
     cookie: str = field(repr=False)
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
+    user_agent: str = DEFAULT_USER_AGENT
 
 
 @dataclass(frozen=True)
@@ -306,6 +307,10 @@ def config_from_env(
         currency=currency,
         cookie=require_cookie(env),
         timeout_seconds=timeout_seconds,
+        user_agent=(
+            env.get("CHEAPY_SKYSCANNER_USER_AGENT", DEFAULT_USER_AGENT).strip()
+            or DEFAULT_USER_AGENT
+        ),
     )
 
 
@@ -584,7 +589,7 @@ def search_headers(
     headers["accept-language"] = "en-US,en;q=0.9"
     headers["origin"] = config.base_url
     headers["referer"] = referer
-    headers["user-agent"] = DEFAULT_USER_AGENT
+    headers["user-agent"] = config.user_agent
     if include_content_type:
         headers["content-type"] = "application/json"
     headers["x-skyscanner-viewid"] = view_id
@@ -639,6 +644,11 @@ def _sleep_between_search_polls() -> None:
     time.sleep(SEARCH_POLL_INTERVAL_SECONDS)
 
 
+def _search_results(payload: object) -> list[object] | None:
+    results = _field(_field(payload, ("itineraries",)), ("results",))
+    return results if isinstance(results, list) else None
+
+
 def _search_payload(
     *,
     origin: EntityResult,
@@ -677,6 +687,7 @@ def _search_payload(
         ) from None
 
     payload = _read_search_response(response, operation="Search")
+    initial_payload = payload
     status = _field(payload.get("context"), ("status",))
     if status == "incomplete":
         session_id = _as_str(_field(payload.get("context"), ("sessionId",)))
@@ -695,6 +706,12 @@ def _search_payload(
                 break
             if poll_index < SEARCH_POLL_ATTEMPTS - 1:
                 _sleep_between_search_polls()
+        if (
+            status == "complete"
+            and _search_results(payload) == []
+            and bool(_search_results(initial_payload))
+        ):
+            payload = initial_payload
     if status != "complete":
         raise ProbeError("search_incomplete", "Search did not complete.")
     itineraries = payload.get("itineraries")
