@@ -793,24 +793,26 @@ def itinerary(
     option_amount: float,
     url: str | None,
     carrier: str = "VJ",
+    flight_number: str | None = None,
 ) -> dict[str, object]:
     item: dict[str, object] = {"price": {"amount": option_amount}}
     if url is not None:
         item["url"] = url
+    segment: dict[str, object] = {
+        "marketingCarrier": {
+            "displayCode": carrier,
+            "name": carrier,
+        }
+    }
+    if flight_number is not None:
+        segment["flightNumber"] = flight_number
     return {
         "id": f"itinerary-{price}",
         "price": {"raw": price, "formatted": f"${price}"},
         "legs": [
             {
                 "stopCount": 0,
-                "segments": [
-                    {
-                        "marketingCarrier": {
-                            "displayCode": carrier,
-                            "name": carrier,
-                        }
-                    }
-                ],
+                "segments": [segment],
             }
         ],
         "pricingOptions": [
@@ -973,6 +975,35 @@ def test_fetch_flights_accepts_relative_transport_deeplink() -> None:
     assert results[0].deeplink_url == "https://www.skyscanner.com.sg/transport_deeplink/usable"
 
 
+def test_fetch_flights_extracts_flight_numbers() -> None:
+    client = FakeClient(
+        FakeResponse(
+            payload=search_payload(
+                [
+                    itinerary(
+                        price=220.96,
+                        option_amount=220.96,
+                        url="/transport_deeplink/cheap",
+                        carrier="VJ",
+                        flight_number="814",
+                    )
+                ]
+            )
+        )
+    )
+
+    results = probe.fetch_flights(
+        origin=entity("SIN", "95673375"),
+        destination=entity("SGN", "95673379"),
+        departure_date="2026-06-11",
+        return_date="2026-06-16",
+        config=config(),
+        client=client,
+    )
+
+    assert results[0].flight_numbers == "VJ814"
+
+
 def test_fetch_flights_skips_itinerary_when_cheapest_positive_option_has_no_deeplink() -> None:
     fallback_itinerary = itinerary(
         price=120.0,
@@ -1034,7 +1065,7 @@ def test_print_results_respects_limit(capsys: pytest.CaptureFixture[str]) -> Non
     probe.print_results(results, limit=1)
 
     captured = capsys.readouterr()
-    assert captured.out == "1. VJ | 220.96 SGD | https://example.test/1\n"
+    assert captured.out == "1. VJ | unknown | 220.96 SGD | https://example.test/1\n"
     assert captured.err == ""
 
 
@@ -1179,6 +1210,7 @@ def test_run_probe_resolves_entities_and_prints_results(capsys: pytest.CaptureFi
                                 option_amount=220.96,
                                 url="/transport_deeplink/cheap",
                                 carrier="VJ",
+                                flight_number="814",
                             )
                         ]
                     )
@@ -1211,7 +1243,7 @@ def test_run_probe_resolves_entities_and_prints_results(capsys: pytest.CaptureFi
     captured = capsys.readouterr()
     assert exit_code == 0
     assert captured.out == (
-        "1. VJ | 220.96 SGD | https://www.skyscanner.com.sg/transport_deeplink/cheap\n"
+        "1. VJ | VJ814 | 220.96 SGD | https://www.skyscanner.com.sg/transport_deeplink/cheap\n"
     )
     assert captured.err == ""
 

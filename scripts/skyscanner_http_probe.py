@@ -65,6 +65,7 @@ class FlightProbeResult:
     price_amount: float
     currency: str
     deeplink_url: str
+    flight_numbers: str = "unknown"
 
 
 class HttpResponse(Protocol):
@@ -739,6 +740,30 @@ def _airline_label(itinerary: object) -> str:
     return "+".join(labels) if labels else "unknown"
 
 
+def _segment_flight_number(segment: object) -> str | None:
+    flight_number = _as_str(_field(segment, ("flightNumber", "flightNo", "number")))
+    if flight_number is None:
+        return None
+    carrier = _field(segment, ("marketingCarrier",))
+    carrier_code = _as_str(_field(carrier, ("displayCode", "alternateId", "id")))
+    if carrier_code is None:
+        return flight_number
+    compact_number = flight_number.replace(" ", "")
+    compact_carrier = carrier_code.replace(" ", "")
+    if compact_number.upper().startswith(compact_carrier.upper()):
+        return compact_number
+    return f"{compact_carrier}{compact_number}"
+
+
+def _flight_numbers_label(itinerary: object) -> str:
+    numbers: list[str] = []
+    for segment in _iter_segments(itinerary):
+        number = _segment_flight_number(segment)
+        if number is not None:
+            numbers.append(number)
+    return "/".join(numbers) if numbers else "unknown"
+
+
 def _positive_price_option(itinerary: object) -> tuple[float, str] | None:
     if not isinstance(itinerary, dict):
         return None
@@ -807,6 +832,7 @@ def _extract_results(payload: object, *, config: ProbeConfig) -> list[FlightProb
                 price_amount=canonical_price,
                 currency=config.currency,
                 deeplink_url=safe_deeplink,
+                flight_numbers=_flight_numbers_label(itinerary),
             )
         )
 
@@ -857,6 +883,7 @@ def print_results(results: list[FlightProbeResult], *, limit: int) -> None:
     for index, result in enumerate(results[:safe_limit], start=1):
         print(
             f"{index}. {result.airline} | "
+            f"{result.flight_numbers} | "
             f"{result.price_amount:.2f} {result.currency} | "
             f"{result.deeplink_url}"
         )
