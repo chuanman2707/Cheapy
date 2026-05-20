@@ -24,6 +24,11 @@ import httpx
 
 DEFAULT_BASE_URL = "https://www.skyscanner.com.sg"
 DEFAULT_TIMEOUT_SECONDS = 20.0
+DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/148.0.0.0 Safari/537.36"
+)
 IATA_RE = re.compile(r"^[A-Z]{3}$")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -165,14 +170,28 @@ AUTOSUGGEST_PATH = "/g/autosuggest-search/api/v1/search-flight"
 SEARCH_PATH = "/g/radar/api/v2/web-unified-search/"
 
 
+def _cookie_value(cookie: str, name: str) -> str | None:
+    expected = name.lower()
+    for part in cookie.split(";"):
+        key, separator, value = part.strip().partition("=")
+        if separator and key.lower() == expected:
+            text = value.strip()
+            return text or None
+    return None
+
+
 def request_headers(config: ProbeConfig, *, accept_json: bool = True) -> dict[str, str]:
     headers = {
         "cookie": config.cookie,
         "x-skyscanner-channelid": "website",
+        "x-skyscanner-consent-adverts": "true",
         "x-skyscanner-currency": config.currency,
         "x-skyscanner-locale": config.locale,
         "x-skyscanner-market": config.market,
     }
+    gateway_served_by = _cookie_value(config.cookie, "X-Gateway-Servedby")
+    if gateway_served_by is not None:
+        headers["x-gateway-servedby"] = gateway_served_by
     if accept_json:
         headers["accept"] = "application/json"
     return headers
@@ -383,11 +402,94 @@ def build_search_body(
     }
 
 
-def search_headers(config: ProbeConfig, *, view_id: str) -> dict[str, str]:
+def _referer_date(value: str) -> str:
+    parts = date_parts(value)
+    return f"{parts['year'][2:]}{parts['month']}{parts['day']}"
+
+
+def _search_referer(
+    *,
+    origin: EntityResult,
+    destination: EntityResult,
+    departure_date: str,
+    return_date: str | None,
+    config: ProbeConfig,
+) -> str:
+    path = (
+        f"/transport/flights/{origin.iata.lower()}/{destination.iata.lower()}/"
+        f"{_referer_date(departure_date)}/"
+    )
+    if return_date is not None:
+        path = f"{path}{_referer_date(return_date)}/"
+    rtn = "1" if return_date is not None else "0"
+    return (
+        f"{config.base_url}{path}"
+        f"?adultsv2=1&cabinclass=economy&childrenv2=&ref=home&rtn={rtn}"
+        "&preferdirects=false&outboundaltsenabled=false&inboundaltsenabled=false"
+    )
+
+
+def search_headers(
+    config: ProbeConfig,
+    *,
+    view_id: str,
+    referer: str,
+    include_content_type: bool = True,
+) -> dict[str, str]:
     headers = request_headers(config, accept_json=False)
-    headers["content-type"] = "application/json"
+    headers["accept"] = "application/json"
+    headers["accept-language"] = "en-US,en;q=0.9"
+    headers["origin"] = config.base_url
+    headers["referer"] = referer
+    headers["user-agent"] = DEFAULT_USER_AGENT
+    if include_content_type:
+        headers["content-type"] = "application/json"
     headers["x-skyscanner-viewid"] = view_id
     return headers
+
+
+def _read_search_response(response: HttpResponse, *, operation: str) -> object:
+    if response.status_code < 200 or response.status_code >= 300:
+        raise ProbeError("search_http_error", f"{operation} returned HTTP {response.status_code}.")
+    try:
+        payload = response.json()
+    except Exception as exc:
+        raise ProbeError(
+            "search_parse_error",
+            f"{operation} response could not be parsed as JSON: {type(exc).__name__}.",
+        ) from None
+    if not isinstance(payload, dict):
+        raise ProbeError("search_parse_error", f"{operation} response was not a JSON object.")
+    return payload
+
+
+def _poll_search_session(
+    *,
+    session_id: str,
+    config: ProbeConfig,
+    client: HttpClient,
+    view_id: str,
+    referer: str,
+) -> object:
+    url = urljoin(config.base_url + "/", f"{SEARCH_PATH.lstrip('/')}{quote(session_id, safe='')}")
+    try:
+        response = client.get(
+            url,
+            params={},
+            headers=search_headers(
+                config,
+                view_id=view_id,
+                referer=referer,
+                include_content_type=False,
+            ),
+            timeout=config.timeout_seconds,
+        )
+    except Exception as exc:
+        raise ProbeError(
+            "search_transport_error",
+            f"Search poll failed with {type(exc).__name__}.",
+        ) from None
+    return _read_search_response(response, operation="Search poll")
 
 
 def _search_payload(
@@ -400,6 +502,14 @@ def _search_payload(
     client: HttpClient,
 ) -> object:
     url = urljoin(config.base_url + "/", SEARCH_PATH.lstrip("/"))
+    view_id = str(uuid.uuid4())
+    referer = _search_referer(
+        origin=origin,
+        destination=destination,
+        departure_date=departure_date,
+        return_date=return_date,
+        config=config,
+    )
     body = build_search_body(
         origin=origin,
         destination=destination,
@@ -410,7 +520,7 @@ def _search_payload(
         response = client.post(
             url,
             json=body,
-            headers=search_headers(config, view_id=str(uuid.uuid4())),
+            headers=search_headers(config, view_id=view_id, referer=referer),
             timeout=config.timeout_seconds,
         )
     except Exception as exc:
@@ -419,20 +529,20 @@ def _search_payload(
             f"Search request failed with {type(exc).__name__}.",
         ) from None
 
-    if response.status_code < 200 or response.status_code >= 300:
-        raise ProbeError("search_http_error", f"Search returned HTTP {response.status_code}.")
-
-    try:
-        payload = response.json()
-    except Exception as exc:
-        raise ProbeError(
-            "search_parse_error",
-            f"Search response could not be parsed as JSON: {type(exc).__name__}.",
-        ) from None
-
-    if not isinstance(payload, dict):
-        raise ProbeError("search_parse_error", "Search response was not a JSON object.")
+    payload = _read_search_response(response, operation="Search")
     status = _field(payload.get("context"), ("status",))
+    if status == "incomplete":
+        session_id = _as_str(_field(payload.get("context"), ("sessionId",)))
+        if session_id is None:
+            raise ProbeError("search_incomplete", "Search did not complete.")
+        payload = _poll_search_session(
+            session_id=session_id,
+            config=config,
+            client=client,
+            view_id=view_id,
+            referer=referer,
+        )
+        status = _field(payload.get("context"), ("status",))
     if status != "complete":
         raise ProbeError("search_incomplete", "Search did not complete.")
     itineraries = payload.get("itineraries")

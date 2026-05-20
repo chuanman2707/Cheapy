@@ -481,7 +481,17 @@ def test_search_posts_minimal_headers_and_uuid_view_id(monkeypatch: pytest.Monke
     assert post["url"] == "https://www.skyscanner.com.sg/g/radar/api/v2/web-unified-search/"
     assert post["headers"] == {
         "cookie": "traveller_context=abc; __Secure-anon_token=secret",
+        "accept": "application/json",
+        "accept-language": "en-US,en;q=0.9",
+        "origin": "https://www.skyscanner.com.sg",
+        "referer": (
+            "https://www.skyscanner.com.sg/transport/flights/sin/sgn/260611/"
+            "?adultsv2=1&cabinclass=economy&childrenv2=&ref=home&rtn=0"
+            "&preferdirects=false&outboundaltsenabled=false&inboundaltsenabled=false"
+        ),
+        "user-agent": probe.DEFAULT_USER_AGENT,
         "x-skyscanner-channelid": "website",
+        "x-skyscanner-consent-adverts": "true",
         "x-skyscanner-currency": "SGD",
         "x-skyscanner-locale": "en-GB",
         "x-skyscanner-market": "SG",
@@ -546,6 +556,56 @@ def test_fetch_flights_maps_incomplete_status() -> None:
 
     assert exc_info.value.code == "search_incomplete"
     assert "token-secret-body" not in exc_info.value.message
+
+
+def test_fetch_flights_polls_incomplete_search_session() -> None:
+    class PollingClient:
+        def __init__(self) -> None:
+            self.get_calls: list[dict[str, object]] = []
+            self.post_calls: list[dict[str, object]] = []
+
+        def get(self, url: str, *, params: dict[str, object], headers: dict[str, str], timeout: float) -> FakeResponse:
+            self.get_calls.append(
+                {"url": url, "params": params, "headers": headers, "timeout": timeout}
+            )
+            return FakeResponse(payload=search_payload([itinerary(price=220.96, option_amount=220.96, url="/transport_deeplink/cheap")]))
+
+        def post(self, url: str, *, json: dict[str, object], headers: dict[str, str], timeout: float) -> FakeResponse:
+            self.post_calls.append(
+                {"url": url, "json": json, "headers": headers, "timeout": timeout}
+            )
+            return FakeResponse(
+                payload={
+                    "context": {"status": "incomplete", "sessionId": "session/id=secret"},
+                    "itineraries": {"results": []},
+                }
+            )
+
+    client = PollingClient()
+
+    results = probe.fetch_flights(
+        origin=entity("SIN", "95673375"),
+        destination=entity("SGN", "95673379"),
+        departure_date="2026-06-11",
+        return_date="2026-06-16",
+        config=config(cookie="traveller_context=abc; X-Gateway-Servedby=gw52.skyscanner.net"),
+        client=client,
+    )
+
+    assert results[0].price_amount == 220.96
+    assert client.get_calls[0]["url"] == (
+        "https://www.skyscanner.com.sg/g/radar/api/v2/web-unified-search/session%2Fid%3Dsecret"
+    )
+    assert client.get_calls[0]["params"] == {}
+    assert client.get_calls[0]["headers"]["x-gateway-servedby"] == "gw52.skyscanner.net"
+    assert client.get_calls[0]["headers"]["x-skyscanner-consent-adverts"] == "true"
+    assert client.get_calls[0]["headers"]["origin"] == "https://www.skyscanner.com.sg"
+    assert client.get_calls[0]["headers"]["referer"] == (
+        "https://www.skyscanner.com.sg/transport/flights/sin/sgn/260611/260616/"
+        "?adultsv2=1&cabinclass=economy&childrenv2=&ref=home&rtn=1"
+        "&preferdirects=false&outboundaltsenabled=false&inboundaltsenabled=false"
+    )
+    assert "content-type" not in client.get_calls[0]["headers"]
 
 
 def test_fetch_flights_maps_missing_results_path() -> None:
