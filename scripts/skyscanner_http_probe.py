@@ -9,14 +9,17 @@ small terminal report for manual inspection.
 from __future__ import annotations
 
 import argparse
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
+import json as jsonlib
 import os
 import re
+import subprocess
 import sys
+import tempfile
 from typing import Mapping, Protocol
-from urllib.parse import quote, urljoin, urlsplit
+from urllib.parse import quote, urlencode, urljoin, urlsplit
 import uuid
 
 import httpx
@@ -97,6 +100,142 @@ class ProbeError(Exception):
 
     def safe_text(self) -> str:
         return f"{self.code}: {self.message}"
+
+
+@dataclass(frozen=True)
+class CurlResponse:
+    status_code: int
+    body: str
+
+    def json(self) -> object:
+        return jsonlib.loads(self.body)
+
+
+def _curl_config_quote(value: str) -> str:
+    sanitized = value.replace("\r", " ").replace("\n", " ")
+    escaped = sanitized.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+class CurlClient:
+    def __init__(
+        self,
+        *,
+        curl_path: str = "curl",
+        runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    ) -> None:
+        self._curl_path = curl_path
+        self._runner = runner
+
+    def get(
+        self,
+        url: str,
+        *,
+        params: dict[str, object],
+        headers: dict[str, str],
+        timeout: float,
+    ) -> CurlResponse:
+        return self._request(
+            "GET",
+            url,
+            params=params,
+            headers=headers,
+            timeout=timeout,
+        )
+
+    def post(
+        self,
+        url: str,
+        *,
+        json: dict[str, object],
+        headers: dict[str, str],
+        timeout: float,
+    ) -> CurlResponse:
+        return self._request(
+            "POST",
+            url,
+            params={},
+            headers=headers,
+            timeout=timeout,
+            json_body=json,
+        )
+
+    def _request(
+        self,
+        method: str,
+        url: str,
+        *,
+        params: dict[str, object],
+        headers: dict[str, str],
+        timeout: float,
+        json_body: dict[str, object] | None = None,
+    ) -> CurlResponse:
+        query = urlencode({key: str(value) for key, value in params.items()})
+        final_url = f"{url}?{query}" if query else url
+        with tempfile.TemporaryDirectory(prefix="skyscanner-curl-") as tmpdir:
+            config_path = os.path.join(tmpdir, "curl.conf")
+            config_lines = self._config_lines(headers)
+            self._write_private_text(config_path, "\n".join(config_lines) + "\n")
+
+            args = [
+                self._curl_path,
+                "--silent",
+                "--show-error",
+                "--compressed",
+                "--http2",
+                "--max-time",
+                str(timeout),
+                "--config",
+                config_path,
+                "--request",
+                method,
+                "--write-out",
+                "\n%{http_code}",
+            ]
+            if json_body is not None:
+                body_path = os.path.join(tmpdir, "body.json")
+                body = jsonlib.dumps(json_body, separators=(",", ":"))
+                self._write_private_text(body_path, body)
+                args.extend(["--data-binary", f"@{body_path}"])
+            args.append(final_url)
+
+            try:
+                completed = self._runner(
+                    args,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout + 5.0,
+                    check=False,
+                )
+            except Exception as exc:
+                raise RuntimeError(f"curl request failed with {type(exc).__name__}") from None
+
+        if completed.returncode != 0:
+            raise RuntimeError(f"curl request failed with exit code {completed.returncode}")
+        body, separator, status_text = completed.stdout.rpartition("\n")
+        if not separator:
+            raise RuntimeError("curl response did not include an HTTP status code")
+        try:
+            status_code = int(status_text)
+        except ValueError:
+            raise RuntimeError("curl response included an invalid HTTP status code") from None
+        return CurlResponse(status_code=status_code, body=body)
+
+    @staticmethod
+    def _config_lines(headers: dict[str, str]) -> list[str]:
+        lines: list[str] = []
+        for name, value in headers.items():
+            if name.lower() == "cookie":
+                lines.append(f"cookie = {_curl_config_quote(value)}")
+            else:
+                lines.append(f"header = {_curl_config_quote(f'{name}: {value}')}")
+        return lines
+
+    @staticmethod
+    def _write_private_text(path: str, value: str) -> None:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as file:
+            file.write(value)
 
 
 def normalize_iata(value: str) -> str:
@@ -697,6 +836,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--locale", default="en-GB")
     parser.add_argument("--currency", default="SGD")
     parser.add_argument("--limit", type=int, default=3)
+    parser.add_argument("--transport", choices=("curl", "httpx"), default="curl")
     return parser
 
 
@@ -759,6 +899,16 @@ def main(argv: list[str] | None = None) -> int:
             locale=args.locale,
             currency=args.currency,
         )
+        if args.transport == "curl":
+            return run_probe(
+                origin_iata=origin_iata,
+                destination_iata=destination_iata,
+                departure_date=args.departure_date,
+                return_date=args.return_date,
+                limit=limit,
+                config=config,
+                client=CurlClient(),
+            )
         with httpx.Client() as client:
             return run_probe(
                 origin_iata=origin_iata,

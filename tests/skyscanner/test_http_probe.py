@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 from pathlib import Path
 import sys
 
@@ -174,6 +175,119 @@ def config(cookie: str = "traveller_context=abc; __Secure-anon_token=secret") ->
         cookie=cookie,
         timeout_seconds=7.0,
     )
+
+
+def test_curl_client_post_uses_temp_config_without_cookie_in_argv() -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_run(
+        args: list[str],
+        *,
+        capture_output: bool,
+        text: bool,
+        timeout: float,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        config_path = Path(args[args.index("--config") + 1])
+        data_arg = args[args.index("--data-binary") + 1]
+        body_path = Path(data_arg.removeprefix("@"))
+        calls.append(
+            {
+                "args": args,
+                "capture_output": capture_output,
+                "text": text,
+                "timeout": timeout,
+                "check": check,
+                "config": config_path.read_text(),
+                "body": body_path.read_text(),
+            }
+        )
+        return subprocess.CompletedProcess(args, 0, stdout='{"ok": true}\n200', stderr="")
+
+    client = probe.CurlClient(runner=fake_run)
+
+    response = client.post(
+        "https://example.test/search",
+        json={"secret": "body-token"},
+        headers={
+            "cookie": "session=secret-cookie",
+            "accept": "application/json",
+            "x-test": "value",
+        },
+        timeout=7.0,
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    call = calls[0]
+    args = call["args"]
+    assert isinstance(args, list)
+    assert all("secret-cookie" not in arg for arg in args)
+    assert all("body-token" not in arg for arg in args)
+    assert "--data-binary" in args
+    assert '"session=secret-cookie"' in call["config"]
+    assert '"accept: application/json"' in call["config"]
+    assert '"x-test: value"' in call["config"]
+    assert call["body"] == '{"secret":"body-token"}'
+    assert call["capture_output"] is True
+    assert call["text"] is True
+    assert call["check"] is False
+
+
+def test_curl_client_get_encodes_params_and_omits_body() -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(
+        args: list[str],
+        *,
+        capture_output: bool,
+        text: bool,
+        timeout: float,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout='[]\n200', stderr="")
+
+    client = probe.CurlClient(runner=fake_run)
+
+    response = client.get(
+        "https://example.test/autosuggest",
+        params={"q": "SIN/SGN", "enabled": "true"},
+        headers={"cookie": "session=secret-cookie"},
+        timeout=5.0,
+    )
+
+    assert response.status_code == 200
+    assert response.json() == []
+    args = calls[0]
+    assert "--data-binary" not in args
+    assert args[-1] == "https://example.test/autosuggest?q=SIN%2FSGN&enabled=true"
+    assert all("secret-cookie" not in arg for arg in args)
+
+
+def test_curl_client_transport_error_is_sanitized() -> None:
+    def fake_run(
+        args: list[str],
+        *,
+        capture_output: bool,
+        text: bool,
+        timeout: float,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args, 7, stdout="", stderr="raw secret-cookie")
+
+    client = probe.CurlClient(runner=fake_run)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        client.get(
+            "https://example.test/autosuggest",
+            params={},
+            headers={"cookie": "session=secret-cookie"},
+            timeout=5.0,
+        )
+
+    assert "secret-cookie" not in str(exc_info.value)
+    assert "raw secret-cookie" not in str(exc_info.value)
 
 
 def test_get_entity_id_encodes_path_components_with_slashes() -> None:
@@ -910,6 +1024,36 @@ def test_main_prints_safe_error_for_missing_cookie(
         "missing_cookie: Set CHEAPY_SKYSCANNER_COOKIE before running the Skyscanner probe.\n"
     )
     assert "__Secure-anon_token" not in captured.err
+
+
+def test_main_uses_curl_transport_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    clients: list[object] = []
+
+    class FakeCurlClient:
+        def __init__(self) -> None:
+            clients.append(self)
+
+    def fake_run_probe(**kwargs: object) -> int:
+        assert kwargs["client"] is clients[0]
+        return 0
+
+    monkeypatch.setenv("CHEAPY_SKYSCANNER_COOKIE", "abgroup=1")
+    monkeypatch.setattr(probe, "CurlClient", FakeCurlClient)
+    monkeypatch.setattr(probe, "run_probe", fake_run_probe)
+
+    exit_code = probe.main(
+        [
+            "--origin",
+            "SIN",
+            "--destination",
+            "SGN",
+            "--departure-date",
+            "2026-06-11",
+        ]
+    )
+
+    assert exit_code == 0
+    assert len(clients) == 1
 
 
 def test_run_probe_rejects_non_positive_limit_before_network_calls() -> None:
