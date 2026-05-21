@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import inspect
+import threading
+import time
 from io import BytesIO
 from urllib.error import HTTPError, URLError
 
@@ -73,6 +75,169 @@ def test_sensitive_values_are_omitted_from_repr() -> None:
 
     assert "secret-cookie" not in repr(session)
     assert "raw-payload-secret" not in repr(response)
+
+
+def _browserless_session(name: str) -> BrowserlessSession:
+    return BrowserlessSession(
+        cookie_header=f"traveller_context={name}",
+        user_agent=f"Browserless-UA-{name}",
+    )
+
+
+def test_session_manager_bootstraps_once_then_reuses_before_ttl() -> None:
+    now = [100.0]
+    calls: list[dict[str, object]] = []
+
+    def bootstrap_session(**kwargs: object) -> BrowserlessSession:
+        calls.append(kwargs)
+        return _browserless_session(str(len(calls)))
+
+    manager = browserless.SkyscannerSessionManager(
+        env={"BROWSERLESS_TOKEN": "browserless-secret-token"},
+        bootstrap_session_fn=bootstrap_session,
+        ttl_seconds=10.0,
+        now_fn=lambda: now[0],
+    )
+
+    first = manager.get_session()
+    second = manager.get_session()
+
+    assert first == _browserless_session("1")
+    assert second == first
+    assert len(calls) == 1
+    assert calls[0]["env"] == {"BROWSERLESS_TOKEN": "browserless-secret-token"}
+    assert calls[0]["client"] is None
+
+
+def test_session_manager_bootstraps_again_after_ttl() -> None:
+    now = [100.0]
+    calls = 0
+
+    def bootstrap_session(**_kwargs: object) -> BrowserlessSession:
+        nonlocal calls
+        calls += 1
+        return _browserless_session(str(calls))
+
+    manager = browserless.SkyscannerSessionManager(
+        env={"BROWSERLESS_TOKEN": "browserless-secret-token"},
+        bootstrap_session_fn=bootstrap_session,
+        ttl_seconds=10.0,
+        now_fn=lambda: now[0],
+    )
+
+    first = manager.get_session()
+    now[0] = 109.99
+    second = manager.get_session()
+    now[0] = 110.01
+    third = manager.get_session()
+
+    assert second == first
+    assert third == _browserless_session("2")
+    assert calls == 2
+
+
+def test_session_manager_force_refresh_bootstraps_before_ttl() -> None:
+    now = [100.0]
+    calls = 0
+
+    def bootstrap_session(**_kwargs: object) -> BrowserlessSession:
+        nonlocal calls
+        calls += 1
+        return _browserless_session(str(calls))
+
+    manager = browserless.SkyscannerSessionManager(
+        env={"BROWSERLESS_TOKEN": "browserless-secret-token"},
+        bootstrap_session_fn=bootstrap_session,
+        ttl_seconds=10.0,
+        now_fn=lambda: now[0],
+    )
+
+    first = manager.get_session()
+    second = manager.get_session(force_refresh=True)
+    third = manager.get_session()
+
+    assert first == _browserless_session("1")
+    assert second == _browserless_session("2")
+    assert third == second
+    assert calls == 2
+
+
+@pytest.mark.parametrize("ttl_seconds", [0.0, -1.0, float("inf"), float("nan")])
+def test_session_manager_rejects_invalid_ttl(ttl_seconds: float) -> None:
+    with pytest.raises(ValueError, match="ttl_seconds must be finite and positive"):
+        browserless.SkyscannerSessionManager(
+            env={"BROWSERLESS_TOKEN": "browserless-secret-token"},
+            ttl_seconds=ttl_seconds,
+        )
+
+
+def test_session_manager_coalesces_concurrent_empty_cache_bootstrap() -> None:
+    now = [100.0]
+    calls: list[str] = []
+    start = threading.Barrier(6)
+    sessions: list[BrowserlessSession] = []
+    errors: list[BaseException] = []
+
+    def bootstrap_session(**_kwargs: object) -> BrowserlessSession:
+        calls.append("bootstrap")
+        time.sleep(0.05)
+        return _browserless_session("shared")
+
+    manager = browserless.SkyscannerSessionManager(
+        env={"BROWSERLESS_TOKEN": "browserless-secret-token"},
+        bootstrap_session_fn=bootstrap_session,
+        ttl_seconds=10.0,
+        now_fn=lambda: now[0],
+    )
+
+    def worker() -> None:
+        try:
+            start.wait(timeout=2.0)
+            sessions.append(manager.get_session())
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(5)]
+    for thread in threads:
+        thread.start()
+    start.wait(timeout=2.0)
+    for thread in threads:
+        thread.join(timeout=2.0)
+        assert not thread.is_alive()
+
+    assert errors == []
+    assert len(sessions) == 5
+    assert sessions == [_browserless_session("shared")] * 5
+    assert calls == ["bootstrap"]
+
+
+def test_session_manager_missing_token_uses_safe_bootstrap_classification() -> None:
+    manager = browserless.SkyscannerSessionManager(env={})
+
+    with pytest.raises(SkyscannerProviderError) as exc_info:
+        manager.get_session()
+
+    error = exc_info.value
+    assert error.failure_type == "browserless_cookie_unavailable"
+    assert "BROWSERLESS_TOKEN" not in str(error)
+
+
+def test_session_manager_bootstrap_error_does_not_leak_token() -> None:
+    manager = browserless.SkyscannerSessionManager(
+        env={"BROWSERLESS_TOKEN": "browserless-secret-token"},
+        browserless_client=FakeBrowserlessClient(
+            URLError("token browserless-secret-token leaked")
+        ),
+        ttl_seconds=10.0,
+    )
+
+    with pytest.raises(SkyscannerProviderError) as exc_info:
+        manager.get_session()
+
+    error = exc_info.value
+    assert error.failure_type == "browserless_bootstrap_failed"
+    assert error.exception_type == "URLError"
+    assert "browserless-secret-token" not in str(error)
 
 
 def test_bootstrap_session_extracts_cookie_and_user_agent() -> None:

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 import json
+import math
 import os
+import threading
+import time
 from typing import Protocol
 from urllib.error import HTTPError
 from urllib.parse import urlencode
@@ -16,6 +19,7 @@ from cheapy.providers.skyscanner import errors
 
 DEFAULT_BROWSERLESS_ENDPOINT = "https://production-sfo.browserless.io/stealth/bql"
 DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS = 25.0
+DEFAULT_SESSION_TTL_SECONDS = 900.0
 DEFAULT_BOOTSTRAP_PAGE_URL = "https://www.skyscanner.com.sg/transport/flights"
 DEFAULT_BROWSERLESS_USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -119,6 +123,48 @@ def bootstrap_session(
         raise errors.browserless_cookie_unavailable()
     user_agent = _payload_user_agent(response.payload)
     return BrowserlessSession(cookie_header=cookie_header, user_agent=user_agent)
+
+
+class SkyscannerSessionManager:
+    """In-memory Browserless session cache scoped to one adapter instance."""
+
+    def __init__(
+        self,
+        *,
+        env: Mapping[str, str] = os.environ,
+        browserless_client: BrowserlessClient | None = None,
+        bootstrap_session_fn: Callable[..., BrowserlessSession] = bootstrap_session,
+        ttl_seconds: float = DEFAULT_SESSION_TTL_SECONDS,
+        now_fn: Callable[[], float] = time.monotonic,
+    ) -> None:
+        if not math.isfinite(ttl_seconds) or ttl_seconds <= 0:
+            raise ValueError("ttl_seconds must be finite and positive.")
+        self._env = env
+        self._browserless_client = browserless_client
+        self._bootstrap_session_fn = bootstrap_session_fn
+        self._ttl_seconds = ttl_seconds
+        self._now_fn = now_fn
+        self._cached_session: BrowserlessSession | None = None
+        self._expires_at = 0.0
+        self._lock = threading.Lock()
+
+    def get_session(self, *, force_refresh: bool = False) -> BrowserlessSession:
+        with self._lock:
+            now = self._now_fn()
+            if (
+                self._cached_session is not None
+                and not force_refresh
+                and now < self._expires_at
+            ):
+                return self._cached_session
+
+            session = self._bootstrap_session_fn(
+                env=self._env,
+                client=self._browserless_client,
+            )
+            self._cached_session = session
+            self._expires_at = self._now_fn() + self._ttl_seconds
+            return session
 
 
 def _session_query(page_url: str) -> str:

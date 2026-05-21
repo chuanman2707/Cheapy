@@ -9,6 +9,7 @@ from datetime import date
 import os
 import re
 from time import perf_counter
+from typing import Protocol
 
 from cheapy.models import (
     ErrorCode,
@@ -40,6 +41,14 @@ DEFAULT_CURRENCY = "SGD"
 INITIAL_NO_USABLE_RESULTS_ATTEMPTS = 3
 FINAL_NO_USABLE_RESULTS_ATTEMPTS = 1
 ProviderRequest = ProviderExactOneWayRequest | ProviderExactRoundTripRequest
+
+
+class SessionManager(Protocol):
+    def get_session(
+        self,
+        *,
+        force_refresh: bool = False,
+    ) -> browserless.BrowserlessSession: ...
 
 
 class SkyscannerProvider:
@@ -217,6 +226,7 @@ class SkyscannerAdapter:
         browserless_client: browserless.BrowserlessClient | None = None,
         bootstrap_session_fn: Callable[..., browserless.BrowserlessSession]
         = browserless.bootstrap_session,
+        session_manager: SessionManager | None = None,
         get_entity_fn: Callable[..., search.EntityResult] = search.get_entity,
         fetch_itineraries_fn: Callable[..., list[search.SkyscannerItinerary]]
         = search.fetch_itineraries,
@@ -228,8 +238,15 @@ class SkyscannerAdapter:
     ) -> None:
         self._env = env
         self._http_client = http_client if http_client is not None else CurlClient()
-        self._browserless_client = browserless_client
-        self._bootstrap_session_fn = bootstrap_session_fn
+        self._session_manager = (
+            session_manager
+            if session_manager is not None
+            else browserless.SkyscannerSessionManager(
+                env=env,
+                browserless_client=browserless_client,
+                bootstrap_session_fn=bootstrap_session_fn,
+            )
+        )
         self._get_entity_fn = get_entity_fn
         self._fetch_itineraries_fn = fetch_itineraries_fn
         self._base_url = base_url
@@ -265,7 +282,7 @@ class SkyscannerAdapter:
         departure_date: str,
         return_date: str | None,
     ) -> list[search.SkyscannerItinerary]:
-        config = self._config_from_bootstrap()
+        config = self._config_from_session()
         origin, destination = self._entities(request, config)
         try:
             return self._fetch(
@@ -278,7 +295,7 @@ class SkyscannerAdapter:
                 attempts=INITIAL_NO_USABLE_RESULTS_ATTEMPTS,
             )
         except search.NoUsableResults:
-            refreshed_config = self._config_from_bootstrap()
+            refreshed_config = self._config_from_session(force_refresh=True)
             refreshed_origin, refreshed_destination = self._entities(
                 request, refreshed_config
             )
@@ -301,11 +318,12 @@ class SkyscannerAdapter:
                     cookie_refresh_count=1,
                 ) from None
 
-    def _config_from_bootstrap(self) -> search.SkyscannerConfig:
-        session = self._bootstrap_session_fn(
-            env=self._env,
-            client=self._browserless_client,
-        )
+    def _config_from_session(
+        self,
+        *,
+        force_refresh: bool = False,
+    ) -> search.SkyscannerConfig:
+        session = self._session_manager.get_session(force_refresh=force_refresh)
         return search.SkyscannerConfig(
             base_url=self._base_url,
             market=self._market,

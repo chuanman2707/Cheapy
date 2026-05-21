@@ -72,6 +72,15 @@ def _itinerary(
     )
 
 
+def _entity(iata_code: str) -> search.EntityResult:
+    return search.EntityResult(
+        iata=iata_code,
+        entity_id=f"{iata_code}-entity",
+        name=iata_code,
+        place_type="Airport",
+    )
+
+
 class FakeProviderAdapter:
     def __init__(self, result: list[search.SkyscannerItinerary] | Exception) -> None:
         self.result = result
@@ -93,6 +102,18 @@ class FakeProviderAdapter:
         if isinstance(self.result, Exception):
             raise self.result
         return self.result
+
+
+class FakeSessionManager:
+    def __init__(self, sessions: list[BrowserlessSession]) -> None:
+        self.sessions = sessions
+        self.force_refresh_values: list[bool] = []
+
+    def get_session(self, *, force_refresh: bool = False) -> BrowserlessSession:
+        self.force_refresh_values.append(force_refresh)
+        if not self.sessions:
+            raise AssertionError("FakeSessionManager ran out of sessions")
+        return self.sessions.pop(0)
 
 
 def test_missing_browserless_token_returns_skipped_without_adapter_call() -> None:
@@ -279,6 +300,145 @@ def test_unsupported_children_or_infants_returns_controlled_failure() -> None:
         "failure_type": "unsupported_passengers",
     }
     assert adapter.one_way_calls == 0
+
+
+def test_adapter_reuses_browserless_session_for_sequential_successes() -> None:
+    bootstrap_calls: list[Mapping[str, object]] = []
+    seen_cookies: list[str] = []
+
+    def bootstrap_session(**kwargs: object) -> BrowserlessSession:
+        bootstrap_calls.append(kwargs)
+        return BrowserlessSession(
+            cookie_header="traveller_context=session-1",
+            user_agent="Browserless-UA",
+        )
+
+    def get_entity(
+        iata_code: str,
+        *,
+        config: search.SkyscannerConfig,
+        client: object,
+        is_destination: bool = False,
+    ) -> search.EntityResult:
+        seen_cookies.append(config.cookie)
+        return _entity(iata_code)
+
+    def fetch_itineraries(**_kwargs: object) -> list[search.SkyscannerItinerary]:
+        return [_itinerary()]
+
+    adapter = SkyscannerAdapter(
+        env=_env(),
+        http_client=object(),
+        bootstrap_session_fn=bootstrap_session,
+        get_entity_fn=get_entity,
+        fetch_itineraries_fn=fetch_itineraries,
+    )
+    provider = SkyscannerProvider(adapter=adapter, env=_env(), timeout_seconds=1)
+
+    first = asyncio.run(provider.search_exact_one_way(_request()))
+    second = asyncio.run(provider.search_exact_one_way(_request()))
+
+    assert first.status == ProviderStatusCode.SUCCESS
+    assert second.status == ProviderStatusCode.SUCCESS
+    assert len(bootstrap_calls) == 1
+    assert seen_cookies == ["traveller_context=session-1"] * 4
+
+
+def test_adapter_passes_force_refresh_to_injected_session_manager() -> None:
+    session_manager = FakeSessionManager(
+        [
+            BrowserlessSession(
+                cookie_header="traveller_context=initial",
+                user_agent="Browserless-UA",
+            ),
+            BrowserlessSession(
+                cookie_header="traveller_context=refreshed",
+                user_agent="Browserless-UA",
+            ),
+        ]
+    )
+    seen_entity_cookies: list[str] = []
+    fetch_calls = 0
+
+    def get_entity(
+        iata_code: str,
+        *,
+        config: search.SkyscannerConfig,
+        client: object,
+        is_destination: bool = False,
+    ) -> search.EntityResult:
+        seen_entity_cookies.append(config.cookie)
+        return _entity(iata_code)
+
+    def fetch_itineraries(**kwargs: object) -> list[search.SkyscannerItinerary]:
+        nonlocal fetch_calls
+        fetch_calls += 1
+        attempts = kwargs["no_usable_results_attempts"]
+        assert isinstance(attempts, int)
+        if fetch_calls == 1:
+            assert attempts == 3
+            raise search.NoUsableResults()
+        assert attempts == 1
+        return [_itinerary()]
+
+    adapter = SkyscannerAdapter(
+        env=_env(),
+        http_client=object(),
+        session_manager=session_manager,
+        get_entity_fn=get_entity,
+        fetch_itineraries_fn=fetch_itineraries,
+    )
+    provider = SkyscannerProvider(adapter=adapter, env=_env(), timeout_seconds=1)
+
+    result = asyncio.run(provider.search_exact_one_way(_request()))
+
+    assert result.status == ProviderStatusCode.SUCCESS
+    assert session_manager.force_refresh_values == [False, True]
+    assert seen_entity_cookies == [
+        "traveller_context=initial",
+        "traveller_context=initial",
+        "traveller_context=refreshed",
+        "traveller_context=refreshed",
+    ]
+
+
+def test_adapter_keeps_bootstrap_session_fn_injection_without_session_manager() -> None:
+    bootstrap_calls = 0
+
+    def bootstrap_session(**_kwargs: object) -> BrowserlessSession:
+        nonlocal bootstrap_calls
+        bootstrap_calls += 1
+        return BrowserlessSession(
+            cookie_header="traveller_context=injected-bootstrap",
+            user_agent="Browserless-UA",
+        )
+
+    def get_entity(
+        iata_code: str,
+        *,
+        config: search.SkyscannerConfig,
+        client: object,
+        is_destination: bool = False,
+    ) -> search.EntityResult:
+        assert config.cookie == "traveller_context=injected-bootstrap"
+        return _entity(iata_code)
+
+    def fetch_itineraries(**_kwargs: object) -> list[search.SkyscannerItinerary]:
+        return [_itinerary()]
+
+    adapter = SkyscannerAdapter(
+        env=_env(),
+        http_client=object(),
+        bootstrap_session_fn=bootstrap_session,
+        get_entity_fn=get_entity,
+        fetch_itineraries_fn=fetch_itineraries,
+    )
+    provider = SkyscannerProvider(adapter=adapter, env=_env(), timeout_seconds=1)
+
+    result = asyncio.run(provider.search_exact_one_way(_request()))
+
+    assert result.status == ProviderStatusCode.SUCCESS
+    assert bootstrap_calls == 1
 
 
 def test_no_usable_results_refreshes_cookie_once_then_succeeds() -> None:
