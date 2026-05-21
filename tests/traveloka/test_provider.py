@@ -13,12 +13,12 @@ from cheapy.providers.base import (
     ProviderExactRoundTripRequest,
 )
 from cheapy.providers.traveloka import provider as traveloka_provider
-from cheapy.providers.traveloka.adapter import (
+from cheapy.providers.traveloka.errors import TravelokaProviderError
+from cheapy.providers.traveloka.provider import TravelokaProvider
+from cheapy.providers.traveloka.results import (
     TravelokaCaptureResult,
-    TravelokaProviderError,
     TravelokaSelectedRoundTripResult,
 )
-from cheapy.providers.traveloka.provider import TravelokaProvider
 
 
 def _request() -> ProviderExactOneWayRequest:

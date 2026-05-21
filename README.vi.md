@@ -162,11 +162,13 @@ CHEAPY_RUN_LIVE_TESTS=1 uv run cheapy providers test --live
 ```
 
 Traveloka là research provider mong manh và được bật mặc định trong codebase
-này theo xác nhận của project owner rằng Traveloka support đã đồng ý cho dùng,
-miễn là không gửi quá nhiều request. Provider này có thể timeout hoặc bị block,
-và chạy thận trọng: không login, không browser, không retry, không fanout nội
-bộ, và timeout 20 giây cho mỗi provider call. Không deploy bộ live provider mặc
-định này cho user-facing search nếu chưa có permission từ Traveloka.
+này theo xác nhận của project owner rằng Traveloka support đã đồng ý cho dùng.
+Provider này có thể timeout hoặc bị block, và chạy thận trọng: không login,
+không dùng browser profile lưu trạng thái, không retry, không fanout nội bộ
+provider, và timeout 45 giây cho mỗi call. Implementation hiện tại dùng browser
+context mới để Traveloka web app tự tạo first-party fare payload, rồi chỉ đọc
+selected round-trip total sau khi đã chọn cả hai chặng. Không deploy bộ default
+live provider này cho user-facing search nếu chưa có permission từ Traveloka.
 
 <p align="right"><a href="#top">về đầu trang</a></p>
 
