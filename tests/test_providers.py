@@ -197,6 +197,7 @@ def test_provider_manifests_include_provider_kind() -> None:
 
     assert kinds_by_name["manual_fixture"] == "fixture"
     assert kinds_by_name["google_fli"] == "live"
+    assert kinds_by_name["skyscanner"] == "live"
     assert kinds_by_name["traveloka"] == "live"
 
 
@@ -224,6 +225,20 @@ def test_traveloka_manifest_is_discovered_from_package_resources() -> None:
         default_enabled=True,
         provider_kind="live",
         module="cheapy.providers.traveloka.provider",
+        capabilities=["exact_one_way", "exact_round_trip"],
+    )
+
+
+def test_skyscanner_manifest_is_discovered_from_package_resources() -> None:
+    manifest = _manifest_by_name("skyscanner")
+
+    assert manifest == ProviderManifest(
+        manifest_schema_version="1",
+        name="skyscanner",
+        display_name="Skyscanner live provider",
+        default_enabled=True,
+        provider_kind="live",
+        module="cheapy.providers.skyscanner.provider",
         capabilities=["exact_one_way", "exact_round_trip"],
     )
 
@@ -631,11 +646,13 @@ def test_load_enabled_providers_loads_all_default_enabled_providers() -> None:
     assert [provider.name for provider in providers] == [
         "google_fli",
         "manual_fixture",
+        "skyscanner",
         "traveloka",
     ]
     assert [provider.capabilities for provider in providers] == [
         ("exact_one_way", "exact_round_trip"),
         ("exact_one_way",),
+        ("exact_one_way", "exact_round_trip"),
         ("exact_one_way", "exact_round_trip"),
     ]
 
@@ -643,8 +660,13 @@ def test_load_enabled_providers_loads_all_default_enabled_providers() -> None:
 def test_load_search_providers_excludes_fixture_providers() -> None:
     providers = registry.load_search_providers()
 
-    assert [provider.name for provider in providers] == ["google_fli", "traveloka"]
+    assert [provider.name for provider in providers] == [
+        "google_fli",
+        "skyscanner",
+        "traveloka",
+    ]
     assert [provider.capabilities for provider in providers] == [
+        ("exact_one_way", "exact_round_trip"),
         ("exact_one_way", "exact_round_trip"),
         ("exact_one_way", "exact_round_trip"),
     ]

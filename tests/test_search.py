@@ -825,6 +825,52 @@ def test_search_exact_normalizes_provider_status_capability(
     assert response.provider_statuses[0].capability == "exact_one_way"
 
 
+def test_search_exact_ignores_skipped_provider_for_response_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    success = ProviderResult(
+        provider_name="success_provider",
+        capability="exact_one_way",
+        status=ProviderStatusCode.SUCCESS,
+        offers=[
+            _offer(
+                offer_id="success:offer-1",
+                provider="success_provider",
+                currency="USD",
+                price_amount=100.0,
+            )
+        ],
+        warnings=[],
+        errors=[],
+        duration_ms=3,
+        retryable=False,
+    )
+    skipped = ProviderResult(
+        provider_name="skyscanner",
+        capability="exact_one_way",
+        status=ProviderStatusCode.SKIPPED,
+        offers=[],
+        warnings=[],
+        errors=[],
+        duration_ms=0,
+        retryable=False,
+    )
+
+    monkeypatch.setattr(
+        "cheapy.search.load_search_providers",
+        lambda: [_ProviderFromResult(success), _ProviderFromResult(skipped)],
+    )
+
+    response = search_exact(_request())
+
+    assert response.status == SearchStatus.SUCCESS
+    assert response.errors == []
+    statuses = {status.provider_name: status for status in response.provider_statuses}
+    assert statuses["skyscanner"].status == ProviderStatusCode.SKIPPED
+    assert statuses["skyscanner"].succeeded_call_count == 0
+    assert statuses["skyscanner"].failed_call_count == 0
+
+
 def test_search_exact_groups_mixed_currency_offers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

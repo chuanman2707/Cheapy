@@ -158,6 +158,14 @@ def test_providers_list_prints_json() -> None:
             "name": "manual_fixture",
             "provider_kind": "fixture",
         },
+        "skyscanner": {
+            "capabilities": ["exact_one_way", "exact_round_trip"],
+            "default_enabled": True,
+            "display_name": "Skyscanner live provider",
+            "enabled": True,
+            "name": "skyscanner",
+            "provider_kind": "live",
+        },
         "traveloka": {
             "capabilities": ["exact_one_way", "exact_round_trip"],
             "default_enabled": True,
@@ -177,7 +185,7 @@ def test_providers_test_prints_json() -> None:
     payload = json.loads(result.stdout)
     providers = {provider["name"]: provider for provider in payload["providers"]}
     assert payload["status"] == "ok"
-    assert payload["providers_tested"] == 3
+    assert payload["providers_tested"] == 4
     assert providers["manual_fixture"]["status"] == "success"
     assert providers["manual_fixture"]["provider_kind"] == "fixture"
     assert providers["manual_fixture"]["live_smoke"] == "not_applicable"
@@ -187,6 +195,9 @@ def test_providers_test_prints_json() -> None:
     assert providers["traveloka"]["status"] == "skipped"
     assert providers["traveloka"]["provider_kind"] == "live"
     assert providers["traveloka"]["live_smoke"] == "not_run"
+    assert providers["skyscanner"]["status"] == "skipped"
+    assert providers["skyscanner"]["provider_kind"] == "live"
+    assert providers["skyscanner"]["live_smoke"] == "not_run"
 
 
 def test_providers_test_default_does_not_run_live_provider(monkeypatch) -> None:
@@ -203,6 +214,9 @@ def test_providers_test_default_does_not_run_live_provider(monkeypatch) -> None:
     assert providers["traveloka"]["status"] == "skipped"
     assert providers["traveloka"]["provider_kind"] == "live"
     assert providers["traveloka"]["live_smoke"] == "not_run"
+    assert providers["skyscanner"]["status"] == "skipped"
+    assert providers["skyscanner"]["provider_kind"] == "live"
+    assert providers["skyscanner"]["live_smoke"] == "not_run"
 
 
 def test_providers_test_human_prints_success_report() -> None:
@@ -212,6 +226,7 @@ def test_providers_test_human_prints_success_report() -> None:
     assert result.stderr == ""
     assert "manual_fixture fixture exact_one_way: success" in result.stdout
     assert "google_fli live exact_one_way: skipped" in result.stdout
+    assert "skyscanner live exact_one_way: skipped" in result.stdout
     assert "traveloka live exact_one_way: skipped" in result.stdout
     assert result.stdout.endswith("status: ok\n")
 
