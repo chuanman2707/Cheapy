@@ -79,6 +79,12 @@ def test_mcp_lists_only_search_cheapest_flights_tool() -> None:
     assert [tool.name for tool in tools] == ["search_cheapest_flights"]
 
 
+def test_mcp_does_not_expose_skyscanner_discovery_tool() -> None:
+    server = create_mcp_server()
+
+    assert server._tool_manager.get_tool("skyscanner_graphql_bundle_scan") is None
+
+
 def test_python_module_mcp_entrypoint_still_lists_tools_after_cli_nesting() -> None:
     async def action(session: ClientSession) -> list[str]:
         response = await session.list_tools()
