@@ -23,10 +23,12 @@ the flight search response and appends a safe Contract V1 warning with code
 2. `cheapy.search.search_exact()` remains focused on search orchestration and
    Contract V1 response assembly.
 3. A thin service, `cheapy.search_service.search_with_storage()`, runs search
-   and then performs best-effort local persistence.
-4. MCP `search_cheapest_flights` uses `search_with_storage()`.
-5. CLI watchlist checks also use `search_with_storage()` so MCP and CLI share
-   the same persistence behavior.
+   and then performs best-effort local persistence, returning both the response
+   and persistence metadata.
+4. MCP `search_cheapest_flights` uses `search_with_storage()` and returns only
+   the Contract V1 response from the service result.
+5. CLI watchlist checks also use `search_with_storage()` and use the returned
+   `search_run_id` to link `watchlist_checks` without race-prone lookups.
 6. SQLite uses stdlib `sqlite3`; no new dependency is added.
 7. Storage can be disabled with `CHEAPY_DISABLE_STORAGE=1`.
 8. Storage path can be overridden with `CHEAPY_DB_PATH`.
@@ -99,21 +101,40 @@ cheapy/search_service.py
 `search_service.py` exposes:
 
 ```python
-def search_with_storage(request: SearchRequestV1) -> SearchResponseV1:
+@dataclass(frozen=True)
+class SearchWithStorageResult:
+    response: SearchResponseV1
+    search_run_id: int | None
+    storage_enabled: bool
+    storage_warning: WarningV1 | None
+
+
+def search_with_storage(request: SearchRequestV1) -> SearchWithStorageResult:
     ...
 ```
 
 Flow:
 
 1. Call `search_exact(request)`.
-2. If `CHEAPY_DISABLE_STORAGE=1`, return the response unchanged.
+2. If `CHEAPY_DISABLE_STORAGE=1`, return the response unchanged with
+   `search_run_id=None` and `storage_enabled=False`.
 3. Otherwise initialize/migrate SQLite and persist a sanitized snapshot.
-4. If persistence succeeds, return the response unchanged.
+4. If persistence succeeds, return the response unchanged with the inserted
+   `search_run_id`.
 5. If persistence fails, append warning `local_storage_failed` and return the
-   response.
+   response with `search_run_id=None`, `storage_enabled=True`, and
+   `storage_warning` set.
 
 `cheapy/mcp.py` changes its tool implementation to call `search_with_storage`
-inside `asyncio.to_thread`.
+inside `asyncio.to_thread`, then return `result.response`.
+
+The MCP tool annotations change because a normal search can now write local
+history:
+
+- `readOnlyHint`: `False`
+- `idempotentHint`: `False`
+- `destructiveHint`: `False`
+- `openWorldHint`: remains `True`
 
 `cheapy/cli.py` adds `history` and `watchlist` Typer subcommands. These call
 storage helpers directly for read/list/add operations, and call
@@ -197,7 +218,9 @@ Columns:
 - `mixed_currency INTEGER NOT NULL`
 - `response_json TEXT NOT NULL`
 
-`response_json` is produced from `SearchResponseV1.model_dump(mode="json")`.
+`response_json` is produced from
+`sanitize_response_for_storage(response).model_dump(mode="json")`, not from a
+blind raw dump.
 
 ### `provider_runs`
 
@@ -293,12 +316,19 @@ Create at least:
 - `offer_observations(itinerary_fingerprint, observed_at_utc)`
 - `watchlist_checks(watchlist_id, checked_at_utc)`
 
+## Snapshot Inserts
+
+`insert_search_snapshot()` inserts one `search_runs` row, its `provider_runs`,
+and its `offer_observations` in a single transaction. If any insert in the
+snapshot fails, the whole snapshot rolls back. The function returns the inserted
+`search_runs.id` only after the transaction commits.
+
 ## Sanitization Rules
 
 Storage persists only:
 
 - `SearchRequestV1` fields.
-- `SearchResponseV1` fields.
+- Sanitized `SearchResponseV1` fields.
 - Derived summary fields from normalized response data.
 - Safe exception class names for storage failures.
 
@@ -316,6 +346,13 @@ Storage never persists:
 
 If a string is not present in Contract V1 request/response models, storage
 should not obtain it.
+
+Contract V1 `WarningV1.details` and `ErrorV1.details` are flexible dictionaries,
+so storage sanitizes them before writing `response_json`. The sanitizer uses an
+allowlist of safe detail keys where known and recursive redaction for suspicious
+keys or paths containing words such as `token`, `cookie`, `header`, `url`,
+`payload`, `body`, `request`, `session`, `secret`, `authorization`, or
+`challenge`. Redacted values are replaced with a fixed marker, not hashed.
 
 ## Contract V1 Warning
 
@@ -371,6 +408,12 @@ Each run includes:
 - `offer_count`
 - `best_price_amount`
 - `currency`
+- `mixed_currency`
+- `best_prices_by_currency`
+
+When a response has mixed currencies, `best_price_amount` and `currency` are
+`null` because Cheapy does not convert currencies. `best_prices_by_currency`
+contains per-currency best summaries instead.
 
 ### `cheapy history show RUN_ID`
 
@@ -390,6 +433,12 @@ non-zero.
 ### `cheapy watchlist add ...`
 
 Adds one enabled watchlist.
+
+Airport inputs are IATA-only. The command strips and uppercases `--origin` and
+`--destination`, requires exactly three ASCII letters, and validates them
+through the packaged airport resolver by constructing the same kind of Contract
+V1 search request used by search. It does not resolve city names, airport names,
+or Vietnamese aliases.
 
 Required flags:
 
@@ -438,6 +487,10 @@ Output:
 Runs a fresh search for the watchlist, persists the search run if storage is
 enabled, records a check row, and prints a JSON decision.
 
+If `search_with_storage()` returns `search_run_id=None` because local
+persistence failed, the command returns a structured storage error instead of a
+decision because the requested watchlist check could not be recorded.
+
 Output includes:
 
 - `status`
@@ -467,10 +520,11 @@ Mixed currency behavior:
 
 Decision:
 
-- `book_now`: a best offer exists, satisfies route/date/watchlist constraints,
-  and is at or below `max_price_amount` when a threshold is set.
+- `book_now`: `max_price_amount` is set and a best offer exists that satisfies
+  route/date/watchlist constraints and is at or below that threshold.
 - `watch`: a best offer exists but is above the threshold, lacks enough
-  comparable context, or is not clearly better than recent history.
+  comparable context, has no configured price threshold, or is not clearly
+  better than recent history.
 - `skip`: search failed, no qualifying offer exists, mixed currency prevents a
   useful comparison, or constraints eliminate all offers.
 
@@ -512,6 +566,8 @@ CLI history/watchlist commands while `CHEAPY_DISABLE_STORAGE=1`:
 - Return a structured `STORAGE_DISABLED` error to stderr.
 - Use a non-zero exit code.
 - Do not create or write a database.
+- Fail before any search/provider call. This matters for `watchlist check`
+  because watchlist state lives in the local DB.
 
 Watchlist check with search success but check-row write failure:
 
@@ -532,14 +588,21 @@ Storage tests:
 - Best-effort file permission hardening.
 - Insert search snapshot and verify `search_runs`, `provider_runs`, and
   `offer_observations`.
+- Snapshot insert rollback when any child insert fails.
 - Fingerprint stability and price exclusion.
+- Response sanitizer redacts sensitive-looking details before `response_json`.
 - History list/show.
+- Mixed-currency history summaries return no global best price and include
+  per-currency best summaries.
 - Watchlist add/list/check records with fake search data.
+- Watchlist check with no threshold returns `watch`, not `book_now`.
 - Parameterized SQL behavior through normal API use.
 
 MCP tests:
 
 - Search returns valid Contract V1.
+- Tool annotations reflect local write behavior: not read-only and not
+  idempotent.
 - Search persists when storage is enabled with temp DB path.
 - Disable env prevents writes.
 - Storage failure appends `local_storage_failed` warning and does not make the
