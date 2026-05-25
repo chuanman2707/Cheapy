@@ -23,7 +23,8 @@ state local, ephemeral, and provider-scoped.
 3. CloakBrowser is the local browser runtime and remains a normal package
    dependency.
 4. Provider code does not import `cloakbrowser` directly; it calls the shared
-   bootstrap module.
+   bootstrap module for both one-shot bootstrap calls and any full browser
+   workflow that still needs a Playwright-compatible browser object.
 5. The bootstrap module is provider-neutral. It does not know about flights,
    Contract V1, Skyscanner, Traveloka, or provider-specific endpoints.
 6. Browser cookies are held in memory only and are not persisted to disk.
@@ -91,6 +92,14 @@ class BrowserNetworkCapture:
     cookie_header: str = field(repr=False)
     user_agent: str
     requests: tuple[CapturedRequest, ...] = field(repr=False)
+
+
+@dataclass(frozen=True)
+class BrowserBootstrapErrorContext:
+    failure_type: str
+    phase: str
+    http_status_code: int | None = None
+    exception_type: str | None = None
 ```
 
 `cookies.py` converts Playwright-compatible browser cookies into a `Cookie`
@@ -105,14 +114,31 @@ cookie values.
 - `BrowserBootstrapCookieUnavailable`
 - `BrowserNetworkCaptureUnavailable`
 
+Each error carries a safe `BrowserBootstrapErrorContext`. The context may expose
+only:
+
+- `failure_type`
+- `phase`, such as `launch`, `context_page_setup`, `navigation`,
+  `capture_wait`, `cookie_read`, or `cleanup`
+- `http_status_code`, when a navigation or captured response status is known
+- `exception_type`, using the exception class name only
+
+The context must not include full URLs, query strings, headers, cookies,
+captured request bodies, provider payloads, raw exception messages, or
+environment values.
+
 `cloak.py` is the only module that imports `cloakbrowser`. It exposes sync APIs:
 
 ```python
+def launch_browser(**kwargs: object) -> object: ...
+
+
 def bootstrap_cookies(
     *,
     page_url: str,
     timeout_seconds: float,
-    wait_until: str = "networkidle",
+    wait_until: str = "domcontentloaded",
+    user_agent: str | None = None,
     launch_browser: BrowserLauncher | None = None,
 ) -> BrowserBootstrapSession: ...
 
@@ -122,20 +148,33 @@ def capture_network_requests(
     page_url: str,
     timeout_seconds: float,
     request_predicate: Callable[[str, str], bool],
-    wait_until: str = "networkidle",
+    wait_until: str = "domcontentloaded",
     capture_timeout_seconds: float,
+    user_agent: str | None = None,
     launch_browser: BrowserLauncher | None = None,
 ) -> BrowserNetworkCapture: ...
 ```
 
-The optional `launch_browser` injection keeps tests offline and lets providers
-or tests supply fake Playwright-compatible browser objects.
+The top-level `launch_browser` wrapper is the only default path to
+`cloakbrowser.launch`. Existing browser workflows may accept this wrapper as
+their default launcher while still using provider-specific page interactions.
+
+The optional `launch_browser` injection on bootstrap helpers keeps tests offline
+and lets providers or tests supply fake Playwright-compatible browser objects.
+If `user_agent` is supplied, the helper creates a context with that user agent.
+If it is not supplied, the helper uses CloakBrowser's default user agent and
+returns the value observed from `navigator.userAgent`.
 
 The module launches a fresh headless CloakBrowser browser per bootstrap call,
 creates a fresh context/page, registers listeners before navigation when network
 capture is requested, navigates to the supplied page URL, collects cookies and
 the evaluated `navigator.userAgent`, then closes page, context, and browser in
 `finally` blocks.
+
+Default `wait_until` is `domcontentloaded` to match the existing local
+Traveloka browser workflow. Providers may request a stricter wait state when a
+specific site needs it, but the capture timeout remains the deciding condition
+for network request capture.
 
 ## Provider Integration
 
@@ -162,6 +201,13 @@ browser-bootstrap failure type.
 Traveloka replaces Browserless function and unblock calls with
 `browser_bootstrap.capture_network_requests`.
 
+The existing Traveloka browser adapter and session workflow also move their
+default launcher behind `browser_bootstrap.launch_browser`. After migration, no
+Traveloka module imports `cloakbrowser` directly. The Traveloka browser workflow
+may still own page-level actions such as visible option discovery, selection,
+and final total reads; the shared module owns only launching and generic
+bootstrap/capture primitives.
+
 The Traveloka bootstrapper supplies a Traveloka search URL and a predicate that
 captures first-party poll requests only:
 
@@ -182,6 +228,22 @@ Traveloka provider logic remains responsible for:
 The shared bootstrap module does not parse Traveloka payloads and does not know
 which Traveloka request is business-critical beyond the predicate supplied by
 the provider.
+
+The Browserless `/unblock` fallback is not carried forward as a hosted-service
+feature. Traveloka local bootstrap uses this fallback policy instead:
+
+1. Run one local `capture_network_requests` call with a fresh ephemeral browser
+   context.
+2. If no matching poll request is captured but cookies were available, run one
+   additional local capture with a fresh ephemeral browser context and the same
+   request URL.
+3. Do not persist or seed cookies between those two contexts in V1.
+4. If the second capture also lacks a matching poll request, raise the existing
+   Traveloka fresh-body-unavailable provider failure.
+
+This keeps the old "one extra chance after missing fresh body" shape without
+reintroducing hosted unblock APIs, residential proxy parameters, persistent
+state, or provider-internal identity rotation.
 
 ## Data Flow
 
@@ -218,11 +280,14 @@ errors and never names a specific provider.
 Provider mapping rules:
 
 - `BrowserBootstrapUnavailable` maps to a provider failure with
-  `failure_type="browser_bootstrap_failed"` and `retryable=True`.
+  `failure_type="browser_bootstrap_failed"` and `retryable=True`. Launch and
+  context/page setup failures use this mapping.
 - `BrowserBootstrapTimeout` maps to `failure_type="timeout"` and
-  `ErrorCode.PROVIDER_TIMEOUT`.
+  `ErrorCode.PROVIDER_TIMEOUT`. Navigation and capture-wait timeouts use this
+  mapping.
 - `BrowserBootstrapBlocked` maps to provider `blocked` or `rate_limited`
-  depending on the observed status code.
+  depending on the observed `http_status_code`; status `429` maps to
+  `rate_limited`, and statuses `401` or `403` map to `blocked`.
 - `BrowserBootstrapCookieUnavailable` maps to
   `failure_type="browser_cookie_unavailable"`.
 - `BrowserNetworkCaptureUnavailable` maps to the provider-specific equivalent
@@ -233,6 +298,11 @@ Error details may include safe metadata such as provider name, capability,
 failure type, HTTP status code, and exception class name. They must not include
 cookies, raw request bodies, raw headers, full URLs with query strings,
 provider payloads, browser tokens, or environment variable values.
+
+Cleanup failures are swallowed after best-effort resource closing unless no
+earlier error exists; if cleanup is the only failure, it maps to
+`BrowserBootstrapUnavailable` with `phase="cleanup"` and the cleanup exception
+class name.
 
 ## Security And Privacy
 
@@ -257,6 +327,8 @@ Core bootstrap tests use fake Playwright-compatible objects to cover:
 - request predicate filtering
 - capture timeout when no matching request is observed
 - neutral error classification without leaking cookie or body values
+- safe error context fields for launch, navigation, capture, cookie, and cleanup
+  phases
 
 Skyscanner provider tests cover:
 
@@ -273,6 +345,10 @@ Traveloka provider tests cover:
 - no `BROWSERLESS_TOKEN` requirement
 - captured poll request is converted to the existing poll bootstrap contract
 - missing captured poll request maps to the expected provider failure
+- missing captured poll request triggers exactly one fresh local recapture before
+  failing
+- existing Traveloka browser workflow default launcher comes from
+  `cheapy.browser_bootstrap`, not a direct provider-level `cloakbrowser` import
 - cookies, user agent, poll URL, and poll body are passed only through internal
   objects and are not leaked in errors
 - existing HTTP adapter, browser workflow, normalizer, and provider tests remain
@@ -291,13 +367,15 @@ they assert local browser bootstrap behavior instead.
 3. Remove Skyscanner's `BROWSERLESS_TOKEN` skip gate and update error names and
    tests.
 4. Refactor Traveloka Browserless capture/unblock code to use
-   `capture_network_requests`.
+   `capture_network_requests` and the one-time fresh local recapture policy.
 5. Remove Traveloka's `BROWSERLESS_TOKEN` skip gate and update error names and
    tests.
-6. Delete or fully retire Browserless client classes, constants, env-file token
+6. Move the existing Traveloka browser adapter default launcher to
+   `browser_bootstrap.launch_browser`.
+7. Delete or fully retire Browserless client classes, constants, env-file token
    loaders, and Browserless endpoint references from runtime modules.
-7. Update scripts and live-test skip messages so Browserless is not required.
-8. Run focused provider tests, then `uv run pytest -v`.
+8. Update scripts and live-test skip messages so Browserless is not required.
+9. Run focused provider tests, then `uv run pytest -v`.
 
 ## Acceptance Criteria
 
@@ -307,6 +385,11 @@ they assert local browser bootstrap behavior instead.
   Browserless API endpoint.
 - Provider code uses the shared bootstrap module instead of importing
   CloakBrowser directly.
+- `rg -n "from cloakbrowser|import cloakbrowser" cheapy` returns only the shared
+  bootstrap module.
+- Browserless references may remain only in historical docs, old committed
+  design notes, or compatibility comments that are not imported by runtime
+  provider code.
 - Default tests do not launch a real browser or make live network calls.
 - Contract V1 schemas, MCP tool names, and public search request shapes are
   unchanged.
