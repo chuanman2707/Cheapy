@@ -15,7 +15,12 @@ import sqlite3
 import sys
 from typing import Any
 
-from cheapy.models import FlightOfferV1, SearchRequestV1, SearchResponseV1
+from cheapy.models import (
+    FlightOfferV1,
+    PassengersV1,
+    SearchRequestV1,
+    SearchResponseV1,
+)
 
 CURRENT_SCHEMA_VERSION = 1
 REDACTED_VALUE = "[redacted]"
@@ -63,7 +68,22 @@ _SAFE_DETAIL_KEYS = frozenset(
         "storage_backend",
     }
 )
-_SAFE_RATIONALE_KEYS = _SAFE_DETAIL_KEYS | frozenset({"matched", "reasons"})
+_SAFE_RATIONALE_KEYS = _SAFE_DETAIL_KEYS | frozenset(
+    {
+        "matched",
+        "reasons",
+        "threshold_comparison",
+        "max_price_amount",
+        "best_price_amount",
+        "currency",
+        "threshold_met",
+        "historical_comparison",
+        "historical_low",
+        "latest_price_amount",
+        "provider_confidence",
+        "rationale",
+    }
+)
 _SAVEPOINT_COUNTER = itertools.count(1)
 
 
@@ -688,6 +708,7 @@ def watchlist_historical_comparison(
         }
 
     return_date = watchlist.get("return_date")
+    passengers_json = _json_dumps(PassengersV1().model_dump(mode="json"))
     row = conn.execute(
         """
         WITH matching AS (
@@ -701,6 +722,7 @@ def watchlist_historical_comparison(
               AND sr.destination = ?
               AND sr.departure_date = ?
               AND (sr.return_date = ? OR (sr.return_date IS NULL AND ? IS NULL))
+              AND sr.passengers_json = ?
               AND oo.actual_origin = ?
               AND oo.actual_destination = ?
               AND oo.actual_departure_date = ?
@@ -733,6 +755,7 @@ def watchlist_historical_comparison(
             watchlist["departure_date"],
             return_date,
             return_date,
+            passengers_json,
             watchlist["origin"],
             watchlist["destination"],
             watchlist["departure_date"],

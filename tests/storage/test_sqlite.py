@@ -1425,6 +1425,52 @@ def test_watchlist_historical_comparison_ignores_non_comparable_offers(
     }
 
 
+def test_watchlist_historical_comparison_filters_passenger_counts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(tmp_path / "cheapy.sqlite3"))
+    watchlist_data = {
+        "origin": "CXR",
+        "destination": "SGN",
+        "departure_date": "2026-07-10",
+        "return_date": None,
+        "currency": "VND",
+        "max_results": 5,
+    }
+    default_passenger_offer = _offer(
+        offer_id="fixture:default-passengers",
+        price_amount=1_280_000.0,
+    )
+    two_adult_offer = _offer(
+        offer_id="fixture:two-adults",
+        price_amount=900_000.0,
+    )
+
+    with sqlite_storage.open_database() as conn:
+        sqlite_storage.insert_search_snapshot(
+            conn,
+            _request(),
+            _response(offers=[default_passenger_offer]),
+            now_utc="2026-05-01T00:00:00Z",
+        )
+        sqlite_storage.insert_search_snapshot(
+            conn,
+            _request(passengers={"adults": 2}),
+            _response(offers=[two_adult_offer]),
+            now_utc="2026-05-02T00:00:00Z",
+        )
+        comparison = sqlite_storage.watchlist_historical_comparison(
+            conn, watchlist_data
+        )
+
+    assert comparison == {
+        "historical_low": 1_280_000.0,
+        "latest_price_amount": 1_280_000.0,
+        "currency": "VND",
+    }
+
+
 def test_add_watchlist_respects_caller_managed_transaction(tmp_path: Path) -> None:
     with open_database(tmp_path / "cheapy.sqlite3") as conn:
         conn.execute("BEGIN")

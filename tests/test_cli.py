@@ -714,6 +714,38 @@ def test_history_list_reports_storage_open_error_without_details(monkeypatch) ->
     assert "Traceback" not in result.stderr
 
 
+def test_history_list_reports_schema_migration_error_without_details(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    secret_path = tmp_path / "secret-cheapy-token.sqlite3"
+    conn = sqlite3.connect(secret_path)
+    conn.execute(
+        "CREATE TABLE schema_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO schema_metadata(key, value) VALUES (?, ?)",
+        ("schema_version", "999"),
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(secret_path))
+
+    result = runner.invoke(app, ["history", "list"])
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert json.loads(result.stderr) == {
+        "error": True,
+        "code": "HISTORY_STORAGE_ERROR",
+        "message": "Local search history could not be read.",
+        "suggestion": "Verify local storage permissions or set CHEAPY_DB_PATH to a readable SQLite database.",
+    }
+    assert str(secret_path) not in result.stderr
+    assert "Traceback" not in result.stderr
+    assert "schema_version" not in result.stderr
+
+
 def test_history_show_reports_storage_read_error_without_details(
     tmp_path,
     monkeypatch,
@@ -738,6 +770,41 @@ def test_history_show_reports_storage_read_error_without_details(
     }
     assert secret_path not in result.stderr
     assert "Traceback" not in result.stderr
+
+
+def test_watchlist_list_reports_schema_migration_error_without_details(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    secret_path = tmp_path / "secret-cheapy-token.sqlite3"
+    conn = sqlite3.connect(secret_path)
+    conn.execute(
+        "CREATE TABLE schema_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO schema_metadata(key, value) VALUES (?, ?)",
+        ("schema_version", "999"),
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(secret_path))
+
+    result = runner.invoke(app, ["watchlist", "list"])
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert json.loads(result.stderr) == {
+        "error": True,
+        "code": "WATCHLIST_STORAGE_ERROR",
+        "message": "Local watchlists could not be read or written.",
+        "suggestion": (
+            "Verify local storage permissions or set CHEAPY_DB_PATH to a "
+            "writable SQLite database."
+        ),
+    }
+    assert str(secret_path) not in result.stderr
+    assert "Traceback" not in result.stderr
+    assert "schema_version" not in result.stderr
 
 
 def test_history_without_subcommand_prints_help_successfully() -> None:
@@ -939,8 +1006,29 @@ def test_watchlist_check_runs_search_records_check_and_prints_decision(
             "SELECT search_run_id FROM watchlist_checks WHERE watchlist_id = ?",
             (watchlist["id"],),
         ).fetchone()[0]
+        rationale = json.loads(
+            conn.execute(
+                "SELECT rationale_json FROM watchlist_checks WHERE watchlist_id = ?",
+                (watchlist["id"],),
+            ).fetchone()[0]
+        )
     assert check_count == 1
     assert recorded_search_run_id == fresh_run_id
+    assert rationale == {
+        "historical_comparison": {
+            "historical_low": 1_280_000.0,
+            "latest_price_amount": 1_280_000.0,
+            "currency": "VND",
+        },
+        "provider_confidence": "high",
+        "rationale": ["Best fare is at or below the configured threshold."],
+        "threshold_comparison": {
+            "best_price_amount": 900_000.0,
+            "currency": "VND",
+            "max_price_amount": 1_300_000.0,
+            "threshold_met": True,
+        },
+    }
     assert fresh_run_id != prior_run_id
 
 

@@ -34,6 +34,7 @@ from cheapy.watchlist import build_watchlist_request, evaluate_watchlist
 
 
 LIVE_TEST_ENV = "CHEAPY_RUN_LIVE_TESTS"
+STORAGE_ERROR_TYPES = (OSError, RuntimeError, sqlite3.Error)
 
 
 def _json_echo(payload: dict[str, Any], *, err: bool = False) -> None:
@@ -239,6 +240,15 @@ def _watchlist_storage_error_exit() -> None:
     raise typer.Exit(code=1)
 
 
+def _watchlist_check_rationale(decision_payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "threshold_comparison": decision_payload["threshold_comparison"],
+        "historical_comparison": decision_payload["historical_comparison"],
+        "provider_confidence": decision_payload["provider_confidence"],
+        "rationale": decision_payload["rationale"],
+    }
+
+
 def _normalize_iata(value: str) -> str:
     normalized = value.strip().upper()
     if len(normalized) != 3 or not normalized.isascii() or not normalized.isalpha():
@@ -288,7 +298,7 @@ def history_list(
             runs = storage.list_history(conn, limit=limit)
     except storage.StorageDisabled:
         _storage_disabled_exit()
-    except (OSError, sqlite3.Error):
+    except STORAGE_ERROR_TYPES:
         _history_storage_error_exit()
     _json_echo({"status": "ok", "runs": runs})
 
@@ -304,7 +314,7 @@ def history_show(run_id: int = typer.Argument(..., help="Search run id.")) -> No
             payload = storage.show_history(conn, run_id)
     except storage.StorageDisabled:
         _storage_disabled_exit()
-    except (OSError, sqlite3.Error):
+    except STORAGE_ERROR_TYPES:
         _history_storage_error_exit()
     if payload is None:
         _json_echo(
@@ -401,7 +411,7 @@ def watchlist_add(
             )
     except storage.StorageDisabled:
         _storage_disabled_exit()
-    except (OSError, sqlite3.Error):
+    except STORAGE_ERROR_TYPES:
         _watchlist_storage_error_exit()
 
     _json_echo({"status": "ok", "watchlist": watchlist})
@@ -418,7 +428,7 @@ def watchlist_list() -> None:
             watchlists = storage.list_watchlists(conn)
     except storage.StorageDisabled:
         _storage_disabled_exit()
-    except (OSError, sqlite3.Error):
+    except STORAGE_ERROR_TYPES:
         _watchlist_storage_error_exit()
 
     _json_echo({"status": "ok", "watchlists": watchlists})
@@ -437,7 +447,7 @@ def watchlist_check(
             watchlist = storage.get_watchlist(conn, watchlist_id)
     except storage.StorageDisabled:
         _storage_disabled_exit()
-    except (OSError, sqlite3.Error):
+    except STORAGE_ERROR_TYPES:
         _watchlist_storage_error_exit()
 
     if watchlist is None:
@@ -460,7 +470,7 @@ def watchlist_check(
             )
     except storage.StorageDisabled:
         _storage_disabled_exit()
-    except (OSError, sqlite3.Error):
+    except STORAGE_ERROR_TYPES:
         _watchlist_storage_error_exit()
 
     result = search_with_storage(request)
@@ -499,11 +509,11 @@ def watchlist_check(
                     if best_offer is not None
                     else watchlist.get("currency")
                 ),
-                rationale={"reasons": decision_payload["rationale"]},
+                rationale=_watchlist_check_rationale(decision_payload),
             )
     except storage.StorageDisabled:
         _storage_disabled_exit()
-    except (OSError, sqlite3.Error):
+    except STORAGE_ERROR_TYPES:
         _watchlist_storage_error_exit()
 
     _json_echo(
