@@ -284,6 +284,39 @@ def test_open_database_hardens_existing_db_before_migration_failure(
     assert (db_path.stat().st_mode & 0o077) == 0
 
 
+def test_open_database_hardens_new_db_before_migration_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if os.name != "posix":
+        pytest.skip("POSIX file mode hardening is only asserted on POSIX")
+
+    db_path = tmp_path / "data" / "cheapy.sqlite3"
+    original_connect = sqlite_storage.sqlite3.connect
+
+    def connect_and_leave_permissive_file(
+        path: Path, *args: Any, **kwargs: Any
+    ) -> sqlite3.Connection:
+        conn = original_connect(path, *args, **kwargs)
+        db_path.chmod(0o644)
+        return conn
+
+    def raise_after_new_db_open(conn: sqlite3.Connection) -> None:
+        assert conn.execute("SELECT 1").fetchone()[0] == 1
+        raise RuntimeError("migration failed after creating db")
+
+    monkeypatch.setattr(
+        sqlite_storage.sqlite3, "connect", connect_and_leave_permissive_file
+    )
+    monkeypatch.setattr(sqlite_storage, "migrate", raise_after_new_db_open)
+
+    with pytest.raises(RuntimeError, match="migration failed after creating db"):
+        with open_database(db_path):
+            raise AssertionError("migration failure must prevent yielding")
+
+    assert db_path.exists()
+    assert (db_path.stat().st_mode & 0o077) == 0
+
+
 def test_insert_search_snapshot_persists_safe_rows(tmp_path: Path) -> None:
     with open_database(tmp_path / "cheapy.sqlite3") as conn:
         run_id = insert_search_snapshot(
@@ -587,6 +620,34 @@ def test_response_json_redacts_sensitive_allowlisted_values() -> None:
         "provider_status": REDACTED_VALUE,
     }
     assert "provider-token" not in payload["errors"][0]["details"].values()
+
+
+def test_response_json_redacts_raw_stack_allowlisted_reason() -> None:
+    response = _response(
+        errors=[
+            ErrorV1(
+                code=ErrorCode.PROVIDER_FAILED,
+                severity=Severity.ERROR,
+                message_en="Provider failed.",
+                details={
+                    "reason": "raw provider stack must not persist",
+                    "exception_type": "OperationalError",
+                    "value": "ZZZ",
+                },
+                retryable=True,
+            )
+        ],
+    )
+
+    details = sanitize_response_for_storage(response).model_dump(mode="json")[
+        "errors"
+    ][0]["details"]
+
+    assert details == {
+        "reason": REDACTED_VALUE,
+        "exception_type": "OperationalError",
+        "value": "ZZZ",
+    }
 
 
 def test_history_list_and_show_return_summaries(tmp_path: Path) -> None:

@@ -31,6 +31,17 @@ _SENSITIVE_DETAIL_WORDS = (
     "authorization",
     "challenge",
 )
+_SENSITIVE_VALUE_MARKERS = (
+    "raw",
+    "debug",
+    "stack",
+    "stack trace",
+    "stacktrace",
+    "traceback",
+    "error message",
+    "error-message",
+    "error_message",
+)
 _SAFE_DETAIL_KEYS = frozenset(
     {
         "provider",
@@ -105,6 +116,7 @@ def open_database(path: Path | None = None) -> Iterator[sqlite3.Connection]:
     try:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
+        _best_effort_chmod(db_path, 0o600)
         migrate(conn)
         _best_effort_chmod(db_path, 0o600)
         yield conn
@@ -781,6 +793,7 @@ def _value_is_sensitive(value: Any) -> bool:
         lowered = value.lower()
         return (
             any(word in lowered for word in _SENSITIVE_DETAIL_WORDS)
+            or any(marker in lowered for marker in _SENSITIVE_VALUE_MARKERS)
             or "bearer " in lowered
             or "http://" in lowered
             or "https://" in lowered
