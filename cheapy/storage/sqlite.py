@@ -6,6 +6,7 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime
 import hashlib
+import itertools
 import json
 import os
 from pathlib import Path
@@ -58,6 +59,7 @@ _SAFE_DETAIL_KEYS = frozenset(
     }
 )
 _SAFE_RATIONALE_KEYS = _SAFE_DETAIL_KEYS | frozenset({"matched", "reasons"})
+_SAVEPOINT_COUNTER = itertools.count(1)
 
 
 class StorageDisabled(RuntimeError):
@@ -109,6 +111,8 @@ def open_database(path: Path | None = None) -> Iterator[sqlite3.Connection]:
     db_path = resolve_db_path() if path is None else Path(path).expanduser()
     db_existed = db_path.exists()
     db_path.parent.mkdir(parents=True, exist_ok=True)
+    # Hardening is best-effort and applies to the resolved DB path parent,
+    # including CHEAPY_DB_PATH override directories.
     _best_effort_chmod(db_path.parent, 0o700)
     if db_existed:
         _best_effort_chmod(db_path, 0o600)
@@ -319,7 +323,7 @@ def insert_search_snapshot(
     *,
     now_utc: str | None = None,
 ) -> int:
-    """Persist one search snapshot, owning one transaction for the operation."""
+    """Persist one search snapshot, owning one savepoint transaction."""
 
     observed_at = now_utc or _now_utc()
     sanitized_response = sanitize_response_for_storage(response)
@@ -335,7 +339,7 @@ def insert_search_snapshot(
             offer_counts_by_provider.get(offer.provider, 0) + 1
         )
 
-    with conn:
+    with _savepoint(conn, "cheapy_snapshot"):
         cursor = conn.execute(
             """
             INSERT INTO search_runs (
@@ -448,6 +452,20 @@ def insert_search_snapshot(
             )
 
     return run_id
+
+
+@contextmanager
+def _savepoint(conn: sqlite3.Connection, prefix: str) -> Iterator[None]:
+    savepoint_name = f"{prefix}_{next(_SAVEPOINT_COUNTER)}"
+    conn.execute(f"SAVEPOINT {savepoint_name}")
+    try:
+        yield
+    except BaseException:
+        conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
+        conn.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+        raise
+    else:
+        conn.execute(f"RELEASE SAVEPOINT {savepoint_name}")
 
 
 def itinerary_fingerprint(offer: FlightOfferV1) -> str:

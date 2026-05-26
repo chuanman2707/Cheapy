@@ -497,6 +497,47 @@ def test_insert_search_snapshot_rolls_back_on_child_failure(tmp_path: Path) -> N
         assert conn.execute("SELECT COUNT(*) FROM provider_runs").fetchone()[0] == 0
 
 
+def test_insert_search_snapshot_rolls_back_autocommit_child_failure(
+    tmp_path: Path,
+) -> None:
+    conn = sqlite3.connect(tmp_path / "autocommit.sqlite3", isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    try:
+        migrate(conn)
+        conn.execute("DROP TABLE offer_observations")
+
+        with pytest.raises(sqlite3.DatabaseError):
+            insert_search_snapshot(
+                conn,
+                _request(),
+                _response(),
+                now_utc="2026-05-26T10:00:00Z",
+            )
+
+        assert conn.execute("SELECT COUNT(*) FROM search_runs").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM provider_runs").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_insert_search_snapshot_respects_caller_managed_transaction(
+    tmp_path: Path,
+) -> None:
+    with open_database(tmp_path / "cheapy.sqlite3") as conn:
+        conn.execute("BEGIN")
+
+        insert_search_snapshot(
+            conn,
+            _request(),
+            _response(),
+            now_utc="2026-05-26T10:00:00Z",
+        )
+
+        assert conn.in_transaction is True
+        conn.execute("ROLLBACK")
+        assert conn.execute("SELECT COUNT(*) FROM search_runs").fetchone()[0] == 0
+
+
 def test_itinerary_fingerprint_is_stable_and_excludes_price() -> None:
     offer = _offer()
 
