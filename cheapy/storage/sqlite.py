@@ -688,17 +688,44 @@ def watchlist_historical_comparison(
         }
 
     return_date = watchlist.get("return_date")
-    rows = conn.execute(
+    row = conn.execute(
         """
-        SELECT oo.price_amount
-        FROM offer_observations oo
-        JOIN search_runs sr ON sr.id = oo.search_run_id
-        WHERE sr.origin = ?
-          AND sr.destination = ?
-          AND sr.departure_date = ?
-          AND (sr.return_date = ? OR (sr.return_date IS NULL AND ? IS NULL))
-          AND oo.currency = ?
-        ORDER BY oo.observed_at_utc DESC, oo.id DESC
+        WITH matching AS (
+            SELECT
+                oo.price_amount,
+                oo.observed_at_utc,
+                oo.search_run_id
+            FROM offer_observations oo
+            JOIN search_runs sr ON sr.id = oo.search_run_id
+            WHERE sr.origin = ?
+              AND sr.destination = ?
+              AND sr.departure_date = ?
+              AND (sr.return_date = ? OR (sr.return_date IS NULL AND ? IS NULL))
+              AND oo.actual_origin = ?
+              AND oo.actual_destination = ?
+              AND oo.actual_departure_date = ?
+              AND (
+                oo.actual_return_date = ?
+                OR (oo.actual_return_date IS NULL AND ? IS NULL)
+              )
+              AND oo.currency = ?
+              AND oo.comparable = 1
+        ),
+        latest AS (
+            SELECT observed_at_utc, search_run_id
+            FROM matching
+            ORDER BY observed_at_utc DESC, search_run_id DESC
+            LIMIT 1
+        )
+        SELECT
+            (SELECT MIN(price_amount) FROM matching) AS historical_low,
+            (
+                SELECT MIN(matching.price_amount)
+                FROM matching
+                JOIN latest
+                  ON latest.observed_at_utc = matching.observed_at_utc
+                 AND latest.search_run_id = matching.search_run_id
+            ) AS latest_price_amount
         """,
         (
             watchlist["origin"],
@@ -706,21 +733,25 @@ def watchlist_historical_comparison(
             watchlist["departure_date"],
             return_date,
             return_date,
+            watchlist["origin"],
+            watchlist["destination"],
+            watchlist["departure_date"],
+            return_date,
+            return_date,
             currency,
         ),
-    ).fetchall()
+    ).fetchone()
 
-    if not rows:
+    if row is None or row["historical_low"] is None:
         return {
             "historical_low": None,
             "latest_price_amount": None,
             "currency": currency,
         }
 
-    prices = [float(row["price_amount"]) for row in rows]
     return {
-        "historical_low": min(prices),
-        "latest_price_amount": prices[0],
+        "historical_low": float(row["historical_low"]),
+        "latest_price_amount": float(row["latest_price_amount"]),
         "currency": currency,
     }
 

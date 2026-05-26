@@ -1119,6 +1119,136 @@ def test_watchlist_historical_comparison_uses_same_route_and_currency(
     }
 
 
+def test_watchlist_historical_comparison_uses_best_price_from_latest_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(tmp_path / "cheapy.sqlite3"))
+    watchlist_data = {
+        "origin": "CXR",
+        "destination": "SGN",
+        "departure_date": "2026-07-10",
+        "return_date": None,
+        "currency": "VND",
+    }
+    older_offer = _offer(
+        offer_id="fixture:older",
+        price_amount=1_280_000.0,
+    )
+    latest_best = _offer(
+        offer_id="fixture:latest-best",
+        price_amount=90.0,
+    )
+    latest_expensive = _offer(
+        offer_id="fixture:latest-expensive",
+        price_amount=300.0,
+    )
+
+    with sqlite_storage.open_database() as conn:
+        sqlite_storage.insert_search_snapshot(
+            conn,
+            _request(),
+            _response(offers=[older_offer]),
+            now_utc="2026-05-01T00:00:00Z",
+        )
+        sqlite_storage.insert_search_snapshot(
+            conn,
+            _request(),
+            _response(offers=[latest_best, latest_expensive]),
+            now_utc="2026-05-02T00:00:00Z",
+        )
+        comparison = sqlite_storage.watchlist_historical_comparison(
+            conn, watchlist_data
+        )
+
+    assert comparison == {
+        "historical_low": 90.0,
+        "latest_price_amount": 90.0,
+        "currency": "VND",
+    }
+
+
+def test_watchlist_historical_comparison_filters_actual_itinerary_dates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(tmp_path / "cheapy.sqlite3"))
+    watchlist_data = {
+        "origin": "CXR",
+        "destination": "SGN",
+        "departure_date": "2026-07-10",
+        "return_date": None,
+        "currency": "VND",
+    }
+    matching_offer = _offer(
+        offer_id="fixture:matching-date",
+        price_amount=1_280_000.0,
+    )
+    off_date_offer = _offer(
+        offer_id="fixture:off-date",
+        actual_departure_date="2026-07-11",
+        price_amount=900_000.0,
+    )
+
+    with sqlite_storage.open_database() as conn:
+        sqlite_storage.insert_search_snapshot(
+            conn,
+            _request(),
+            _response(offers=[matching_offer, off_date_offer]),
+            now_utc="2026-05-01T00:00:00Z",
+        )
+        comparison = sqlite_storage.watchlist_historical_comparison(
+            conn, watchlist_data
+        )
+
+    assert comparison == {
+        "historical_low": 1_280_000.0,
+        "latest_price_amount": 1_280_000.0,
+        "currency": "VND",
+    }
+
+
+def test_watchlist_historical_comparison_ignores_non_comparable_offers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(tmp_path / "cheapy.sqlite3"))
+    watchlist_data = {
+        "origin": "CXR",
+        "destination": "SGN",
+        "departure_date": "2026-07-10",
+        "return_date": None,
+        "currency": "VND",
+    }
+    comparable_offer = _offer(
+        offer_id="fixture:comparable",
+        price_amount=1_280_000.0,
+        comparable=True,
+    )
+    non_comparable_offer = _offer(
+        offer_id="fixture:non-comparable",
+        price_amount=900_000.0,
+        comparable=False,
+    )
+
+    with sqlite_storage.open_database() as conn:
+        sqlite_storage.insert_search_snapshot(
+            conn,
+            _request(),
+            _response(offers=[comparable_offer, non_comparable_offer]),
+            now_utc="2026-05-01T00:00:00Z",
+        )
+        comparison = sqlite_storage.watchlist_historical_comparison(
+            conn, watchlist_data
+        )
+
+    assert comparison == {
+        "historical_low": 1_280_000.0,
+        "latest_price_amount": 1_280_000.0,
+        "currency": "VND",
+    }
+
+
 def test_add_watchlist_respects_caller_managed_transaction(tmp_path: Path) -> None:
     with open_database(tmp_path / "cheapy.sqlite3") as conn:
         conn.execute("BEGIN")
