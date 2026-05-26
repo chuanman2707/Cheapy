@@ -508,14 +508,14 @@ def sanitize_response_for_storage(response: SearchResponseV1) -> SearchResponseV
 
     payload = response.model_dump(mode="json")
     for warning in payload["warnings"]:
-        warning["details"] = _redact_sensitive_detail(warning.get("details", {}))
+        _redact_warning_error_for_storage(warning)
     for error in payload["errors"]:
-        error["details"] = _redact_sensitive_detail(error.get("details", {}))
+        _redact_warning_error_for_storage(error)
     for provider_status in payload["provider_statuses"]:
         for warning in provider_status["warnings"]:
-            warning["details"] = _redact_sensitive_detail(warning.get("details", {}))
+            _redact_warning_error_for_storage(warning)
         for error in provider_status["errors"]:
-            error["details"] = _redact_sensitive_detail(error.get("details", {}))
+            _redact_warning_error_for_storage(error)
     return SearchResponseV1.model_validate(payload)
 
 
@@ -840,6 +840,12 @@ def _best_prices_by_currency(
                 "offer_id": row["offer_id"],
             }
     return [best_by_currency[currency] for currency in sorted(best_by_currency)]
+
+
+def _redact_warning_error_for_storage(payload: dict[str, Any]) -> None:
+    if _value_is_sensitive(payload.get("message_en")):
+        payload["message_en"] = REDACTED_VALUE
+    payload["details"] = _redact_sensitive_detail(payload.get("details", {}))
 
 
 def _redact_sensitive_detail(

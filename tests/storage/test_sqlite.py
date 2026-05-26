@@ -876,6 +876,94 @@ def test_stored_response_json_replaces_sensitive_and_unknown_detail_keys(
     )
 
 
+def test_stored_response_json_redacts_sensitive_messages(tmp_path: Path) -> None:
+    response = _response(
+        warnings=[
+            WarningV1(
+                code=WarningCode.FARE_DETAILS_NOT_COLLECTED,
+                severity=Severity.WARNING,
+                message_en=(
+                    "Provider warning at "
+                    "https://example.test/challenge?token=top-warning"
+                ),
+                details={"provider": "manual_fixture"},
+                retryable=False,
+            )
+        ],
+        errors=[
+            ErrorV1(
+                code=ErrorCode.PROVIDER_FAILED,
+                severity=Severity.ERROR,
+                message_en=(
+                    "Provider failed at "
+                    "https://example.test/challenge?token=top-error"
+                ),
+                details={"exception_type": "ProviderError"},
+                retryable=True,
+            )
+        ],
+        provider_statuses=[
+            _provider_status(
+                status=ProviderStatusCode.PARTIAL,
+                succeeded_call_count=0,
+                failed_call_count=1,
+                warnings=[
+                    WarningV1(
+                        code=WarningCode.FARE_DETAILS_NOT_COLLECTED,
+                        severity=Severity.WARNING,
+                        message_en=(
+                            "Nested warning at "
+                            "https://example.test/challenge?token=nested-warning"
+                        ),
+                        details={"provider": "manual_fixture"},
+                        retryable=False,
+                    )
+                ],
+                errors=[
+                    ErrorV1(
+                        code=ErrorCode.PROVIDER_FAILED,
+                        severity=Severity.ERROR,
+                        message_en=(
+                            "Nested error at "
+                            "https://example.test/challenge?token=nested-error"
+                        ),
+                        details={"failure_type": "blocked"},
+                        retryable=True,
+                    )
+                ],
+            )
+        ],
+    )
+
+    with open_database(tmp_path / "cheapy.sqlite3") as conn:
+        run_id = insert_search_snapshot(
+            conn,
+            _request(),
+            response,
+            now_utc="2026-05-26T10:00:00Z",
+        )
+        response_json = conn.execute(
+            "SELECT response_json FROM search_runs WHERE id = ?", (run_id,)
+        ).fetchone()["response_json"]
+
+    assert "https://example.test" not in response_json
+    assert "challenge?token=" not in response_json
+    assert "top-warning" not in response_json
+    assert "top-error" not in response_json
+    assert "nested-warning" not in response_json
+    assert "nested-error" not in response_json
+
+    payload = json.loads(response_json)
+    assert payload["warnings"][0]["message_en"] == REDACTED_VALUE
+    assert payload["errors"][0]["message_en"] == REDACTED_VALUE
+    assert payload["provider_statuses"][0]["warnings"][0]["message_en"] == (
+        REDACTED_VALUE
+    )
+    assert payload["provider_statuses"][0]["errors"][0]["message_en"] == (
+        REDACTED_VALUE
+    )
+
+
 def test_history_list_and_show_return_summaries(tmp_path: Path) -> None:
     with open_database(tmp_path / "cheapy.sqlite3") as conn:
         older_id = insert_search_snapshot(
