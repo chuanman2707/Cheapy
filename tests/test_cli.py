@@ -27,6 +27,7 @@ from cheapy.models import (
 )
 from cheapy.providers.base import ProviderExactOneWayRequest, ProviderResult
 from cheapy.providers.registry import ProviderManifestError
+from cheapy.search_service import SearchWithStorageResult
 from cheapy.storage import sqlite as storage
 
 
@@ -745,3 +746,173 @@ def test_history_without_subcommand_prints_help_successfully() -> None:
     assert result.exit_code == 0
     assert "Inspect local Cheapy search history." in result.stdout
     assert result.stderr == ""
+
+
+def test_watchlist_add_and_list_print_json(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(tmp_path / "cheapy.sqlite3"))
+
+    add_result = runner.invoke(
+        app,
+        [
+            "watchlist",
+            "add",
+            "--name",
+            "CXR SGN",
+            "--origin",
+            "cxr",
+            "--destination",
+            "sgn",
+            "--departure-date",
+            "2026-07-10",
+            "--max-price-amount",
+            "1300000",
+            "--currency",
+            "VND",
+            "--max-stops",
+            "0",
+        ],
+    )
+    list_result = runner.invoke(app, ["watchlist", "list"])
+
+    assert add_result.exit_code == 0
+    assert add_result.stderr == ""
+    added = json.loads(add_result.stdout)
+    assert added["status"] == "ok"
+    assert added["watchlist"]["origin"] == "CXR"
+    assert added["watchlist"]["destination"] == "SGN"
+    assert list_result.exit_code == 0
+    assert list_result.stderr == ""
+    listed = json.loads(list_result.stdout)
+    assert listed["watchlists"][0]["name"] == "CXR SGN"
+
+
+def test_watchlist_add_rejects_non_iata_airport(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(tmp_path / "cheapy.sqlite3"))
+
+    result = runner.invoke(
+        app,
+        [
+            "watchlist",
+            "add",
+            "--name",
+            "Bad",
+            "--origin",
+            "saigon",
+            "--destination",
+            "SGN",
+            "--departure-date",
+            "2026-07-10",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    assert json.loads(result.stderr)["code"] == "USAGE_ERROR"
+
+
+def test_watchlist_check_runs_search_records_check_and_prints_decision(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(tmp_path / "cheapy.sqlite3"))
+    with storage.open_database() as conn:
+        watchlist = storage.add_watchlist(
+            conn,
+            name="CXR SGN",
+            origin="CXR",
+            destination="SGN",
+            departure_date="2026-07-10",
+            return_date=None,
+            max_price_amount=1_300_000.0,
+            currency="VND",
+            max_stops=0,
+            max_results=5,
+        )
+        run_id = storage.insert_search_snapshot(conn, _cli_request(), _cli_response())
+
+    def fake_search_with_storage(request):
+        assert request.origin == "CXR"
+        assert request.destination == "SGN"
+        return SearchWithStorageResult(
+            response=_cli_response(),
+            search_run_id=run_id,
+            storage_enabled=True,
+            storage_warning=None,
+        )
+
+    monkeypatch.setattr("cheapy.cli.search_with_storage", fake_search_with_storage)
+
+    result = runner.invoke(app, ["watchlist", "check", str(watchlist["id"])])
+
+    assert result.exit_code == 0
+    assert result.stderr == ""
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "ok"
+    assert payload["search_run_id"] == run_id
+    assert payload["decision"] == "book_now"
+    assert payload["best_offer"]["offer_id"] == "fixture:1"
+    assert payload["historical_comparison"] == {
+        "historical_low": None,
+        "latest_price_amount": None,
+    }
+    with storage.open_database() as conn:
+        check_count = conn.execute(
+            "SELECT COUNT(*) FROM watchlist_checks WHERE watchlist_id = ?",
+            (watchlist["id"],),
+        ).fetchone()[0]
+    assert check_count == 1
+
+
+def test_watchlist_check_fails_when_search_run_is_not_persisted(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(tmp_path / "cheapy.sqlite3"))
+    with storage.open_database() as conn:
+        watchlist = storage.add_watchlist(
+            conn,
+            name="CXR SGN",
+            origin="CXR",
+            destination="SGN",
+            departure_date="2026-07-10",
+            return_date=None,
+            max_price_amount=1_300_000.0,
+            currency="VND",
+            max_stops=0,
+            max_results=5,
+        )
+
+    def fake_search_with_storage(request):
+        return SearchWithStorageResult(
+            response=_cli_response(),
+            search_run_id=None,
+            storage_enabled=True,
+            storage_warning=None,
+        )
+
+    monkeypatch.setattr("cheapy.cli.search_with_storage", fake_search_with_storage)
+
+    result = runner.invoke(app, ["watchlist", "check", str(watchlist["id"])])
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert json.loads(result.stderr)["code"] == "WATCHLIST_CHECK_NOT_RECORDED"
+
+
+def test_watchlist_check_fails_before_search_when_storage_disabled(monkeypatch) -> None:
+    called = False
+
+    def fake_search_with_storage(request):
+        nonlocal called
+        called = True
+        raise AssertionError("search must not be called")
+
+    monkeypatch.setenv("CHEAPY_DISABLE_STORAGE", "1")
+    monkeypatch.setattr("cheapy.cli.search_with_storage", fake_search_with_storage)
+
+    result = runner.invoke(app, ["watchlist", "check", "1"])
+
+    assert result.exit_code == 1
+    assert called is False
+    assert result.stdout == ""
+    assert json.loads(result.stderr)["code"] == "STORAGE_DISABLED"
