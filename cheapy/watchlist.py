@@ -100,12 +100,21 @@ def provider_confidence(response: SearchResponseV1) -> str:
 
     if response.status == SearchStatus.FAILED or not response.offers:
         return "low"
-    failed_or_retryable = [
-        status
+    if response.status == SearchStatus.PARTIAL:
+        return "medium"
+    degraded_statuses = {
+        ProviderStatusCode.FAILED,
+        ProviderStatusCode.PARTIAL,
+        ProviderStatusCode.SKIPPED,
+    }
+    degraded_provider = any(
+        status.status in degraded_statuses
+        or status.retryable
+        or bool(status.warnings)
+        or bool(status.errors)
         for status in response.provider_statuses
-        if status.status == ProviderStatusCode.FAILED or status.retryable
-    ]
-    if failed_or_retryable:
+    )
+    if degraded_provider:
         return "medium"
     return "high"
 

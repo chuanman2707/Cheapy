@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from cheapy.models import (
     CandidateFamily,
     CurrencyGroupV1,
+    ErrorCode,
+    ErrorV1,
     FlightLegV1,
     FlightOfferV1,
     OfferFlagsV1,
@@ -14,8 +18,15 @@ from cheapy.models import (
     SearchPlanV1,
     SearchResponseV1,
     SearchStatus,
+    Severity,
+    WarningCode,
+    WarningV1,
 )
-from cheapy.watchlist import build_watchlist_request, evaluate_watchlist
+from cheapy.watchlist import (
+    build_watchlist_request,
+    evaluate_watchlist,
+    provider_confidence,
+)
 
 
 def _watchlist(**overrides: object) -> dict[str, object]:
@@ -146,6 +157,26 @@ def _historical_comparison() -> dict[str, float | None]:
     return {"historical_low": None, "latest_price_amount": None}
 
 
+def _warning() -> WarningV1:
+    return WarningV1(
+        code=WarningCode.SEARCH_TRUNCATED,
+        severity=Severity.WARNING,
+        message_en="Search was truncated.",
+        details={},
+        retryable=False,
+    )
+
+
+def _error() -> ErrorV1:
+    return ErrorV1(
+        code=ErrorCode.PROVIDER_FAILED,
+        severity=Severity.ERROR,
+        message_en="Provider failed.",
+        details={},
+        retryable=False,
+    )
+
+
 def test_build_watchlist_request_uses_contract_v1_fields() -> None:
     request = build_watchlist_request(_watchlist())
 
@@ -167,6 +198,31 @@ def test_evaluate_watchlist_books_when_threshold_met() -> None:
     assert decision["best_offer"]["offer_id"] == "fixture:1"
     assert decision["threshold_comparison"]["threshold_met"] is True
     assert decision["provider_confidence"] == "high"
+
+
+def test_provider_confidence_caps_partial_search_at_medium() -> None:
+    response = _response(status=SearchStatus.PARTIAL)
+
+    assert provider_confidence(response) == "medium"
+
+
+@pytest.mark.parametrize(
+    "provider_status",
+    [
+        _provider_status(status=ProviderStatusCode.FAILED),
+        _provider_status(status=ProviderStatusCode.PARTIAL),
+        _provider_status(status=ProviderStatusCode.SKIPPED),
+        _provider_status(retryable=True),
+        _provider_status(warnings=[_warning()]),
+        _provider_status(errors=[_error()]),
+    ],
+)
+def test_provider_confidence_medium_for_degraded_provider_statuses(
+    provider_status: ProviderStatusV1,
+) -> None:
+    response = _response(provider_statuses=[provider_status])
+
+    assert provider_confidence(response) == "medium"
 
 
 def test_evaluate_watchlist_does_not_book_non_comparable_offer() -> None:
