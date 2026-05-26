@@ -95,8 +95,11 @@ def open_database(path: Path | None = None) -> Iterator[sqlite3.Connection]:
         raise StorageDisabled("Cheapy local storage is disabled")
 
     db_path = resolve_db_path() if path is None else Path(path).expanduser()
+    db_existed = db_path.exists()
     db_path.parent.mkdir(parents=True, exist_ok=True)
     _best_effort_chmod(db_path.parent, 0o700)
+    if db_existed:
+        _best_effort_chmod(db_path, 0o600)
 
     conn = sqlite3.connect(db_path)
     try:
@@ -110,7 +113,7 @@ def open_database(path: Path | None = None) -> Iterator[sqlite3.Connection]:
 
 
 def migrate(conn: sqlite3.Connection) -> None:
-    """Apply schema migrations idempotently."""
+    """Apply schema migrations idempotently, owning one migration transaction."""
 
     conn.execute("PRAGMA foreign_keys = ON")
     with conn:
@@ -252,7 +255,7 @@ def insert_search_snapshot(
     *,
     now_utc: str | None = None,
 ) -> int:
-    """Persist a search run and all child rows atomically."""
+    """Persist one search snapshot, owning one transaction for the operation."""
 
     observed_at = now_utc or _now_utc()
     sanitized_response = sanitize_response_for_storage(response)
@@ -506,7 +509,7 @@ def add_watchlist(
     max_results: int = 5,
     now_utc: str | None = None,
 ) -> dict[str, Any]:
-    """Create an enabled watchlist and return it."""
+    """Create one enabled watchlist, owning one transaction for the operation."""
 
     created_at = now_utc or _now_utc()
     normalized_currency = currency.strip().upper() if currency else None
@@ -592,7 +595,7 @@ def record_watchlist_check(
     best_price_amount: float | None = None,
     currency: str | None = None,
 ) -> dict[str, Any]:
-    """Record a watchlist check result and return it."""
+    """Record one watchlist check, owning one transaction for the operation."""
 
     checked_at = checked_at_utc or _now_utc()
     rationale_json = _json_dumps(dict(rationale or {}))
@@ -760,10 +763,33 @@ def _redact_sensitive_detail(value: Any, path: tuple[str, ...] = ()) -> Any:
                 redacted[key] = _redact_sensitive_detail(child, child_path)
         return redacted
     if isinstance(value, list):
+        if any(_value_is_sensitive(item) for item in value):
+            return REDACTED_VALUE
         return [_redact_sensitive_detail(item, path) for item in value]
+    if _value_is_sensitive(value):
+        return REDACTED_VALUE
     return value
 
 
 def _path_is_sensitive(path: tuple[str, ...]) -> bool:
     lowered_path = ".".join(path).lower()
     return any(word in lowered_path for word in _SENSITIVE_DETAIL_WORDS)
+
+
+def _value_is_sensitive(value: Any) -> bool:
+    if isinstance(value, str):
+        lowered = value.lower()
+        return (
+            any(word in lowered for word in _SENSITIVE_DETAIL_WORDS)
+            or "bearer " in lowered
+            or "http://" in lowered
+            or "https://" in lowered
+        )
+    if isinstance(value, list):
+        return any(_value_is_sensitive(item) for item in value)
+    if isinstance(value, dict):
+        return any(
+            _path_is_sensitive((str(key),)) or _value_is_sensitive(child)
+            for key, child in value.items()
+        )
+    return False

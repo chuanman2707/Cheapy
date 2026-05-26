@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+import cheapy.storage.sqlite as sqlite_storage
 from cheapy.models import (
     CandidateFamily,
     CurrencyGroupV1,
@@ -259,6 +260,30 @@ def test_open_database_disabled_does_not_create_db(
     assert not db_path.exists()
 
 
+def test_open_database_hardens_existing_db_before_migration_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if os.name != "posix":
+        pytest.skip("POSIX file mode hardening is only asserted on POSIX")
+
+    db_path = tmp_path / "data" / "cheapy.sqlite3"
+    db_path.parent.mkdir(parents=True)
+    db_path.touch()
+    db_path.chmod(0o644)
+
+    def raise_after_open(conn: sqlite3.Connection) -> None:
+        assert conn.execute("SELECT 1").fetchone()[0] == 1
+        raise RuntimeError("migration failed after open")
+
+    monkeypatch.setattr(sqlite_storage, "migrate", raise_after_open)
+
+    with pytest.raises(RuntimeError, match="migration failed after open"):
+        with open_database(db_path):
+            raise AssertionError("migration failure must prevent yielding")
+
+    assert (db_path.stat().st_mode & 0o077) == 0
+
+
 def test_insert_search_snapshot_persists_safe_rows(tmp_path: Path) -> None:
     with open_database(tmp_path / "cheapy.sqlite3") as conn:
         run_id = insert_search_snapshot(
@@ -506,6 +531,62 @@ def test_response_json_preserves_allowlisted_details_recursively() -> None:
         "provider_status": "failed",
         "storage_backend": "sqlite",
     }
+
+
+def test_response_json_redacts_sensitive_allowlisted_values() -> None:
+    response = _response(
+        warnings=[
+            WarningV1(
+                code=WarningCode.FARE_DETAILS_NOT_COLLECTED,
+                severity=Severity.WARNING,
+                message_en="Provider warning.",
+                details={
+                    "provider": "manual_fixture",
+                    "capability": "exact_one_way",
+                    "exception_type": "OperationalError",
+                    "field": "origin",
+                    "value": "ZZZ",
+                    "reason": "no_exact_one_way_provider",
+                    "storage_backend": "sqlite",
+                },
+                retryable=False,
+            )
+        ],
+        errors=[
+            ErrorV1(
+                code=ErrorCode.PROVIDER_FAILED,
+                severity=Severity.ERROR,
+                message_en="Provider failed.",
+                details={
+                    "value": "https://provider.example/search?token=secret",
+                    "reason": "Bearer provider-token",
+                    "provider_status": [
+                        "failed",
+                        "cookie=session-secret",
+                    ],
+                },
+                retryable=True,
+            )
+        ],
+    )
+
+    payload = sanitize_response_for_storage(response).model_dump(mode="json")
+
+    assert payload["warnings"][0]["details"] == {
+        "provider": "manual_fixture",
+        "capability": "exact_one_way",
+        "exception_type": "OperationalError",
+        "field": "origin",
+        "value": "ZZZ",
+        "reason": "no_exact_one_way_provider",
+        "storage_backend": "sqlite",
+    }
+    assert payload["errors"][0]["details"] == {
+        "value": REDACTED_VALUE,
+        "reason": REDACTED_VALUE,
+        "provider_status": REDACTED_VALUE,
+    }
+    assert "provider-token" not in payload["errors"][0]["details"].values()
 
 
 def test_history_list_and_show_return_summaries(tmp_path: Path) -> None:
