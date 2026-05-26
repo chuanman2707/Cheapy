@@ -1077,6 +1077,48 @@ def test_history_list_handles_mixed_currency_without_global_best(tmp_path: Path)
         ]
 
 
+def test_watchlist_historical_comparison_uses_same_route_and_currency(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(tmp_path / "cheapy.sqlite3"))
+    watchlist_data = {
+        "origin": "CXR",
+        "destination": "SGN",
+        "departure_date": "2026-07-10",
+        "return_date": None,
+        "currency": "VND",
+    }
+    first = _response()
+    second_offer = first.offers[0].model_copy(
+        update={"offer_id": "fixture:2", "price_amount": 1_200_000.0}
+    )
+    second = _response(offers=[second_offer])
+
+    with sqlite_storage.open_database() as conn:
+        sqlite_storage.insert_search_snapshot(
+            conn,
+            _request(),
+            first,
+            now_utc="2026-05-01T00:00:00Z",
+        )
+        sqlite_storage.insert_search_snapshot(
+            conn,
+            _request(),
+            second,
+            now_utc="2026-05-02T00:00:00Z",
+        )
+        comparison = sqlite_storage.watchlist_historical_comparison(
+            conn, watchlist_data
+        )
+
+    assert comparison == {
+        "historical_low": 1_200_000.0,
+        "latest_price_amount": 1_200_000.0,
+        "currency": "VND",
+    }
+
+
 def test_add_watchlist_respects_caller_managed_transaction(tmp_path: Path) -> None:
     with open_database(tmp_path / "cheapy.sqlite3") as conn:
         conn.execute("BEGIN")

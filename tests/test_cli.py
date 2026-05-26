@@ -880,14 +880,36 @@ def test_watchlist_check_runs_search_records_check_and_prints_decision(
             max_stops=0,
             max_results=5,
         )
-        run_id = storage.insert_search_snapshot(conn, _cli_request(), _cli_response())
+        prior_run_id = storage.insert_search_snapshot(
+            conn,
+            _cli_request(),
+            _cli_response(),
+            now_utc="2026-05-01T00:00:00Z",
+        )
+    fresh_run_id = None
 
     def fake_search_with_storage(request):
+        nonlocal fresh_run_id
         assert request.origin == "CXR"
         assert request.destination == "SGN"
+        fresh_response = _cli_response(
+            offers=[
+                _offer(
+                    offer_id="fixture:fresh",
+                    price_amount=900_000.0,
+                )
+            ]
+        )
+        with storage.open_database() as conn:
+            fresh_run_id = storage.insert_search_snapshot(
+                conn,
+                request,
+                fresh_response,
+                now_utc="2026-05-02T00:00:00Z",
+            )
         return SearchWithStorageResult(
-            response=_cli_response(),
-            search_run_id=run_id,
+            response=fresh_response,
+            search_run_id=fresh_run_id,
             storage_enabled=True,
             storage_warning=None,
         )
@@ -900,19 +922,26 @@ def test_watchlist_check_runs_search_records_check_and_prints_decision(
     assert result.stderr == ""
     payload = json.loads(result.stdout)
     assert payload["status"] == "ok"
-    assert payload["search_run_id"] == run_id
+    assert payload["search_run_id"] == fresh_run_id
     assert payload["decision"] == "book_now"
-    assert payload["best_offer"]["offer_id"] == "fixture:1"
+    assert payload["best_offer"]["offer_id"] == "fixture:fresh"
     assert payload["historical_comparison"] == {
-        "historical_low": None,
-        "latest_price_amount": None,
+        "historical_low": 1_280_000.0,
+        "latest_price_amount": 1_280_000.0,
+        "currency": "VND",
     }
     with storage.open_database() as conn:
         check_count = conn.execute(
             "SELECT COUNT(*) FROM watchlist_checks WHERE watchlist_id = ?",
             (watchlist["id"],),
         ).fetchone()[0]
+        recorded_search_run_id = conn.execute(
+            "SELECT search_run_id FROM watchlist_checks WHERE watchlist_id = ?",
+            (watchlist["id"],),
+        ).fetchone()[0]
     assert check_count == 1
+    assert recorded_search_run_id == fresh_run_id
+    assert fresh_run_id != prior_run_id
 
 
 def test_watchlist_check_fails_when_search_run_is_not_persisted(

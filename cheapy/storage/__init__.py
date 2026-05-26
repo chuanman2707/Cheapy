@@ -19,6 +19,7 @@ from cheapy.storage.sqlite import (
     resolve_db_path,
     sanitize_response_for_storage,
     show_history,
+    watchlist_historical_comparison,
 )
 
 __all__ = [
@@ -38,4 +39,5 @@ __all__ = [
     "resolve_db_path",
     "sanitize_response_for_storage",
     "show_history",
+    "watchlist_historical_comparison",
 ]

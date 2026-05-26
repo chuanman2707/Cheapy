@@ -673,6 +673,58 @@ def get_watchlist(
     return _watchlist_dict(row)
 
 
+def watchlist_historical_comparison(
+    conn: sqlite3.Connection,
+    watchlist: dict[str, Any],
+) -> dict[str, Any]:
+    """Return historical low and latest observed price for a watchlist."""
+
+    currency = watchlist.get("currency")
+    if currency is None:
+        return {
+            "historical_low": None,
+            "latest_price_amount": None,
+            "currency": None,
+        }
+
+    return_date = watchlist.get("return_date")
+    rows = conn.execute(
+        """
+        SELECT oo.price_amount
+        FROM offer_observations oo
+        JOIN search_runs sr ON sr.id = oo.search_run_id
+        WHERE sr.origin = ?
+          AND sr.destination = ?
+          AND sr.departure_date = ?
+          AND (sr.return_date = ? OR (sr.return_date IS NULL AND ? IS NULL))
+          AND oo.currency = ?
+        ORDER BY oo.observed_at_utc DESC, oo.id DESC
+        """,
+        (
+            watchlist["origin"],
+            watchlist["destination"],
+            watchlist["departure_date"],
+            return_date,
+            return_date,
+            currency,
+        ),
+    ).fetchall()
+
+    if not rows:
+        return {
+            "historical_low": None,
+            "latest_price_amount": None,
+            "currency": currency,
+        }
+
+    prices = [float(row["price_amount"]) for row in rows]
+    return {
+        "historical_low": min(prices),
+        "latest_price_amount": prices[0],
+        "currency": currency,
+    }
+
+
 def record_watchlist_check(
     conn: sqlite3.Connection,
     *,

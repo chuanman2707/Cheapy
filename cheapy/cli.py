@@ -452,6 +452,17 @@ def watchlist_check(
         raise typer.Exit(code=1)
 
     request = build_watchlist_request(watchlist)
+    try:
+        with storage.open_database() as conn:
+            historical_comparison = storage.watchlist_historical_comparison(
+                conn,
+                watchlist,
+            )
+    except storage.StorageDisabled:
+        _storage_disabled_exit()
+    except (OSError, sqlite3.Error):
+        _watchlist_storage_error_exit()
+
     result = search_with_storage(request)
     if result.search_run_id is None:
         _json_echo(
@@ -464,10 +475,6 @@ def watchlist_check(
         )
         raise typer.Exit(code=1)
 
-    historical_comparison = {
-        "historical_low": None,
-        "latest_price_amount": None,
-    }
     decision_payload = evaluate_watchlist(
         response=result.response,
         watchlist=watchlist,
