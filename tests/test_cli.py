@@ -1,17 +1,149 @@
 """CLI baseline tests."""
 
 import json
+from typing import Any
 
 from typer.testing import CliRunner
 
 from cheapy.cli import app
 from cheapy.mcp_installer import InstallerError
-from cheapy.models import ErrorCode, ErrorV1, ProviderStatusCode, Severity
+from cheapy.models import (
+    CandidateFamily,
+    CurrencyGroupV1,
+    ErrorCode,
+    ErrorV1,
+    FlightLegV1,
+    FlightOfferV1,
+    OfferFlagsV1,
+    ProviderStatusCode,
+    ProviderStatusV1,
+    SearchMode,
+    SearchPlanV1,
+    SearchRequestV1,
+    SearchResponseV1,
+    SearchStatus,
+    Severity,
+)
 from cheapy.providers.base import ProviderExactOneWayRequest, ProviderResult
 from cheapy.providers.registry import ProviderManifestError
+from cheapy.storage import sqlite as storage
 
 
 runner = CliRunner()
+
+
+def _cli_request() -> SearchRequestV1:
+    return SearchRequestV1.model_validate(
+        {
+            "schema_version": "1",
+            "origin": "CXR",
+            "destination": "SGN",
+            "departure_date": "2026-07-10",
+            "return_date": None,
+            "max_results": 5,
+        }
+    )
+
+
+def _offer(**overrides: Any) -> FlightOfferV1:
+    data: dict[str, Any] = {
+        "offer_id": "fixture:1",
+        "price_amount": 1_280_000.0,
+        "currency": "VND",
+        "comparable": True,
+        "rank_within_currency": 1,
+        "global_rank": 1,
+        "provider": "manual_fixture",
+        "requested_origin": "CXR",
+        "requested_destination": "SGN",
+        "actual_origin": "CXR",
+        "actual_destination": "SGN",
+        "nearby_origin_distance_km": None,
+        "nearby_destination_distance_km": None,
+        "requested_departure_date": "2026-07-10",
+        "actual_departure_date": "2026-07-10",
+        "departure_offset_days": 0,
+        "requested_return_date": None,
+        "actual_return_date": None,
+        "return_offset_days": None,
+        "legs": [
+            FlightLegV1(
+                origin="CXR",
+                destination="SGN",
+                departure_time="2026-07-10T08:15:00",
+                arrival_time="2026-07-10T09:25:00",
+                airline_code="VJ",
+                flight_number="VJ601",
+                duration_minutes=70,
+            )
+        ],
+        "total_duration_minutes": 70,
+        "stops": 0,
+        "flags": OfferFlagsV1(),
+        "fare_details_status": "not_collected",
+    }
+    data.update(overrides)
+    return FlightOfferV1.model_validate(data)
+
+
+def _provider_status(**overrides: Any) -> ProviderStatusV1:
+    data: dict[str, Any] = {
+        "provider_name": "manual_fixture",
+        "capability": "exact_one_way",
+        "status": ProviderStatusCode.SUCCESS,
+        "planned_call_count": 1,
+        "executed_call_count": 1,
+        "succeeded_call_count": 1,
+        "failed_call_count": 0,
+        "duration_ms": 12,
+        "warnings": [],
+        "errors": [],
+        "retryable": False,
+    }
+    data.update(overrides)
+    return ProviderStatusV1.model_validate(data)
+
+
+def _cli_response(**overrides: Any) -> SearchResponseV1:
+    offers = overrides.pop("offers", [_offer()])
+    mixed_currency = overrides.pop(
+        "mixed_currency", len({offer.currency for offer in offers}) > 1
+    )
+    data: dict[str, Any] = {
+        "schema_version": "1",
+        "status": SearchStatus.SUCCESS,
+        "request_id": "search:one_way:CXR:SGN:2026-07-10:none:exact:1:0:0:0:5",
+        "offers": offers,
+        "warnings": [],
+        "errors": [],
+        "provider_statuses": [_provider_status()],
+        "search_plan": SearchPlanV1(
+            search_mode=SearchMode.EXACT,
+            planned_candidate_count=1,
+            executed_candidate_count=1,
+            planned_provider_call_count=1,
+            executed_provider_call_count=1,
+            candidate_count_by_family={CandidateFamily.EXACT: 1},
+            provider_call_count_by_family={CandidateFamily.EXACT: 1},
+            truncated=False,
+            truncated_families=[],
+            candidate_families=[CandidateFamily.EXACT],
+        ),
+        "mixed_currency": mixed_currency,
+        "currency_groups": [
+            CurrencyGroupV1(
+                currency=currency,
+                offer_ids=[
+                    offer.offer_id for offer in offers if offer.currency == currency
+                ],
+            )
+            for currency in sorted({offer.currency for offer in offers})
+        ],
+        "currency_notes": [] if not mixed_currency else ["Currencies are not comparable."],
+        "candidates": None,
+    }
+    data.update(overrides)
+    return SearchResponseV1.model_validate(data)
 
 
 def test_version_prints_package_version() -> None:
@@ -489,3 +621,70 @@ def test_providers_test_reports_unexpected_provider_exception(monkeypatch) -> No
         "message": "A provider check raised an unexpected exception.",
         "suggestion": "Run 'cheapy providers test --human' for a concise provider report.",
     }
+
+
+def test_history_list_prints_json(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(tmp_path / "cheapy.sqlite3"))
+    with storage.open_database() as conn:
+        storage.insert_search_snapshot(conn, _cli_request(), _cli_response())
+
+    result = runner.invoke(app, ["history", "list", "--limit", "5"])
+
+    assert result.exit_code == 0
+    assert result.stderr == ""
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "ok"
+    assert payload["runs"][0]["origin"] == "CXR"
+    assert payload["runs"][0]["best_price_amount"] == 1_280_000.0
+
+
+def test_history_show_prints_json(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(tmp_path / "cheapy.sqlite3"))
+    with storage.open_database() as conn:
+        run_id = storage.insert_search_snapshot(conn, _cli_request(), _cli_response())
+
+    result = runner.invoke(app, ["history", "show", str(run_id)])
+
+    assert result.exit_code == 0
+    assert result.stderr == ""
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "ok"
+    assert payload["search_run"]["id"] == run_id
+    assert payload["provider_runs"][0]["provider_name"] == "manual_fixture"
+    assert payload["offer_observations"][0]["offer_id"] == "fixture:1"
+    assert payload["response"]["request_id"] == _cli_response().request_id
+
+
+def test_history_show_reports_not_found(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(tmp_path / "cheapy.sqlite3"))
+
+    result = runner.invoke(app, ["history", "show", "999"])
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert json.loads(result.stderr) == {
+        "error": True,
+        "code": "HISTORY_RUN_NOT_FOUND",
+        "message": "Search run was not found.",
+        "suggestion": "Run 'cheapy history list' to see available search runs.",
+    }
+
+
+def test_history_commands_fail_when_storage_disabled(monkeypatch) -> None:
+    monkeypatch.setenv("CHEAPY_DISABLE_STORAGE", "1")
+    opened_database = False
+
+    def fake_open_database():
+        nonlocal opened_database
+        opened_database = True
+        raise AssertionError("storage should not open when disabled")
+
+    monkeypatch.setattr("cheapy.cli.storage.open_database", fake_open_database)
+
+    for command in (["history", "list"], ["history", "show", "1"]):
+        result = runner.invoke(app, command)
+
+        assert result.exit_code == 1
+        assert result.stdout == ""
+        assert json.loads(result.stderr)["code"] == "STORAGE_DISABLED"
+    assert opened_database is False

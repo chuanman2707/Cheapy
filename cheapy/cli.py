@@ -25,6 +25,7 @@ from cheapy.providers.registry import (
     discover_provider_manifests,
     load_enabled_providers,
 )
+from cheapy.storage import sqlite as storage
 
 
 LIVE_TEST_ENV = "CHEAPY_RUN_LIVE_TESTS"
@@ -81,12 +82,17 @@ providers_app = typer.Typer(
     help="Inspect packaged Cheapy providers.",
     no_args_is_help=True,
 )
+history_app = typer.Typer(
+    help="Inspect local Cheapy search history.",
+    no_args_is_help=True,
+)
 mcp_app = typer.Typer(
     help="Run or install the Cheapy MCP server.",
     no_args_is_help=False,
     invoke_without_command=True,
 )
 app.add_typer(providers_app, name="providers")
+app.add_typer(history_app, name="history")
 app.add_typer(mcp_app, name="mcp")
 
 
@@ -181,6 +187,58 @@ def _provider_fixture_request() -> ProviderExactOneWayRequest:
         destination="SGN",
         departure_date="2026-07-10",
     )
+
+
+def _storage_disabled_exit() -> None:
+    _json_echo(
+        _error_payload(
+            "STORAGE_DISABLED",
+            "Local Cheapy storage is disabled.",
+            "Unset CHEAPY_DISABLE_STORAGE or set it to a value other than 1.",
+        ),
+        err=True,
+    )
+    raise typer.Exit(code=1)
+
+
+@history_app.command("list")
+def history_list(
+    limit: int = typer.Option(
+        20,
+        "--limit",
+        min=1,
+        max=100,
+        help="Maximum number of search runs to list.",
+    ),
+) -> None:
+    """List local search history."""
+    if storage.is_storage_disabled():
+        _storage_disabled_exit()
+
+    with storage.open_database() as conn:
+        runs = storage.list_history(conn, limit=limit)
+    _json_echo({"status": "ok", "runs": runs})
+
+
+@history_app.command("show")
+def history_show(run_id: int = typer.Argument(..., help="Search run id.")) -> None:
+    """Show one local search run."""
+    if storage.is_storage_disabled():
+        _storage_disabled_exit()
+
+    with storage.open_database() as conn:
+        payload = storage.show_history(conn, run_id)
+    if payload is None:
+        _json_echo(
+            _error_payload(
+                "HISTORY_RUN_NOT_FOUND",
+                "Search run was not found.",
+                "Run 'cheapy history list' to see available search runs.",
+            ),
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    _json_echo({"status": "ok", **payload})
 
 
 @providers_app.command("list")
