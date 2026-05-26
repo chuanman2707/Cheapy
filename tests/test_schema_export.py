@@ -87,3 +87,11 @@ def test_search_request_schema_documents_iata_only_airports() -> None:
     assert "IATA" in destination_description
     assert "city" not in origin_description.lower()
     assert "city" not in destination_description.lower()
+
+
+def test_schema_exports_local_storage_warning_code() -> None:
+    result = runner.invoke(app, ["schema"])
+
+    assert result.exit_code == 0
+    exported = json.loads(result.output)
+    assert "local_storage_failed" in json.dumps(exported["SearchResponseV1"])

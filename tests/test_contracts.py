@@ -350,3 +350,19 @@ def test_search_response_rejects_top_level_search_mode() -> None:
             candidates=None,
             search_mode="exact",
         )
+
+
+def test_warning_accepts_local_storage_failed_code() -> None:
+    warning = WarningV1(
+        code="local_storage_failed",
+        severity=Severity.WARNING,
+        message_en="Local search history could not be saved.",
+        details={"storage_backend": "sqlite", "exception_type": "OperationalError"},
+        retryable=False,
+    )
+
+    assert warning.code == WarningCode.LOCAL_STORAGE_FAILED
+    assert warning.details == {
+        "storage_backend": "sqlite",
+        "exception_type": "OperationalError",
+    }

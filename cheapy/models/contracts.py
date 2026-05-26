@@ -100,6 +100,7 @@ class WarningCode(StrEnum):
     SELF_TRANSFER = "self_transfer"
     NEARBY_AIRPORT_USED = "nearby_airport_used"
     FLEXIBLE_DATE_USED = "flexible_date_used"
+    LOCAL_STORAGE_FAILED = "local_storage_failed"
 
 
 class ErrorCode(StrEnum):
