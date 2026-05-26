@@ -57,6 +57,7 @@ _SAFE_DETAIL_KEYS = frozenset(
         "storage_backend",
     }
 )
+_SAFE_RATIONALE_KEYS = _SAFE_DETAIL_KEYS | frozenset({"matched", "reasons"})
 
 
 class StorageDisabled(RuntimeError):
@@ -610,7 +611,9 @@ def record_watchlist_check(
     """Record one watchlist check, owning one transaction for the operation."""
 
     checked_at = checked_at_utc or _now_utc()
-    rationale_json = _json_dumps(dict(rationale or {}))
+    rationale_json = _json_dumps(
+        _redact_sensitive_detail(dict(rationale or {}), safe_keys=_SAFE_RATIONALE_KEYS)
+    )
     normalized_currency = currency.strip().upper() if currency else None
     with conn:
         cursor = conn.execute(
@@ -762,25 +765,46 @@ def _best_prices_by_currency(
     return [best_by_currency[currency] for currency in sorted(best_by_currency)]
 
 
-def _redact_sensitive_detail(value: Any, path: tuple[str, ...] = ()) -> Any:
+def _redact_sensitive_detail(
+    value: Any,
+    path: tuple[str, ...] = (),
+    *,
+    safe_keys: frozenset[str] = _SAFE_DETAIL_KEYS,
+) -> Any:
     if _path_is_sensitive(path):
         return REDACTED_VALUE
     if isinstance(value, dict):
         redacted: dict[str, Any] = {}
+        redacted_count = 1
         for key, child in value.items():
-            child_path = path + (str(key),)
-            if _path_is_sensitive(child_path) or key not in _SAFE_DETAIL_KEYS:
-                redacted[key] = REDACTED_VALUE
+            key_text = str(key)
+            child_path = path + (key_text,)
+            if _path_is_sensitive(child_path) or key_text not in safe_keys:
+                redacted_key = _next_redacted_key(redacted, redacted_count)
+                redacted[redacted_key] = REDACTED_VALUE
+                redacted_count += 1
             else:
-                redacted[key] = _redact_sensitive_detail(child, child_path)
+                redacted[key_text] = _redact_sensitive_detail(
+                    child, child_path, safe_keys=safe_keys
+                )
         return redacted
     if isinstance(value, list):
         if any(_value_is_sensitive(item) for item in value):
             return REDACTED_VALUE
-        return [_redact_sensitive_detail(item, path) for item in value]
+        return [
+            _redact_sensitive_detail(item, path, safe_keys=safe_keys)
+            for item in value
+        ]
     if _value_is_sensitive(value):
         return REDACTED_VALUE
     return value
+
+
+def _next_redacted_key(existing: Mapping[str, Any], start: int) -> str:
+    current = start
+    while f"redacted_{current}" in existing:
+        current += 1
+    return f"redacted_{current}"
 
 
 def _path_is_sensitive(path: tuple[str, ...]) -> bool:

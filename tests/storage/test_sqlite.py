@@ -493,23 +493,23 @@ def test_response_json_redacts_sensitive_details() -> None:
 
     assert payload["warnings"][0]["details"] == {
         "provider": "manual_fixture",
-        "message": REDACTED_VALUE,
-        "headers": REDACTED_VALUE,
-        "nested": REDACTED_VALUE,
+        "redacted_1": REDACTED_VALUE,
+        "redacted_2": REDACTED_VALUE,
+        "redacted_3": REDACTED_VALUE,
     }
     assert payload["errors"][0]["details"] == {
         "exception_type": "ProviderError",
-        "url": REDACTED_VALUE,
-        "raw_error": REDACTED_VALUE,
+        "redacted_1": REDACTED_VALUE,
+        "redacted_2": REDACTED_VALUE,
     }
     assert payload["provider_statuses"][0]["warnings"][0]["details"] == {
-        "session": REDACTED_VALUE
+        "redacted_1": REDACTED_VALUE
     }
     assert payload["provider_statuses"][0]["errors"][0]["details"] == {
         "provider": "manual_fixture",
         "failure_type": "blocked",
-        "debug": REDACTED_VALUE,
-        "challenge_token": REDACTED_VALUE,
+        "redacted_1": REDACTED_VALUE,
+        "redacted_2": REDACTED_VALUE,
     }
     assert "Bearer top-secret" in response.model_dump_json()
     assert "Bearer top-secret" not in sanitized.model_dump_json()
@@ -557,7 +557,7 @@ def test_response_json_preserves_allowlisted_details_recursively() -> None:
         "value": "CXR",
         "reason": {
             "failure_type": "timeout",
-            "raw_error": REDACTED_VALUE,
+            "redacted_1": REDACTED_VALUE,
         },
         "registry_error_type": "ProviderLoadError",
         "exception_type": "RuntimeError",
@@ -648,6 +648,55 @@ def test_response_json_redacts_raw_stack_allowlisted_reason() -> None:
         "exception_type": "OperationalError",
         "value": "ZZZ",
     }
+
+
+def test_stored_response_json_replaces_sensitive_and_unknown_detail_keys(
+    tmp_path: Path,
+) -> None:
+    response = _response(
+        errors=[
+            ErrorV1(
+                code=ErrorCode.PROVIDER_FAILED,
+                severity=Severity.ERROR,
+                message_en="Provider failed.",
+                details={
+                    "provider": "manual_fixture",
+                    "https://example.test/token=secret": "dynamic sensitive key",
+                    "authorization_header": "Bearer secret",
+                    "raw_provider_payload": {"body": "secret payload"},
+                    "unknown_context": "safe-looking internal text",
+                },
+                retryable=True,
+            )
+        ],
+    )
+
+    with open_database(tmp_path / "cheapy.sqlite3") as conn:
+        run_id = insert_search_snapshot(
+            conn,
+            _request(),
+            response,
+            now_utc="2026-05-26T10:00:00Z",
+        )
+        response_json = conn.execute(
+            "SELECT response_json FROM search_runs WHERE id = ?", (run_id,)
+        ).fetchone()["response_json"]
+
+    assert "https://example.test" not in response_json
+    assert "authorization_header" not in response_json
+    assert "raw_provider_payload" not in response_json
+    assert "unknown_context" not in response_json
+    assert "dynamic sensitive key" not in response_json
+    assert "safe-looking internal text" not in response_json
+
+    details = json.loads(response_json)["errors"][0]["details"]
+    assert details["provider"] == "manual_fixture"
+    assert set(details) == {"provider", "redacted_1", "redacted_2", "redacted_3", "redacted_4"}
+    assert all(
+        value == REDACTED_VALUE
+        for key, value in details.items()
+        if key.startswith("redacted_")
+    )
 
 
 def test_history_list_and_show_return_summaries(tmp_path: Path) -> None:
@@ -828,3 +877,50 @@ def test_watchlist_add_list_get_and_record_check(tmp_path: Path) -> None:
             "currency": "VND",
             "rationale": {"matched": True, "reasons": ["below_max_price"]},
         }
+
+
+def test_record_watchlist_check_sanitizes_rationale_json(tmp_path: Path) -> None:
+    with open_database(tmp_path / "cheapy.sqlite3") as conn:
+        watchlist = add_watchlist(
+            conn,
+            name="CXR to SGN",
+            origin="CXR",
+            destination="SGN",
+            departure_date="2026-07-10",
+            now_utc="2026-05-26T10:00:00Z",
+        )
+
+        check = record_watchlist_check(
+            conn,
+            watchlist_id=watchlist["id"],
+            checked_at_utc="2026-05-26T10:01:00Z",
+            decision="skip",
+            rationale={
+                "matched": False,
+                "reasons": ["price_above_limit"],
+                "token": "secret-token",
+                "https://example.test/token=secret": "dynamic sensitive key",
+                "raw_provider_payload": {"body": "secret payload"},
+                "unknown_context": "safe-looking internal text",
+                "provider_status": "Bearer provider-token",
+            },
+        )
+        rationale_json = conn.execute(
+            "SELECT rationale_json FROM watchlist_checks WHERE id = ?",
+            (check["id"],),
+        ).fetchone()["rationale_json"]
+
+    assert "secret-token" not in rationale_json
+    assert "https://example.test" not in rationale_json
+    assert "raw_provider_payload" not in rationale_json
+    assert "unknown_context" not in rationale_json
+    assert "safe-looking internal text" not in rationale_json
+    assert "provider-token" not in rationale_json
+    assert REDACTED_VALUE in rationale_json
+
+    rationale = json.loads(rationale_json)
+    assert rationale["matched"] is False
+    assert rationale["reasons"] == ["price_above_limit"]
+    assert "provider_status" in rationale
+    assert rationale["provider_status"] == REDACTED_VALUE
+    assert any(key.startswith("redacted_") for key in rationale)
