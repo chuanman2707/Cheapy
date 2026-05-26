@@ -10,6 +10,7 @@ import itertools
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import sys
 from typing import Any
@@ -42,6 +43,10 @@ _SENSITIVE_VALUE_MARKERS = (
     "error message",
     "error-message",
     "error_message",
+)
+_OPAQUE_CREDENTIAL_PATTERNS = (
+    re.compile(r"\bsk_(?:live|test)_[A-Za-z0-9]{10,}\b"),
+    re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),
 )
 _SAFE_DETAIL_KEYS = frozenset(
     {
@@ -108,12 +113,15 @@ def open_database(path: Path | None = None) -> Iterator[sqlite3.Connection]:
     if is_storage_disabled():
         raise StorageDisabled("Cheapy local storage is disabled")
 
+    using_default_path = path is None and not os.environ.get("CHEAPY_DB_PATH")
     db_path = resolve_db_path() if path is None else Path(path).expanduser()
     db_existed = db_path.exists()
+    parent_existed = db_path.parent.exists()
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    # Hardening is best-effort and applies to the resolved DB path parent,
-    # including CHEAPY_DB_PATH override directories.
-    _best_effort_chmod(db_path.parent, 0o700)
+    # Parent hardening is best-effort for app-owned/default paths or newly
+    # created directories; existing override parents are left as configured.
+    if using_default_path or not parent_existed:
+        _best_effort_chmod(db_path.parent, 0o700)
     if db_existed:
         _best_effort_chmod(db_path, 0o600)
 
@@ -591,11 +599,11 @@ def add_watchlist(
     max_results: int = 5,
     now_utc: str | None = None,
 ) -> dict[str, Any]:
-    """Create one enabled watchlist, owning one transaction for the operation."""
+    """Create one enabled watchlist, owning one savepoint transaction."""
 
     created_at = now_utc or _now_utc()
     normalized_currency = currency.strip().upper() if currency else None
-    with conn:
+    with _savepoint(conn, "cheapy_watchlist"):
         cursor = conn.execute(
             """
             INSERT INTO watchlists (
@@ -677,14 +685,14 @@ def record_watchlist_check(
     best_price_amount: float | None = None,
     currency: str | None = None,
 ) -> dict[str, Any]:
-    """Record one watchlist check, owning one transaction for the operation."""
+    """Record one watchlist check, owning one savepoint transaction."""
 
     checked_at = checked_at_utc or _now_utc()
     rationale_json = _json_dumps(
         _redact_sensitive_detail(dict(rationale or {}), safe_keys=_SAFE_RATIONALE_KEYS)
     )
     normalized_currency = currency.strip().upper() if currency else None
-    with conn:
+    with _savepoint(conn, "cheapy_watchlist_check"):
         cursor = conn.execute(
             """
             INSERT INTO watchlist_checks (
@@ -887,6 +895,7 @@ def _value_is_sensitive(value: Any) -> bool:
         return (
             any(word in lowered for word in _SENSITIVE_DETAIL_WORDS)
             or any(marker in lowered for marker in _SENSITIVE_VALUE_MARKERS)
+            or any(pattern.search(value) for pattern in _OPAQUE_CREDENTIAL_PATTERNS)
             or "bearer " in lowered
             or "http://" in lowered
             or "https://" in lowered

@@ -334,6 +334,27 @@ def test_open_database_rehardens_existing_db_file(tmp_path: Path) -> None:
     assert (db_path.stat().st_mode & 0o077) == 0
 
 
+def test_open_database_does_not_chmod_existing_env_override_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if os.name != "posix":
+        pytest.skip("POSIX file mode hardening is only asserted on POSIX")
+
+    parent = tmp_path / "existing-user-dir"
+    parent.mkdir()
+    parent.chmod(0o755)
+    db_path = parent / "cheapy.sqlite3"
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(db_path))
+
+    with open_database() as conn:
+        assert conn.execute(
+            "SELECT value FROM schema_metadata WHERE key = 'schema_version'"
+        ).fetchone()[0] == "1"
+
+    assert (parent.stat().st_mode & 0o777) == 0o755
+    assert (db_path.stat().st_mode & 0o077) == 0
+
+
 def test_open_database_disabled_does_not_create_db(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -750,6 +771,34 @@ def test_response_json_redacts_sensitive_allowlisted_values() -> None:
     assert "provider-token" not in payload["errors"][0]["details"].values()
 
 
+def test_response_json_redacts_opaque_credential_allowlisted_values() -> None:
+    response = _response(
+        errors=[
+            ErrorV1(
+                code=ErrorCode.PROVIDER_FAILED,
+                severity=Severity.ERROR,
+                message_en="Provider failed.",
+                details={
+                    "value": "sk_live_1234567890abcdef",
+                    "reason": "AKIAIOSFODNN7EXAMPLE",
+                    "exception_type": "OperationalError",
+                },
+                retryable=True,
+            )
+        ],
+    )
+
+    details = sanitize_response_for_storage(response).model_dump(mode="json")[
+        "errors"
+    ][0]["details"]
+
+    assert details == {
+        "value": REDACTED_VALUE,
+        "reason": REDACTED_VALUE,
+        "exception_type": "OperationalError",
+    }
+
+
 def test_response_json_redacts_raw_stack_allowlisted_reason() -> None:
     response = _response(
         errors=[
@@ -938,6 +987,61 @@ def test_history_list_handles_mixed_currency_without_global_best(tmp_path: Path)
                 ],
             }
         ]
+
+
+def test_add_watchlist_respects_caller_managed_transaction(tmp_path: Path) -> None:
+    with open_database(tmp_path / "cheapy.sqlite3") as conn:
+        conn.execute("BEGIN")
+
+        watchlist = add_watchlist(
+            conn,
+            name="CXR to SGN",
+            origin="CXR",
+            destination="SGN",
+            departure_date="2026-07-10",
+            now_utc="2026-05-26T10:00:00Z",
+        )
+
+        assert conn.in_transaction is True
+        conn.execute("ROLLBACK")
+        assert get_watchlist(conn, watchlist["id"]) is None
+
+
+def test_record_watchlist_check_respects_caller_managed_transaction(
+    tmp_path: Path,
+) -> None:
+    with open_database(tmp_path / "cheapy.sqlite3") as conn:
+        watchlist = add_watchlist(
+            conn,
+            name="CXR to SGN",
+            origin="CXR",
+            destination="SGN",
+            departure_date="2026-07-10",
+            now_utc="2026-05-26T10:00:00Z",
+        )
+        run_id = insert_search_snapshot(
+            conn,
+            _request(),
+            _response(),
+            now_utc="2026-05-26T11:00:00Z",
+        )
+
+        conn.execute("BEGIN")
+        check = record_watchlist_check(
+            conn,
+            watchlist_id=watchlist["id"],
+            search_run_id=run_id,
+            checked_at_utc="2026-05-26T11:01:00Z",
+            decision="notify",
+            rationale={"matched": True, "reasons": ["below_max_price"]},
+        )
+
+        assert conn.in_transaction is True
+        conn.execute("ROLLBACK")
+        assert conn.execute(
+            "SELECT COUNT(*) FROM watchlist_checks WHERE id = ?",
+            (check["id"],),
+        ).fetchone()[0] == 0
 
 
 def test_watchlist_add_list_get_and_record_check(tmp_path: Path) -> None:
