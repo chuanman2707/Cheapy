@@ -1,6 +1,7 @@
 """CLI baseline tests."""
 
 import json
+import sqlite3
 from typing import Any
 
 from typer.testing import CliRunner
@@ -688,3 +689,59 @@ def test_history_commands_fail_when_storage_disabled(monkeypatch) -> None:
         assert result.stdout == ""
         assert json.loads(result.stderr)["code"] == "STORAGE_DISABLED"
     assert opened_database is False
+
+
+def test_history_list_reports_storage_open_error_without_details(monkeypatch) -> None:
+    secret_path = "/tmp/secret-cheapy-token.sqlite3"
+
+    def raise_open_error():
+        raise OSError(f"cannot open {secret_path}")
+
+    monkeypatch.setattr("cheapy.cli.storage.open_database", raise_open_error)
+
+    result = runner.invoke(app, ["history", "list"])
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert json.loads(result.stderr) == {
+        "error": True,
+        "code": "HISTORY_STORAGE_ERROR",
+        "message": "Local search history could not be read.",
+        "suggestion": "Verify local storage permissions or set CHEAPY_DB_PATH to a readable SQLite database.",
+    }
+    assert secret_path not in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_history_show_reports_storage_read_error_without_details(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    secret_path = "/tmp/secret-cheapy-token.sqlite3"
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(tmp_path / "cheapy.sqlite3"))
+
+    def raise_read_error(conn, run_id):
+        raise sqlite3.OperationalError(f"cannot read {secret_path}")
+
+    monkeypatch.setattr("cheapy.cli.storage.show_history", raise_read_error)
+
+    result = runner.invoke(app, ["history", "show", "1"])
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert json.loads(result.stderr) == {
+        "error": True,
+        "code": "HISTORY_STORAGE_ERROR",
+        "message": "Local search history could not be read.",
+        "suggestion": "Verify local storage permissions or set CHEAPY_DB_PATH to a readable SQLite database.",
+    }
+    assert secret_path not in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_history_without_subcommand_prints_help_successfully() -> None:
+    result = runner.invoke(app, ["history"])
+
+    assert result.exit_code == 0
+    assert "Inspect local Cheapy search history." in result.stdout
+    assert result.stderr == ""

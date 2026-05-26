@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sqlite3
 import sys
 from typing import Any
 
@@ -84,7 +85,8 @@ providers_app = typer.Typer(
 )
 history_app = typer.Typer(
     help="Inspect local Cheapy search history.",
-    no_args_is_help=True,
+    no_args_is_help=False,
+    invoke_without_command=True,
 )
 mcp_app = typer.Typer(
     help="Run or install the Cheapy MCP server.",
@@ -201,6 +203,26 @@ def _storage_disabled_exit() -> None:
     raise typer.Exit(code=1)
 
 
+def _history_storage_error_exit() -> None:
+    _json_echo(
+        _error_payload(
+            "HISTORY_STORAGE_ERROR",
+            "Local search history could not be read.",
+            "Verify local storage permissions or set CHEAPY_DB_PATH to a readable SQLite database.",
+        ),
+        err=True,
+    )
+    raise typer.Exit(code=1)
+
+
+@history_app.callback(invoke_without_command=True)
+def history(ctx: typer.Context) -> None:
+    """Inspect local Cheapy search history."""
+    if ctx.invoked_subcommand is None:
+        typer.echo(ctx.get_help())
+        raise typer.Exit()
+
+
 @history_app.command("list")
 def history_list(
     limit: int = typer.Option(
@@ -215,8 +237,13 @@ def history_list(
     if storage.is_storage_disabled():
         _storage_disabled_exit()
 
-    with storage.open_database() as conn:
-        runs = storage.list_history(conn, limit=limit)
+    try:
+        with storage.open_database() as conn:
+            runs = storage.list_history(conn, limit=limit)
+    except storage.StorageDisabled:
+        _storage_disabled_exit()
+    except (OSError, sqlite3.Error):
+        _history_storage_error_exit()
     _json_echo({"status": "ok", "runs": runs})
 
 
@@ -226,8 +253,13 @@ def history_show(run_id: int = typer.Argument(..., help="Search run id.")) -> No
     if storage.is_storage_disabled():
         _storage_disabled_exit()
 
-    with storage.open_database() as conn:
-        payload = storage.show_history(conn, run_id)
+    try:
+        with storage.open_database() as conn:
+            payload = storage.show_history(conn, run_id)
+    except storage.StorageDisabled:
+        _storage_disabled_exit()
+    except (OSError, sqlite3.Error):
+        _history_storage_error_exit()
     if payload is None:
         _json_echo(
             _error_payload(
