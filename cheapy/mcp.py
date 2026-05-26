@@ -9,14 +9,14 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import ConfigDict, Field
 
 from cheapy.models import PassengersV1, SearchMode, SearchRequestV1, SearchResponseV1
-from cheapy.search import search_exact
+from cheapy.search_service import search_with_storage
 
 
 _TOOL_ANNOTATIONS: dict[str, object] = {
     "title": "Search Cheapest Flights",
-    "readOnlyHint": True,
+    "readOnlyHint": False,
     "destructiveHint": False,
-    "idempotentHint": True,
+    "idempotentHint": False,
     "openWorldHint": True,
 }
 
@@ -52,7 +52,8 @@ def create_mcp_server() -> FastMCP:
                 max_results=max_results,
             )
         )
-        return await asyncio.to_thread(search_exact, request)
+        result = await asyncio.to_thread(search_with_storage, request)
+        return result.response
 
     # FastMCP otherwise coerces scalar inputs and drops extra args before the
     # strict SearchRequestV1 boundary, so the SDK minor is capped and this

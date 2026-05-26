@@ -10,6 +10,7 @@ from mcp.client.stdio import stdio_client
 
 from cheapy.mcp import create_mcp_server
 from cheapy.models import SearchMode, SearchResponseV1, SearchStatus
+from cheapy.search_service import SearchWithStorageResult
 
 
 T = TypeVar("T")
@@ -130,22 +131,25 @@ def test_mcp_search_tool_uses_top_level_contract_fields() -> None:
     assert properties["max_results"]["maximum"] == 20
 
 
-def test_mcp_search_tool_annotation_marks_open_world() -> None:
+def test_mcp_search_tool_annotations_reflect_local_history_write() -> None:
     tool = _mcp_tool()
 
     assert tool.annotations.openWorldHint is True
+    assert tool.annotations.readOnlyHint is False
+    assert tool.annotations.idempotentHint is False
+    assert tool.annotations.destructiveHint is False
 
 
 def test_mcp_search_tool_returns_structured_contract_response(
     monkeypatch: Any,
 ) -> None:
-    def fake_search_exact(request: Any) -> SearchResponseV1:
+    def fake_search_with_storage(request: Any) -> SearchWithStorageResult:
         assert request.origin == "CXR"
         assert request.destination == "SGN"
         assert request.departure_date == "2026-07-10"
         assert request.return_date == "2026-07-15"
         assert request.search_mode == SearchMode.EXPANDED
-        return SearchResponseV1.model_validate(
+        response = SearchResponseV1.model_validate(
             {
                 "schema_version": "1",
                 "status": "success",
@@ -175,8 +179,14 @@ def test_mcp_search_tool_returns_structured_contract_response(
                 "candidates": None,
             }
         )
+        return SearchWithStorageResult(
+            response=response,
+            search_run_id=1,
+            storage_enabled=True,
+            storage_warning=None,
+        )
 
-    monkeypatch.setattr("cheapy.mcp.search_exact", fake_search_exact)
+    monkeypatch.setattr("cheapy.mcp.search_with_storage", fake_search_with_storage)
     tool = _mcp_tool()
     arguments = {
         "schema_version": "1",
