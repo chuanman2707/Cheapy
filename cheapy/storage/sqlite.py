@@ -31,6 +31,21 @@ _SENSITIVE_DETAIL_WORDS = (
     "authorization",
     "challenge",
 )
+_SAFE_DETAIL_KEYS = frozenset(
+    {
+        "provider",
+        "capability",
+        "candidate_family",
+        "field",
+        "value",
+        "reason",
+        "registry_error_type",
+        "exception_type",
+        "failure_type",
+        "provider_status",
+        "storage_backend",
+    }
+)
 
 
 class StorageDisabled(RuntimeError):
@@ -80,7 +95,6 @@ def open_database(path: Path | None = None) -> Iterator[sqlite3.Connection]:
         raise StorageDisabled("Cheapy local storage is disabled")
 
     db_path = resolve_db_path() if path is None else Path(path).expanduser()
-    db_existed = db_path.exists()
     db_path.parent.mkdir(parents=True, exist_ok=True)
     _best_effort_chmod(db_path.parent, 0o700)
 
@@ -89,8 +103,7 @@ def open_database(path: Path | None = None) -> Iterator[sqlite3.Connection]:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         migrate(conn)
-        if not db_existed:
-            _best_effort_chmod(db_path, 0o600)
+        _best_effort_chmod(db_path, 0o600)
         yield conn
     finally:
         conn.close()
@@ -738,10 +751,14 @@ def _redact_sensitive_detail(value: Any, path: tuple[str, ...] = ()) -> Any:
     if _path_is_sensitive(path):
         return REDACTED_VALUE
     if isinstance(value, dict):
-        return {
-            key: _redact_sensitive_detail(child, path + (str(key),))
-            for key, child in value.items()
-        }
+        redacted: dict[str, Any] = {}
+        for key, child in value.items():
+            child_path = path + (str(key),)
+            if _path_is_sensitive(child_path) or key not in _SAFE_DETAIL_KEYS:
+                redacted[key] = REDACTED_VALUE
+            else:
+                redacted[key] = _redact_sensitive_detail(child, child_path)
+        return redacted
     if isinstance(value, list):
         return [_redact_sensitive_detail(item, path) for item in value]
     return value

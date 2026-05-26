@@ -29,6 +29,7 @@ from cheapy.models import (
 )
 from cheapy.storage.sqlite import (
     REDACTED_VALUE,
+    StorageDisabled,
     add_watchlist,
     get_watchlist,
     insert_search_snapshot,
@@ -228,6 +229,36 @@ def test_open_database_migrates_idempotently_and_hardens_file(tmp_path: Path) ->
         assert (db_path.stat().st_mode & 0o777) == 0o600
 
 
+def test_open_database_rehardens_existing_db_file(tmp_path: Path) -> None:
+    if os.name != "posix":
+        pytest.skip("POSIX file mode hardening is only asserted on POSIX")
+
+    db_path = tmp_path / "data" / "cheapy.sqlite3"
+    db_path.parent.mkdir(parents=True)
+    db_path.touch()
+    db_path.chmod(0o644)
+
+    with open_database(db_path) as conn:
+        assert conn.execute(
+            "SELECT value FROM schema_metadata WHERE key = 'schema_version'"
+        ).fetchone()[0] == "1"
+
+    assert (db_path.stat().st_mode & 0o077) == 0
+
+
+def test_open_database_disabled_does_not_create_db(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "disabled" / "cheapy.sqlite3"
+    monkeypatch.setenv("CHEAPY_DISABLE_STORAGE", "1")
+
+    with pytest.raises(StorageDisabled):
+        with open_database(db_path):
+            raise AssertionError("disabled storage must not open a connection")
+
+    assert not db_path.exists()
+
+
 def test_insert_search_snapshot_persists_safe_rows(tmp_path: Path) -> None:
     with open_database(tmp_path / "cheapy.sqlite3") as conn:
         run_id = insert_search_snapshot(
@@ -346,7 +377,8 @@ def test_response_json_redacts_sensitive_details() -> None:
                 severity=Severity.WARNING,
                 message_en="Fare details were not collected.",
                 details={
-                    "safe": "kept",
+                    "provider": "manual_fixture",
+                    "message": "raw provider text must not persist",
                     "headers": {"authorization": "Bearer top-secret"},
                     "nested": {"request_body": "secret body"},
                 },
@@ -358,7 +390,11 @@ def test_response_json_redacts_sensitive_details() -> None:
                 code=ErrorCode.PROVIDER_FAILED,
                 severity=Severity.ERROR,
                 message_en="Provider failed.",
-                details={"url": "https://secret.example", "plain": "kept"},
+                details={
+                    "exception_type": "ProviderError",
+                    "url": "https://secret.example",
+                    "raw_error": "raw provider stack must not persist",
+                },
                 retryable=False,
             )
         ],
@@ -383,6 +419,8 @@ def test_response_json_redacts_sensitive_details() -> None:
                         message_en="Provider error.",
                         details={
                             "provider": "manual_fixture",
+                            "failure_type": "blocked",
+                            "debug": "raw provider debug must not persist",
                             "challenge_token": "secret-provider-token",
                         },
                         retryable=False,
@@ -396,24 +434,78 @@ def test_response_json_redacts_sensitive_details() -> None:
     payload = sanitized.model_dump(mode="json")
 
     assert payload["warnings"][0]["details"] == {
-        "safe": "kept",
+        "provider": "manual_fixture",
+        "message": REDACTED_VALUE,
         "headers": REDACTED_VALUE,
-        "nested": {"request_body": REDACTED_VALUE},
+        "nested": REDACTED_VALUE,
     }
     assert payload["errors"][0]["details"] == {
+        "exception_type": "ProviderError",
         "url": REDACTED_VALUE,
-        "plain": "kept",
+        "raw_error": REDACTED_VALUE,
     }
     assert payload["provider_statuses"][0]["warnings"][0]["details"] == {
         "session": REDACTED_VALUE
     }
     assert payload["provider_statuses"][0]["errors"][0]["details"] == {
         "provider": "manual_fixture",
+        "failure_type": "blocked",
+        "debug": REDACTED_VALUE,
         "challenge_token": REDACTED_VALUE,
     }
     assert "Bearer top-secret" in response.model_dump_json()
     assert "Bearer top-secret" not in sanitized.model_dump_json()
     assert "secret-provider-token" not in sanitized.model_dump_json()
+    assert "raw provider text" not in sanitized.model_dump_json()
+    assert "raw provider debug" not in sanitized.model_dump_json()
+
+
+def test_response_json_preserves_allowlisted_details_recursively() -> None:
+    response = _response(
+        errors=[
+            ErrorV1(
+                code=ErrorCode.PROVIDER_FAILED,
+                severity=Severity.ERROR,
+                message_en="Provider failed.",
+                details={
+                    "provider": "manual_fixture",
+                    "capability": "exact_one_way",
+                    "candidate_family": "exact",
+                    "field": "origin",
+                    "value": "CXR",
+                    "reason": {
+                        "failure_type": "timeout",
+                        "raw_error": "provider said raw timeout text",
+                    },
+                    "registry_error_type": "ProviderLoadError",
+                    "exception_type": "RuntimeError",
+                    "provider_status": "failed",
+                    "storage_backend": "sqlite",
+                },
+                retryable=True,
+            )
+        ],
+    )
+
+    details = sanitize_response_for_storage(response).model_dump(mode="json")[
+        "errors"
+    ][0]["details"]
+
+    assert details == {
+        "provider": "manual_fixture",
+        "capability": "exact_one_way",
+        "candidate_family": "exact",
+        "field": "origin",
+        "value": "CXR",
+        "reason": {
+            "failure_type": "timeout",
+            "raw_error": REDACTED_VALUE,
+        },
+        "registry_error_type": "ProviderLoadError",
+        "exception_type": "RuntimeError",
+        "provider_status": "failed",
+        "storage_backend": "sqlite",
+    }
 
 
 def test_history_list_and_show_return_summaries(tmp_path: Path) -> None:
