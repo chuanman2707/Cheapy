@@ -169,6 +169,33 @@ def test_evaluate_watchlist_books_when_threshold_met() -> None:
     assert decision["provider_confidence"] == "high"
 
 
+def test_evaluate_watchlist_does_not_book_non_comparable_offer() -> None:
+    response = _response(
+        offers=[
+            _offer(
+                offer_id="fixture:non-comparable",
+                comparable=False,
+                price_amount=999_000.0,
+            )
+        ]
+    )
+
+    decision = evaluate_watchlist(
+        response=response,
+        watchlist=_watchlist(max_price_amount=1_300_000.0),
+        historical_comparison=_historical_comparison(),
+    )
+
+    assert decision["decision"] == "watch"
+    assert decision["best_offer"]["offer_id"] == "fixture:non-comparable"
+    assert decision["threshold_comparison"]["threshold_met"] is True
+    assert (
+        "Best fare is below the threshold, but is not comparable enough "
+        "for a booking decision."
+        in decision["rationale"]
+    )
+
+
 def test_evaluate_watchlist_watches_without_threshold() -> None:
     decision = evaluate_watchlist(
         response=_response(),

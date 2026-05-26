@@ -810,6 +810,58 @@ def test_watchlist_add_rejects_non_iata_airport(tmp_path, monkeypatch) -> None:
     assert json.loads(result.stderr)["code"] == "USAGE_ERROR"
 
 
+def test_watchlist_add_rejects_invalid_currency(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(tmp_path / "cheapy.sqlite3"))
+
+    result = runner.invoke(
+        app,
+        [
+            "watchlist",
+            "add",
+            "--name",
+            "Bad currency",
+            "--origin",
+            "CXR",
+            "--destination",
+            "SGN",
+            "--departure-date",
+            "2026-07-10",
+            "--currency",
+            "BAD1",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    assert json.loads(result.stderr)["code"] == "USAGE_ERROR"
+
+
+def test_watchlist_add_rejects_negative_max_price(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(tmp_path / "cheapy.sqlite3"))
+
+    result = runner.invoke(
+        app,
+        [
+            "watchlist",
+            "add",
+            "--name",
+            "Bad price",
+            "--origin",
+            "CXR",
+            "--destination",
+            "SGN",
+            "--departure-date",
+            "2026-07-10",
+            "--max-price-amount",
+            "-1",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    assert json.loads(result.stderr)["code"] == "USAGE_ERROR"
+
+
 def test_watchlist_check_runs_search_records_check_and_prints_decision(
     tmp_path,
     monkeypatch,

@@ -252,6 +252,15 @@ def _normalize_iata(value: str) -> str:
     return normalized
 
 
+def _normalize_currency(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip().upper()
+    if len(normalized) != 3 or not normalized.isascii() or not normalized.isalpha():
+        raise click.BadParameter("Currency must be a 3-letter alphabetic code.")
+    return normalized
+
+
 @history_app.callback(invoke_without_command=True)
 def history(ctx: typer.Context) -> None:
     """Inspect local Cheapy search history."""
@@ -359,7 +368,9 @@ def watchlist_add(
 
     normalized_origin = _normalize_iata(origin)
     normalized_destination = _normalize_iata(destination)
-    currency_code = currency.strip().upper() if currency is not None else None
+    currency_code = _normalize_currency(currency)
+    if max_price_amount is not None and max_price_amount <= 0:
+        raise click.BadParameter("Maximum price must be positive.")
     try:
         SearchRequestV1.model_validate(
             {

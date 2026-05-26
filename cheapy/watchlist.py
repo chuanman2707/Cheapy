@@ -69,7 +69,7 @@ def evaluate_watchlist(
             "watch", best_offer, watchlist, historical_comparison, response, rationale
         )
 
-    if best_offer.price_amount <= float(threshold):
+    if best_offer.price_amount <= float(threshold) and best_offer.comparable:
         rationale.append("Best fare is at or below the configured threshold.")
         return _decision_payload(
             "book_now",
@@ -78,6 +78,15 @@ def evaluate_watchlist(
             historical_comparison,
             response,
             rationale,
+        )
+
+    if best_offer.price_amount <= float(threshold):
+        rationale.append(
+            "Best fare is below the threshold, but is not comparable enough "
+            "for a booking decision."
+        )
+        return _decision_payload(
+            "watch", best_offer, watchlist, historical_comparison, response, rationale
         )
 
     rationale.append("Best fare is above the configured threshold.")
