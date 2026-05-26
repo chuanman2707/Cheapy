@@ -129,136 +129,187 @@ def migrate(conn: sqlite3.Connection) -> None:
     """Apply schema migrations idempotently, owning one migration transaction."""
 
     conn.execute("PRAGMA foreign_keys = ON")
-    with conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS schema_metadata (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
+    conn.execute("BEGIN")
+    try:
+        existing_version = _read_schema_version(conn)
+        if (
+            existing_version is not None
+            and existing_version > CURRENT_SCHEMA_VERSION
+        ):
+            raise RuntimeError(
+                "Cheapy storage schema_version "
+                f"{existing_version} is newer than supported "
+                f"{CURRENT_SCHEMA_VERSION}"
             )
-            """
+        _apply_schema_v1(conn)
+        conn.execute("COMMIT")
+    except BaseException:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+
+
+def _read_schema_version(conn: sqlite3.Connection) -> int | None:
+    metadata_exists = conn.execute(
+        """
+        SELECT 1
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'schema_metadata'
+        """
+    ).fetchone()
+    if metadata_exists is None:
+        return None
+
+    row = conn.execute(
+        "SELECT value FROM schema_metadata WHERE key = ?",
+        ("schema_version",),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        return int(row[0])
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"Invalid Cheapy storage schema_version: {row[0]!r}") from exc
+
+
+def _apply_schema_v1(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS schema_metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
         )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS search_runs (
-                id INTEGER PRIMARY KEY,
-                created_at_utc TEXT NOT NULL,
-                request_id TEXT NOT NULL,
-                schema_version TEXT NOT NULL,
-                status TEXT NOT NULL,
-                trip_type TEXT NOT NULL,
-                origin TEXT NOT NULL,
-                destination TEXT NOT NULL,
-                departure_date TEXT NOT NULL,
-                return_date TEXT,
-                search_mode TEXT NOT NULL,
-                max_results INTEGER NOT NULL,
-                passengers_json TEXT NOT NULL,
-                mixed_currency INTEGER NOT NULL,
-                response_json TEXT NOT NULL
-            )
-            """
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS search_runs (
+            id INTEGER PRIMARY KEY,
+            created_at_utc TEXT NOT NULL,
+            request_id TEXT NOT NULL,
+            schema_version TEXT NOT NULL,
+            status TEXT NOT NULL,
+            trip_type TEXT NOT NULL,
+            origin TEXT NOT NULL,
+            destination TEXT NOT NULL,
+            departure_date TEXT NOT NULL,
+            return_date TEXT,
+            search_mode TEXT NOT NULL,
+            max_results INTEGER NOT NULL,
+            passengers_json TEXT NOT NULL,
+            mixed_currency INTEGER NOT NULL,
+            response_json TEXT NOT NULL
         )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS provider_runs (
-                id INTEGER PRIMARY KEY,
-                search_run_id INTEGER NOT NULL
-                    REFERENCES search_runs(id) ON DELETE CASCADE,
-                provider_name TEXT NOT NULL,
-                capability TEXT NOT NULL,
-                status TEXT NOT NULL,
-                duration_ms INTEGER NOT NULL,
-                offer_count INTEGER NOT NULL,
-                error_count INTEGER NOT NULL,
-                retryable INTEGER NOT NULL
-            )
-            """
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS provider_runs (
+            id INTEGER PRIMARY KEY,
+            search_run_id INTEGER NOT NULL
+                REFERENCES search_runs(id) ON DELETE CASCADE,
+            provider_name TEXT NOT NULL,
+            capability TEXT NOT NULL,
+            status TEXT NOT NULL,
+            duration_ms INTEGER NOT NULL,
+            offer_count INTEGER NOT NULL,
+            error_count INTEGER NOT NULL,
+            retryable INTEGER NOT NULL
         )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS offer_observations (
-                id INTEGER PRIMARY KEY,
-                search_run_id INTEGER NOT NULL
-                    REFERENCES search_runs(id) ON DELETE CASCADE,
-                observed_at_utc TEXT NOT NULL,
-                offer_id TEXT NOT NULL,
-                itinerary_fingerprint TEXT NOT NULL,
-                provider TEXT NOT NULL,
-                actual_origin TEXT NOT NULL,
-                actual_destination TEXT NOT NULL,
-                actual_departure_date TEXT NOT NULL,
-                actual_return_date TEXT,
-                price_amount REAL NOT NULL,
-                currency TEXT NOT NULL,
-                comparable INTEGER NOT NULL,
-                total_duration_minutes INTEGER NOT NULL,
-                stops INTEGER NOT NULL,
-                flags_json TEXT NOT NULL,
-                legs_json TEXT NOT NULL
-            )
-            """
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS offer_observations (
+            id INTEGER PRIMARY KEY,
+            search_run_id INTEGER NOT NULL
+                REFERENCES search_runs(id) ON DELETE CASCADE,
+            observed_at_utc TEXT NOT NULL,
+            offer_id TEXT NOT NULL,
+            itinerary_fingerprint TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            actual_origin TEXT NOT NULL,
+            actual_destination TEXT NOT NULL,
+            actual_departure_date TEXT NOT NULL,
+            actual_return_date TEXT,
+            price_amount REAL NOT NULL,
+            currency TEXT NOT NULL,
+            comparable INTEGER NOT NULL,
+            total_duration_minutes INTEGER NOT NULL,
+            stops INTEGER NOT NULL,
+            flags_json TEXT NOT NULL,
+            legs_json TEXT NOT NULL
         )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS watchlists (
-                id INTEGER PRIMARY KEY,
-                created_at_utc TEXT NOT NULL,
-                updated_at_utc TEXT NOT NULL,
-                name TEXT NOT NULL,
-                enabled INTEGER NOT NULL,
-                origin TEXT NOT NULL,
-                destination TEXT NOT NULL,
-                departure_date TEXT NOT NULL,
-                return_date TEXT,
-                max_price_amount REAL,
-                currency TEXT,
-                max_stops INTEGER,
-                max_results INTEGER NOT NULL
-            )
-            """
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS watchlists (
+            id INTEGER PRIMARY KEY,
+            created_at_utc TEXT NOT NULL,
+            updated_at_utc TEXT NOT NULL,
+            name TEXT NOT NULL,
+            enabled INTEGER NOT NULL,
+            origin TEXT NOT NULL,
+            destination TEXT NOT NULL,
+            departure_date TEXT NOT NULL,
+            return_date TEXT,
+            max_price_amount REAL,
+            currency TEXT,
+            max_stops INTEGER,
+            max_results INTEGER NOT NULL
         )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS watchlist_checks (
-                id INTEGER PRIMARY KEY,
-                watchlist_id INTEGER NOT NULL
-                    REFERENCES watchlists(id) ON DELETE CASCADE,
-                search_run_id INTEGER
-                    REFERENCES search_runs(id) ON DELETE SET NULL,
-                checked_at_utc TEXT NOT NULL,
-                decision TEXT NOT NULL,
-                best_offer_id TEXT,
-                best_price_amount REAL,
-                currency TEXT,
-                rationale_json TEXT NOT NULL
-            )
-            """
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS watchlist_checks (
+            id INTEGER PRIMARY KEY,
+            watchlist_id INTEGER NOT NULL
+                REFERENCES watchlists(id) ON DELETE CASCADE,
+            search_run_id INTEGER
+                REFERENCES search_runs(id) ON DELETE SET NULL,
+            checked_at_utc TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            best_offer_id TEXT,
+            best_price_amount REAL,
+            currency TEXT,
+            rationale_json TEXT NOT NULL
         )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_search_runs_created_at_utc "
-            "ON search_runs(created_at_utc)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_search_runs_route_dates "
-            "ON search_runs(origin, destination, departure_date, return_date)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_offer_observations_fingerprint_observed "
-            "ON offer_observations(itinerary_fingerprint, observed_at_utc)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_watchlist_checks_watchlist_checked "
-            "ON watchlist_checks(watchlist_id, checked_at_utc)"
-        )
-        conn.execute(
-            """
-            INSERT INTO schema_metadata(key, value)
-            VALUES (?, ?)
-            ON CONFLICT(key) DO UPDATE SET value = excluded.value
-            """,
-            ("schema_version", str(CURRENT_SCHEMA_VERSION)),
-        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_search_runs_created_at_utc "
+        "ON search_runs(created_at_utc)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_search_runs_route_dates "
+        "ON search_runs(origin, destination, departure_date, return_date)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_provider_runs_search_run_id "
+        "ON provider_runs(search_run_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_offer_observations_search_run_id "
+        "ON offer_observations(search_run_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_offer_observations_fingerprint_observed "
+        "ON offer_observations(itinerary_fingerprint, observed_at_utc)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_watchlist_checks_watchlist_checked "
+        "ON watchlist_checks(watchlist_id, checked_at_utc)"
+    )
+    conn.execute(
+        """
+        INSERT INTO schema_metadata(key, value)
+        VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """,
+        ("schema_version", str(CURRENT_SCHEMA_VERSION)),
+    )
 
 
 def insert_search_snapshot(

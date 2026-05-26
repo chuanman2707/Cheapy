@@ -224,10 +224,97 @@ def test_open_database_migrates_idempotently_and_hardens_file(tmp_path: Path) ->
             "watchlists",
             "watchlist_checks",
         } <= table_names
+        index_names = {
+            row["name"]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+            )
+        }
+        assert {
+            "idx_search_runs_created_at_utc",
+            "idx_search_runs_route_dates",
+            "idx_provider_runs_search_run_id",
+            "idx_offer_observations_search_run_id",
+            "idx_offer_observations_fingerprint_observed",
+            "idx_watchlist_checks_watchlist_checked",
+        } <= index_names
 
     if os.name == "posix":
         assert (db_path.parent.stat().st_mode & 0o777) == 0o700
         assert (db_path.stat().st_mode & 0o777) == 0o600
+
+
+def test_migrate_rolls_back_partial_schema_on_failure(tmp_path: Path) -> None:
+    conn = sqlite3.connect(tmp_path / "broken-migration.sqlite3")
+    conn.row_factory = sqlite3.Row
+
+    def deny_provider_runs_table(
+        action: int,
+        arg1: str | None,
+        arg2: str | None,
+        db_name: str | None,
+        source: str | None,
+    ) -> int:
+        if action == sqlite3.SQLITE_CREATE_TABLE and arg1 == "provider_runs":
+            return sqlite3.SQLITE_DENY
+        return sqlite3.SQLITE_OK
+
+    conn.set_authorizer(deny_provider_runs_table)
+    try:
+        with pytest.raises(sqlite3.DatabaseError):
+            migrate(conn)
+    finally:
+        conn.set_authorizer(None)
+
+    table_names = {
+        row["name"]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
+    assert not (
+        {
+            "schema_metadata",
+            "search_runs",
+            "provider_runs",
+            "offer_observations",
+            "watchlists",
+            "watchlist_checks",
+        }
+        & table_names
+    )
+    conn.close()
+
+
+def test_migrate_rejects_future_schema_version_without_downgrade(
+    tmp_path: Path,
+) -> None:
+    conn = sqlite3.connect(tmp_path / "future-schema.sqlite3")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """
+        CREATE TABLE schema_metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO schema_metadata(key, value) VALUES (?, ?)",
+        ("schema_version", "999"),
+    )
+    conn.commit()
+
+    with pytest.raises(RuntimeError, match="999"):
+        migrate(conn)
+
+    assert conn.execute(
+        "SELECT value FROM schema_metadata WHERE key = 'schema_version'"
+    ).fetchone()[0] == "999"
+    table_names = {
+        row["name"]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
+    assert "search_runs" not in table_names
+    conn.close()
 
 
 def test_open_database_rehardens_existing_db_file(tmp_path: Path) -> None:
