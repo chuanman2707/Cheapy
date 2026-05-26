@@ -1208,6 +1208,182 @@ def test_watchlist_historical_comparison_filters_actual_itinerary_dates(
     }
 
 
+def test_watchlist_historical_comparison_filters_actual_origin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(tmp_path / "cheapy.sqlite3"))
+    watchlist_data = {
+        "origin": "CXR",
+        "destination": "SGN",
+        "departure_date": "2026-07-10",
+        "return_date": None,
+        "currency": "VND",
+    }
+    matching_offer = _offer(
+        offer_id="fixture:matching-origin",
+        price_amount=1_280_000.0,
+    )
+    off_origin_offer = _offer(
+        offer_id="fixture:off-origin",
+        actual_origin="HAN",
+        price_amount=900_000.0,
+    )
+
+    with sqlite_storage.open_database() as conn:
+        sqlite_storage.insert_search_snapshot(
+            conn,
+            _request(),
+            _response(offers=[matching_offer, off_origin_offer]),
+            now_utc="2026-05-01T00:00:00Z",
+        )
+        comparison = sqlite_storage.watchlist_historical_comparison(
+            conn, watchlist_data
+        )
+
+    assert comparison == {
+        "historical_low": 1_280_000.0,
+        "latest_price_amount": 1_280_000.0,
+        "currency": "VND",
+    }
+
+
+def test_watchlist_historical_comparison_filters_actual_destination(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(tmp_path / "cheapy.sqlite3"))
+    watchlist_data = {
+        "origin": "CXR",
+        "destination": "SGN",
+        "departure_date": "2026-07-10",
+        "return_date": None,
+        "currency": "VND",
+    }
+    matching_offer = _offer(
+        offer_id="fixture:matching-destination",
+        price_amount=1_280_000.0,
+    )
+    off_destination_offer = _offer(
+        offer_id="fixture:off-destination",
+        actual_destination="HAN",
+        price_amount=900_000.0,
+    )
+
+    with sqlite_storage.open_database() as conn:
+        sqlite_storage.insert_search_snapshot(
+            conn,
+            _request(),
+            _response(offers=[matching_offer, off_destination_offer]),
+            now_utc="2026-05-01T00:00:00Z",
+        )
+        comparison = sqlite_storage.watchlist_historical_comparison(
+            conn, watchlist_data
+        )
+
+    assert comparison == {
+        "historical_low": 1_280_000.0,
+        "latest_price_amount": 1_280_000.0,
+        "currency": "VND",
+    }
+
+
+def test_watchlist_historical_comparison_filters_round_trip_actual_return_date(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(tmp_path / "cheapy.sqlite3"))
+    watchlist_data = {
+        "origin": "CXR",
+        "destination": "SGN",
+        "departure_date": "2026-07-10",
+        "return_date": "2026-07-15",
+        "currency": "VND",
+    }
+    matching_offer = _offer(
+        offer_id="fixture:matching-return",
+        requested_return_date="2026-07-15",
+        actual_return_date="2026-07-15",
+        return_offset_days=0,
+        price_amount=1_280_000.0,
+    )
+    off_return_offer = _offer(
+        offer_id="fixture:off-return",
+        requested_return_date="2026-07-15",
+        actual_return_date="2026-07-16",
+        return_offset_days=1,
+        price_amount=900_000.0,
+    )
+
+    with sqlite_storage.open_database() as conn:
+        sqlite_storage.insert_search_snapshot(
+            conn,
+            _request(return_date="2026-07-15"),
+            _response(offers=[matching_offer, off_return_offer]),
+            now_utc="2026-05-01T00:00:00Z",
+        )
+        comparison = sqlite_storage.watchlist_historical_comparison(
+            conn, watchlist_data
+        )
+
+    assert comparison == {
+        "historical_low": 1_280_000.0,
+        "latest_price_amount": 1_280_000.0,
+        "currency": "VND",
+    }
+
+
+def test_watchlist_historical_comparison_matches_round_trip_return_date(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(tmp_path / "cheapy.sqlite3"))
+    watchlist_data = {
+        "origin": "CXR",
+        "destination": "SGN",
+        "departure_date": "2026-07-10",
+        "return_date": "2026-07-15",
+        "currency": "VND",
+    }
+    older_offer = _offer(
+        offer_id="fixture:round-trip-older",
+        requested_return_date="2026-07-15",
+        actual_return_date="2026-07-15",
+        return_offset_days=0,
+        price_amount=1_280_000.0,
+    )
+    latest_offer = _offer(
+        offer_id="fixture:round-trip-latest",
+        requested_return_date="2026-07-15",
+        actual_return_date="2026-07-15",
+        return_offset_days=0,
+        price_amount=1_100_000.0,
+    )
+
+    with sqlite_storage.open_database() as conn:
+        sqlite_storage.insert_search_snapshot(
+            conn,
+            _request(return_date="2026-07-15"),
+            _response(offers=[older_offer]),
+            now_utc="2026-05-01T00:00:00Z",
+        )
+        sqlite_storage.insert_search_snapshot(
+            conn,
+            _request(return_date="2026-07-15"),
+            _response(offers=[latest_offer]),
+            now_utc="2026-05-02T00:00:00Z",
+        )
+        comparison = sqlite_storage.watchlist_historical_comparison(
+            conn, watchlist_data
+        )
+
+    assert comparison == {
+        "historical_low": 1_100_000.0,
+        "latest_price_amount": 1_100_000.0,
+        "currency": "VND",
+    }
+
+
 def test_watchlist_historical_comparison_ignores_non_comparable_offers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
