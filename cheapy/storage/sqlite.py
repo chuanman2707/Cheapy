@@ -527,7 +527,7 @@ def itinerary_fingerprint(offer: FlightOfferV1) -> str:
 def sanitize_response_for_storage(response: SearchResponseV1) -> SearchResponseV1:
     """Redact sensitive warning and error details before storing a response."""
 
-    payload = response.model_dump(mode="json")
+    payload = response.model_dump(mode="json", warnings="none")
     _sanitize_offer_public_search_urls(payload)
     for warning in payload["warnings"]:
         _redact_warning_error_for_storage(warning)

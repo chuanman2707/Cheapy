@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -541,6 +542,31 @@ def test_sanitize_response_for_storage_nulls_invalid_public_search_url() -> None
     assert unsafe_url not in sanitized.model_dump_json()
 
 
+def test_sanitize_response_for_storage_suppresses_non_string_public_url_warning() -> None:
+    unsafe_url = "https://evil.example/challenge?token=secret"
+    offer = _offer(provider="traveloka").model_copy(
+        update={"public_search_url": {"raw": unsafe_url}}
+    )
+    response = _response(offers=[_offer(provider="traveloka")]).model_copy(
+        update={"offers": [offer]}
+    )
+
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        sanitized = sanitize_response_for_storage(response)
+
+    warning_text = "\n".join(str(warning.message) for warning in captured)
+    sanitized_json = sanitized.model_dump_json()
+
+    assert sanitized.offers[0].public_search_url is None
+    assert unsafe_url not in warning_text
+    assert "token=secret" not in warning_text
+    assert "challenge" not in warning_text
+    assert unsafe_url not in sanitized_json
+    assert "token=secret" not in sanitized_json
+    assert "challenge" not in sanitized_json
+
+
 def test_offer_observations_has_no_public_url_column_or_value(
     tmp_path: Path,
 ) -> None:
@@ -620,6 +646,60 @@ def test_sanitized_response_json_drops_unsafe_public_url_strings() -> None:
         "/api/flight/search",
     ):
         assert unsafe_fragment not in payload
+
+
+def test_insert_search_snapshot_drops_unsafe_public_url_strings(
+    tmp_path: Path,
+) -> None:
+    unsafe_urls = [
+        "https://www.skyscanner.com.sg/transport_deeplink/sgn/bkk",
+        "https://www.traveloka.com/en-en/flight/fulltwosearch?token=secret",
+        "https://www.google.com/travel/flights?cookie=session-secret",
+        "https://www.google.com/travel/flights?session=secret",
+        "https://www.traveloka.com/en-en/flight/fulltwosearch?challenge=block",
+        "https://www.traveloka.com/api/flight/search",
+    ]
+    offers = [
+        _offer(
+            offer_id=f"traveloka:cxr-sgn-20260710-{index}",
+            provider="traveloka",
+        ).model_copy(update={"public_search_url": unsafe_url})
+        for index, unsafe_url in enumerate(unsafe_urls, start=1)
+    ]
+    response = _response(
+        offers=[
+            _offer(
+                offer_id=f"traveloka:cxr-sgn-20260710-{index}",
+                provider="traveloka",
+            )
+            for index in range(1, len(unsafe_urls) + 1)
+        ]
+    ).model_copy(update={"offers": offers})
+
+    with open_database(tmp_path / "cheapy.sqlite3") as conn:
+        run_id = insert_search_snapshot(
+            conn,
+            _request(),
+            response,
+            now_utc="2026-05-26T10:00:00Z",
+        )
+        response_json = conn.execute(
+            "SELECT response_json FROM search_runs WHERE id = ?", (run_id,)
+        ).fetchone()["response_json"]
+
+    payload = json.loads(response_json)
+    assert {offer["public_search_url"] for offer in payload["offers"]} == {None}
+    for unsafe_url in unsafe_urls:
+        assert unsafe_url not in response_json
+    for unsafe_fragment in (
+        "transport_deeplink",
+        "token=secret",
+        "cookie=session-secret",
+        "session=secret",
+        "challenge=block",
+        "/api/flight/search",
+    ):
+        assert unsafe_fragment not in response_json
 
 
 def test_insert_search_snapshot_rolls_back_on_child_failure(tmp_path: Path) -> None:
