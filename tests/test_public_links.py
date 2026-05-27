@@ -199,6 +199,10 @@ def test_validate_public_search_url_rejects_cross_provider_urls(
         ),
         (
             "google_fli",
+            "https://www.google.com/travel/flights?id=eyJhbGciOiJIUzI1NiJ9.e30.c2lnbmF0dXJl",
+        ),
+        (
+            "google_fli",
             "https://www.google.com/travel/flights?auth=basic",
         ),
         (

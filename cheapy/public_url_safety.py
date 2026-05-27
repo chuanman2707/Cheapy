@@ -8,7 +8,8 @@ from urllib.parse import parse_qsl, unquote, urlsplit
 _MAX_URL_DECODE_ROUNDS = 10
 _HEX_DIGITS = set("0123456789abcdefABCDEF")
 _JWT_SHAPE_RE = re.compile(
-    r"(?<![A-Za-z0-9_-])(?:[A-Za-z0-9_-]{10,}\.){2}[A-Za-z0-9_-]{3,}"
+    r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{2,}"
+    r"\.[A-Za-z0-9_-]{3,}"
     r"(?![A-Za-z0-9_-])"
 )
 _SKYSCANNER_SEARCH_PATH_RE = re.compile(
