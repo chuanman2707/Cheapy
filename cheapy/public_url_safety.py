@@ -42,6 +42,8 @@ def validate_public_search_url(provider: str, url: str) -> str | None:
         return None
     if _has_raw_control_or_space(url):
         return None
+    if "#" in url:
+        return None
 
     try:
         parsed = urlsplit(url)
@@ -187,6 +189,8 @@ def _has_sensitive_query_material(query: str) -> bool:
     decoded_query = _decode_to_stability(query)
     if decoded_query is None:
         return True
+    if _has_control_character(decoded_query):
+        return True
     for key, value in parse_qsl(decoded_query, keep_blank_values=True):
         if _contains_sensitive_term(key) or _contains_sensitive_term(value):
             return True
@@ -197,7 +201,13 @@ def _contains_sensitive_term(value: str) -> bool:
     decoded_value = _decode_to_stability(value)
     if decoded_value is None:
         return True
+    if _has_control_character(decoded_value):
+        return True
     if _JWT_SHAPE_RE.search(decoded_value):
         return True
     normalized = re.sub(r"[^a-z0-9]+", "", decoded_value.lower())
     return any(term in normalized for term in _SENSITIVE_TERMS)
+
+
+def _has_control_character(value: str) -> bool:
+    return any(ord(char) < 0x20 or ord(char) == 0x7F for char in value)
