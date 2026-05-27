@@ -657,6 +657,38 @@ def test_history_show_prints_json(tmp_path, monkeypatch) -> None:
     assert payload["response"]["request_id"] == _cli_response().request_id
 
 
+def test_history_show_json_keeps_public_search_url_out_of_observations(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    public_search_url = (
+        "https://www.traveloka.com/en-en/flight/fulltwosearch?"
+        "ap=CXR.SGN&dt=10-07-2026.NA&ps=1.0.0&sc=ECONOMY"
+    )
+    response = _cli_response(
+        offers=[
+            _offer(
+                offer_id="traveloka:CXR-SGN:2026-07-10:1",
+                provider="traveloka",
+                public_search_url=public_search_url,
+            )
+        ],
+        provider_statuses=[_provider_status(provider_name="traveloka")],
+    )
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(tmp_path / "cheapy.sqlite3"))
+    with storage.open_database() as conn:
+        run_id = storage.insert_search_snapshot(conn, _cli_request(), response)
+
+    result = runner.invoke(app, ["history", "show", str(run_id)])
+
+    assert result.exit_code == 0
+    assert result.stderr == ""
+    payload = json.loads(result.stdout)
+    assert payload["response"]["offers"][0]["public_search_url"] == public_search_url
+    assert "public_search_url" not in payload["offer_observations"][0]
+    assert not any("url" in key.lower() for key in payload["offer_observations"][0])
+
+
 def test_history_show_reports_not_found(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("CHEAPY_DB_PATH", str(tmp_path / "cheapy.sqlite3"))
 
