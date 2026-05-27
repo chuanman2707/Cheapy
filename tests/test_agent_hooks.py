@@ -55,7 +55,10 @@ def test_agent_hooks_mentions_traveloka_provider_attribution() -> None:
 def test_agent_hooks_tell_agents_how_to_render_public_search_urls() -> None:
     assert "When an offer includes `public_search_url`" in INSTRUCTION_BODY
     assert "render the fare/provider as a Markdown link" in INSTRUCTION_BODY
-    assert "[4,920,000 VND on Traveloka](...)" in INSTRUCTION_BODY
+    assert (
+        "use the exact `public_search_url` value as the Markdown URL target"
+        in INSTRUCTION_BODY
+    )
     assert "If `public_search_url` is absent" in INSTRUCTION_BODY
     assert "show plain text and do not invent a link" in INSTRUCTION_BODY
 
