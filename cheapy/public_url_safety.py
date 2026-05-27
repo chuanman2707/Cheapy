@@ -5,6 +5,8 @@ import re
 from urllib.parse import parse_qsl, unquote, urlsplit
 
 
+_MAX_URL_DECODE_ROUNDS = 10
+
 _PROVIDER_HOSTS = {
     "google_fli": "www.google.com",
     "traveloka": "www.traveloka.com",
@@ -53,13 +55,16 @@ def validate_public_search_url(provider: str, url: str) -> str | None:
     if parsed.fragment:
         return None
 
-    decoded_path = _repeated_unquote(parsed.path)
+    decoded_path = _decode_to_stability(parsed.path)
+    if decoded_path is None:
+        return None
+
     normalized_path = _normalize_path(decoded_path)
     if normalized_path is None:
         return None
     if _has_internal_path_material(decoded_path, normalized_path):
         return None
-    if not _is_allowed_provider_path(provider, normalized_path):
+    if not _is_allowed_provider_path(provider, parsed.path):
         return None
     if _has_sensitive_query_material(parsed.query):
         return None
@@ -67,13 +72,15 @@ def validate_public_search_url(provider: str, url: str) -> str | None:
     return url
 
 
-def _repeated_unquote(value: str) -> str:
+def _decode_to_stability(value: str) -> str | None:
     previous = value
-    for _ in range(5):
+    for _ in range(_MAX_URL_DECODE_ROUNDS):
         current = unquote(previous)
         if current == previous:
             return current
         previous = current
+    if unquote(previous) != previous:
+        return None
     return previous
 
 
@@ -104,20 +111,20 @@ def _has_internal_path_material(decoded_path: str, normalized_path: str) -> bool
     return False
 
 
-def _is_allowed_provider_path(provider: str, normalized_path: str) -> bool:
+def _is_allowed_provider_path(provider: str, path: str) -> bool:
     if provider == "google_fli":
-        return normalized_path == "/travel/flights"
+        return path == "/travel/flights"
     if provider == "traveloka":
-        return normalized_path == "/en-en/flight/fulltwosearch"
+        return path == "/en-en/flight/fulltwosearch"
     if provider == "skyscanner":
-        return normalized_path == "/transport/flights" or normalized_path.startswith(
-            "/transport/flights/"
-        )
+        return path.startswith("/transport/flights/")
     return False
 
 
 def _has_sensitive_query_material(query: str) -> bool:
-    decoded_query = _repeated_unquote(query)
+    decoded_query = _decode_to_stability(query)
+    if decoded_query is None:
+        return True
     for key, value in parse_qsl(decoded_query, keep_blank_values=True):
         if _contains_sensitive_term(key) or _contains_sensitive_term(value):
             return True
@@ -125,5 +132,8 @@ def _has_sensitive_query_material(query: str) -> bool:
 
 
 def _contains_sensitive_term(value: str) -> bool:
-    normalized = re.sub(r"[^a-z0-9]+", "", _repeated_unquote(value).lower())
+    decoded_value = _decode_to_stability(value)
+    if decoded_value is None:
+        return True
+    normalized = re.sub(r"[^a-z0-9]+", "", decoded_value.lower())
     return any(term in normalized for term in _SENSITIVE_TERMS)
