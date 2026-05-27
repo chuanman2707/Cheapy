@@ -447,6 +447,17 @@ def test_build_public_search_url_returns_none_for_google_bad_departure() -> None
     assert build_public_search_url("google_fli", _request(), offer) is None
 
 
+@pytest.mark.parametrize("actual_departure_date", ["20260710", "2026-W29-5"])
+def test_build_public_search_url_rejects_google_non_contract_departure(
+    actual_departure_date: str,
+) -> None:
+    offer = _offer(provider="google_fli").model_copy(
+        update={"actual_departure_date": actual_departure_date}
+    )
+
+    assert build_public_search_url("google_fli", _request(), offer) is None
+
+
 def test_build_public_search_url_builds_google_round_trip_from_offer_actuals() -> None:
     offer = _offer(provider="google_fli", actual_return_date="2026-07-17")
 
@@ -469,6 +480,24 @@ def test_build_public_search_url_builds_google_round_trip_from_offer_actuals() -
 def test_build_public_search_url_returns_none_for_google_invalid_return_date() -> None:
     offer = _offer(provider="google_fli").model_copy(
         update={"actual_return_date": "not-a-date"}
+    )
+
+    assert (
+        build_public_search_url(
+            "google_fli",
+            _request(return_date="2026-07-20"),
+            offer,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("actual_return_date", ["20260717", "2026-W29-5"])
+def test_build_public_search_url_rejects_google_non_contract_return(
+    actual_return_date: str,
+) -> None:
+    offer = _offer(provider="google_fli").model_copy(
+        update={"actual_return_date": actual_return_date}
     )
 
     assert (
@@ -526,6 +555,27 @@ def test_build_public_search_url_builds_skyscanner_one_way_from_offer_actuals() 
     assert validate_public_search_url("skyscanner", url) == url
 
 
+def test_build_public_search_url_builds_skyscanner_multiple_adults() -> None:
+    request = _request(passengers=PassengersV1(adults=3))
+    offer = _offer(provider="skyscanner")
+
+    url = build_public_search_url("skyscanner", request, offer)
+
+    assert url is not None
+    assert parse_qs(urlparse(url).query)["adultsv2"] == ["3"]
+
+
+@pytest.mark.parametrize("actual_departure_date", ["20260710", "2026-W29-5"])
+def test_build_public_search_url_rejects_skyscanner_non_contract_departure(
+    actual_departure_date: str,
+) -> None:
+    offer = _offer(provider="skyscanner").model_copy(
+        update={"actual_departure_date": actual_departure_date}
+    )
+
+    assert build_public_search_url("skyscanner", _request(), offer) is None
+
+
 def test_build_public_search_url_builds_skyscanner_round_trip_actuals() -> None:
     offer = _offer(provider="skyscanner", actual_return_date="2026-07-17")
 
@@ -540,6 +590,24 @@ def test_build_public_search_url_builds_skyscanner_round_trip_actuals() -> None:
         "?adultsv2=1&cabinclass=economy&childrenv2=&ref=home&rtn=1"
     )
     assert validate_public_search_url("skyscanner", url) == url
+
+
+@pytest.mark.parametrize("actual_return_date", ["20260717", "2026-W29-5"])
+def test_build_public_search_url_rejects_skyscanner_non_contract_return(
+    actual_return_date: str,
+) -> None:
+    offer = _offer(provider="skyscanner").model_copy(
+        update={"actual_return_date": actual_return_date}
+    )
+
+    assert (
+        build_public_search_url(
+            "skyscanner",
+            _request(return_date="2026-07-20"),
+            offer,
+        )
+        is None
+    )
 
 
 def test_build_public_search_url_returns_none_for_skyscanner_child_passengers() -> None:

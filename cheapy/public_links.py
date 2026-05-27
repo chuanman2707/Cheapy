@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date
 from urllib.parse import urlencode
 
@@ -14,6 +15,9 @@ from cheapy.providers.base import (
 )
 from cheapy.providers.traveloka.urls import build_full_search_url
 from cheapy.public_url_safety import validate_public_search_url
+
+
+_YYYY_MM_DD_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def build_public_search_url(
@@ -88,9 +92,9 @@ def _build_google_fli_url(
     offer: FlightOfferV1,
 ) -> str | None:
     try:
-        departure_date = date.fromisoformat(offer.actual_departure_date).isoformat()
+        departure_date = _strict_date(offer.actual_departure_date).isoformat()
         return_date = (
-            date.fromisoformat(offer.actual_return_date).isoformat()
+            _strict_date(offer.actual_return_date).isoformat()
             if offer.actual_return_date is not None
             else None
         )
@@ -159,8 +163,14 @@ def _build_skyscanner_url(
 
 
 def _skyscanner_date(value: str) -> str:
-    parsed = date.fromisoformat(value)
+    parsed = _strict_date(value)
     return parsed.strftime("%y%m%d")
+
+
+def _strict_date(value: str) -> date:
+    if _YYYY_MM_DD_RE.fullmatch(value) is None:
+        raise ValueError("Date must use YYYY-MM-DD format")
+    return date.fromisoformat(value)
 
 
 def _count_label(count: int, singular: str, plural: str | None = None) -> str:
