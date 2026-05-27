@@ -21,6 +21,7 @@ from cheapy.models import (
     SearchRequestV1,
     SearchResponseV1,
 )
+from cheapy.public_url_safety import validate_public_search_url
 
 CURRENT_SCHEMA_VERSION = 1
 REDACTED_VALUE = "[redacted]"
@@ -527,6 +528,7 @@ def sanitize_response_for_storage(response: SearchResponseV1) -> SearchResponseV
     """Redact sensitive warning and error details before storing a response."""
 
     payload = response.model_dump(mode="json")
+    _sanitize_offer_public_search_urls(payload)
     for warning in payload["warnings"]:
         _redact_warning_error_for_storage(warning)
     for error in payload["errors"]:
@@ -537,6 +539,32 @@ def sanitize_response_for_storage(response: SearchResponseV1) -> SearchResponseV
         for error in provider_status["errors"]:
             _redact_warning_error_for_storage(error)
     return SearchResponseV1.model_validate(payload)
+
+
+def _sanitize_offer_public_search_urls(payload: dict[str, Any]) -> None:
+    offers = payload.get("offers")
+    if not isinstance(offers, list):
+        return
+
+    for offer in offers:
+        if not isinstance(offer, dict):
+            continue
+
+        public_search_url = offer.get("public_search_url")
+        if public_search_url is None:
+            offer["public_search_url"] = None
+            continue
+        if not isinstance(public_search_url, str):
+            offer["public_search_url"] = None
+            continue
+
+        provider = offer.get("provider")
+        if not isinstance(provider, str):
+            offer["public_search_url"] = None
+            continue
+
+        safe_url = validate_public_search_url(provider, public_search_url)
+        offer["public_search_url"] = safe_url
 
 
 def list_history(conn: sqlite3.Connection, *, limit: int) -> list[dict[str, Any]]:
