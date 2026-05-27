@@ -145,6 +145,17 @@ def test_validate_public_search_url_rejects_cross_provider_urls(
             "https://www.skyscanner.com.sg/transport/flights/sgn/bkk/%2",
         ),
         (
+            "skyscanner",
+            "https://www.skyscanner.com.sg/transport/flights/",
+        ),
+        (
+            "skyscanner",
+            "https://www.skyscanner.com.sg/transport/flights/anything",
+        ),
+        ("google_fli", "\x00https://www.google.com/travel/flights?q=x"),
+        ("google_fli", " https://www.google.com/travel/flights?q=x"),
+        ("google_fli", "https://www.google.com\n/travel/flights?q=x"),
+        (
             "google_fli",
             "https://www.google.com/Travel/Flights?q=Flights+from+SGN+to+BKK",
         ),

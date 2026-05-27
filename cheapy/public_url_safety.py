@@ -11,6 +11,9 @@ _JWT_SHAPE_RE = re.compile(
     r"(?<![A-Za-z0-9_-])(?:[A-Za-z0-9_-]{10,}\.){2}[A-Za-z0-9_-]{3,}"
     r"(?![A-Za-z0-9_-])"
 )
+_SKYSCANNER_SEARCH_PATH_RE = re.compile(
+    r"^/transport/flights/[a-z0-9-]+/[a-z0-9-]+/[0-9]{6}/(?:[0-9]{6}/)?$"
+)
 
 _PROVIDER_HOSTS = {
     "google_fli": "www.google.com",
@@ -36,6 +39,8 @@ def validate_public_search_url(provider: str, url: str) -> str | None:
     """Return the original URL when it is a provider public search URL."""
     expected_host = _PROVIDER_HOSTS.get(provider)
     if expected_host is None:
+        return None
+    if _has_raw_control_or_space(url):
         return None
 
     try:
@@ -79,6 +84,12 @@ def validate_public_search_url(provider: str, url: str) -> str | None:
         return None
 
     return url
+
+
+def _has_raw_control_or_space(value: str) -> bool:
+    if value != value.strip():
+        return True
+    return any(ord(char) <= 0x20 or ord(char) == 0x7F for char in value)
 
 
 def _decode_to_stability(value: str) -> str | None:
@@ -168,7 +179,7 @@ def _is_allowed_provider_path(provider: str, path: str) -> bool:
     if provider == "skyscanner":
         if path != path.lower() or "//" in path or ";" in path:
             return False
-        return path.startswith("/transport/flights/")
+        return _SKYSCANNER_SEARCH_PATH_RE.fullmatch(path) is not None
     return False
 
 
