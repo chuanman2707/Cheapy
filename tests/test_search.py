@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -326,6 +327,161 @@ def test_search_exact_returns_manual_fixture_success_response(
     assert provider_status.executed_call_count == 1
     assert provider_status.succeeded_call_count == 1
     assert provider_status.failed_call_count == 0
+
+
+def test_search_exact_attaches_validated_public_search_url_for_traveloka(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    offer = _offer(
+        offer_id="traveloka:1",
+        provider="traveloka",
+        currency="USD",
+        price_amount=100.0,
+    )
+    result = ProviderResult(
+        provider_name="traveloka",
+        capability="exact_one_way",
+        status=ProviderStatusCode.SUCCESS,
+        offers=[offer],
+        warnings=[],
+        errors=[],
+        duration_ms=1,
+        retryable=False,
+    )
+    monkeypatch.setattr(
+        "cheapy.search.load_search_providers",
+        lambda: [_ProviderFromResult(result)],
+    )
+
+    response = search_exact(_request())
+
+    assert response.status == SearchStatus.SUCCESS
+    assert offer.public_search_url is None
+    public_search_url = response.offers[0].public_search_url
+    assert public_search_url is not None
+    parsed = urlparse(public_search_url)
+    params = parse_qs(parsed.query)
+    assert parsed.scheme == "https"
+    assert parsed.netloc == "www.traveloka.com"
+    assert parsed.path == "/en-en/flight/fulltwosearch"
+    assert params["ap"] == ["CXR.SGN"]
+    assert params["dt"] == ["10-7-2026"]
+
+
+def test_search_exact_keeps_public_search_url_none_for_unknown_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = ProviderResult(
+        provider_name="unknown_provider",
+        capability="exact_one_way",
+        status=ProviderStatusCode.SUCCESS,
+        offers=[
+            _offer(
+                offer_id="unknown:1",
+                provider="unknown_provider",
+                currency="USD",
+                price_amount=100.0,
+            )
+        ],
+        warnings=[],
+        errors=[],
+        duration_ms=1,
+        retryable=False,
+    )
+    monkeypatch.setattr(
+        "cheapy.search.load_search_providers",
+        lambda: [_ProviderFromResult(result)],
+    )
+
+    response = search_exact(_request())
+
+    assert response.status == SearchStatus.SUCCESS
+    assert response.offers[0].public_search_url is None
+
+
+def test_search_exact_public_search_url_uses_actual_offer_date_for_flexible_offer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = ProviderResult(
+        provider_name="traveloka",
+        capability="exact_one_way",
+        status=ProviderStatusCode.SUCCESS,
+        offers=[
+            _offer(
+                offer_id="traveloka:flexible",
+                provider="traveloka",
+                currency="USD",
+                price_amount=100.0,
+                requested_departure_date="2026-07-10",
+                actual_departure_date="2026-07-11",
+                departure_offset_days=1,
+                departure_time="2026-07-11T08:15:00",
+                arrival_time="2026-07-11T09:25:00",
+            )
+        ],
+        warnings=[],
+        errors=[],
+        duration_ms=1,
+        retryable=False,
+    )
+    monkeypatch.setattr(
+        "cheapy.search.load_search_providers",
+        lambda: [_ProviderFromResult(result)],
+    )
+
+    response = search_exact(_request())
+
+    assert response.status == SearchStatus.SUCCESS
+    public_search_url = response.offers[0].public_search_url
+    assert public_search_url is not None
+    params = parse_qs(urlparse(public_search_url).query)
+    assert params["dt"] == ["11-7-2026"]
+    assert "10-7-2026" not in public_search_url
+
+
+def test_search_exact_returns_results_when_public_search_url_attachment_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = ProviderResult(
+        provider_name="traveloka",
+        capability="exact_one_way",
+        status=ProviderStatusCode.SUCCESS,
+        offers=[
+            _offer(
+                offer_id="traveloka:1",
+                provider="traveloka",
+                currency="USD",
+                price_amount=100.0,
+            )
+        ],
+        warnings=[],
+        errors=[],
+        duration_ms=1,
+        retryable=False,
+    )
+    monkeypatch.setattr(
+        "cheapy.search.load_search_providers",
+        lambda: [_ProviderFromResult(result)],
+    )
+
+    def raise_link_failure(
+        request: SearchRequestV1,
+        response: object,
+    ) -> object:
+        raise RuntimeError("link builder failed")
+
+    monkeypatch.setattr(
+        "cheapy.search.attach_public_search_urls",
+        raise_link_failure,
+    )
+
+    response = search_exact(_request())
+
+    assert response.status == SearchStatus.SUCCESS
+    assert [offer.offer_id for offer in response.offers] == ["traveloka:1"]
+    assert response.offers[0].public_search_url is None
+    assert response.errors == []
+    assert response.provider_statuses[0].provider_name == "traveloka"
 
 
 def test_search_exact_round_trip_routes_to_round_trip_capability(

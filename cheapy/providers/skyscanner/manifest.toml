@@ -1,7 +1,0 @@
-manifest_schema_version = "1"
-name = "skyscanner"
-display_name = "Skyscanner live provider"
-default_enabled = true
-provider_kind = "live"
-module = "cheapy.providers.skyscanner.provider"
-capabilities = ["exact_one_way", "exact_round_trip"]

@@ -1,17 +1,151 @@
 """CLI baseline tests."""
 
 import json
+import sqlite3
+from typing import Any
 
 from typer.testing import CliRunner
 
 from cheapy.cli import app
 from cheapy.mcp_installer import InstallerError
-from cheapy.models import ErrorCode, ErrorV1, ProviderStatusCode, Severity
+from cheapy.models import (
+    CandidateFamily,
+    CurrencyGroupV1,
+    ErrorCode,
+    ErrorV1,
+    FlightLegV1,
+    FlightOfferV1,
+    OfferFlagsV1,
+    ProviderStatusCode,
+    ProviderStatusV1,
+    SearchMode,
+    SearchPlanV1,
+    SearchRequestV1,
+    SearchResponseV1,
+    SearchStatus,
+    Severity,
+)
 from cheapy.providers.base import ProviderExactOneWayRequest, ProviderResult
 from cheapy.providers.registry import ProviderManifestError
+from cheapy.search_service import SearchWithStorageResult
+from cheapy.storage import sqlite as storage
 
 
 runner = CliRunner()
+
+
+def _cli_request() -> SearchRequestV1:
+    return SearchRequestV1.model_validate(
+        {
+            "schema_version": "1",
+            "origin": "CXR",
+            "destination": "SGN",
+            "departure_date": "2026-07-10",
+            "return_date": None,
+            "max_results": 5,
+        }
+    )
+
+
+def _offer(**overrides: Any) -> FlightOfferV1:
+    data: dict[str, Any] = {
+        "offer_id": "fixture:1",
+        "price_amount": 1_280_000.0,
+        "currency": "VND",
+        "comparable": True,
+        "rank_within_currency": 1,
+        "global_rank": 1,
+        "provider": "manual_fixture",
+        "requested_origin": "CXR",
+        "requested_destination": "SGN",
+        "actual_origin": "CXR",
+        "actual_destination": "SGN",
+        "nearby_origin_distance_km": None,
+        "nearby_destination_distance_km": None,
+        "requested_departure_date": "2026-07-10",
+        "actual_departure_date": "2026-07-10",
+        "departure_offset_days": 0,
+        "requested_return_date": None,
+        "actual_return_date": None,
+        "return_offset_days": None,
+        "legs": [
+            FlightLegV1(
+                origin="CXR",
+                destination="SGN",
+                departure_time="2026-07-10T08:15:00",
+                arrival_time="2026-07-10T09:25:00",
+                airline_code="VJ",
+                flight_number="VJ601",
+                duration_minutes=70,
+            )
+        ],
+        "total_duration_minutes": 70,
+        "stops": 0,
+        "flags": OfferFlagsV1(),
+        "fare_details_status": "not_collected",
+    }
+    data.update(overrides)
+    return FlightOfferV1.model_validate(data)
+
+
+def _provider_status(**overrides: Any) -> ProviderStatusV1:
+    data: dict[str, Any] = {
+        "provider_name": "manual_fixture",
+        "capability": "exact_one_way",
+        "status": ProviderStatusCode.SUCCESS,
+        "planned_call_count": 1,
+        "executed_call_count": 1,
+        "succeeded_call_count": 1,
+        "failed_call_count": 0,
+        "duration_ms": 12,
+        "warnings": [],
+        "errors": [],
+        "retryable": False,
+    }
+    data.update(overrides)
+    return ProviderStatusV1.model_validate(data)
+
+
+def _cli_response(**overrides: Any) -> SearchResponseV1:
+    offers = overrides.pop("offers", [_offer()])
+    mixed_currency = overrides.pop(
+        "mixed_currency", len({offer.currency for offer in offers}) > 1
+    )
+    data: dict[str, Any] = {
+        "schema_version": "1",
+        "status": SearchStatus.SUCCESS,
+        "request_id": "search:one_way:CXR:SGN:2026-07-10:none:exact:1:0:0:0:5",
+        "offers": offers,
+        "warnings": [],
+        "errors": [],
+        "provider_statuses": [_provider_status()],
+        "search_plan": SearchPlanV1(
+            search_mode=SearchMode.EXACT,
+            planned_candidate_count=1,
+            executed_candidate_count=1,
+            planned_provider_call_count=1,
+            executed_provider_call_count=1,
+            candidate_count_by_family={CandidateFamily.EXACT: 1},
+            provider_call_count_by_family={CandidateFamily.EXACT: 1},
+            truncated=False,
+            truncated_families=[],
+            candidate_families=[CandidateFamily.EXACT],
+        ),
+        "mixed_currency": mixed_currency,
+        "currency_groups": [
+            CurrencyGroupV1(
+                currency=currency,
+                offer_ids=[
+                    offer.offer_id for offer in offers if offer.currency == currency
+                ],
+            )
+            for currency in sorted({offer.currency for offer in offers})
+        ],
+        "currency_notes": [] if not mixed_currency else ["Currencies are not comparable."],
+        "candidates": None,
+    }
+    data.update(overrides)
+    return SearchResponseV1.model_validate(data)
 
 
 def test_version_prints_package_version() -> None:
@@ -140,6 +274,7 @@ def test_providers_list_prints_json() -> None:
     assert result.stderr == ""
     payload = json.loads(result.stdout)
     providers = {provider["name"]: provider for provider in payload["providers"]}
+    assert "skyscanner" not in providers
     assert payload["status"] == "ok"
     assert providers == {
         "google_fli": {
@@ -157,14 +292,6 @@ def test_providers_list_prints_json() -> None:
             "enabled": True,
             "name": "manual_fixture",
             "provider_kind": "fixture",
-        },
-        "skyscanner": {
-            "capabilities": ["exact_one_way", "exact_round_trip"],
-            "default_enabled": True,
-            "display_name": "Skyscanner live provider",
-            "enabled": True,
-            "name": "skyscanner",
-            "provider_kind": "live",
         },
         "traveloka": {
             "capabilities": ["exact_one_way", "exact_round_trip"],
@@ -184,8 +311,9 @@ def test_providers_test_prints_json() -> None:
     assert result.stderr == ""
     payload = json.loads(result.stdout)
     providers = {provider["name"]: provider for provider in payload["providers"]}
+    assert "skyscanner" not in providers
     assert payload["status"] == "ok"
-    assert payload["providers_tested"] == 4
+    assert payload["providers_tested"] == 3
     assert providers["manual_fixture"]["status"] == "success"
     assert providers["manual_fixture"]["provider_kind"] == "fixture"
     assert providers["manual_fixture"]["live_smoke"] == "not_applicable"
@@ -195,9 +323,6 @@ def test_providers_test_prints_json() -> None:
     assert providers["traveloka"]["status"] == "skipped"
     assert providers["traveloka"]["provider_kind"] == "live"
     assert providers["traveloka"]["live_smoke"] == "not_run"
-    assert providers["skyscanner"]["status"] == "skipped"
-    assert providers["skyscanner"]["provider_kind"] == "live"
-    assert providers["skyscanner"]["live_smoke"] == "not_run"
 
 
 def test_providers_test_default_does_not_run_live_provider(monkeypatch) -> None:
@@ -207,6 +332,7 @@ def test_providers_test_default_does_not_run_live_provider(monkeypatch) -> None:
     assert result.stderr == ""
     payload = json.loads(result.stdout)
     providers = {provider["name"]: provider for provider in payload["providers"]}
+    assert "skyscanner" not in providers
     assert providers["manual_fixture"]["status"] == "success"
     assert providers["manual_fixture"]["live_smoke"] == "not_applicable"
     assert providers["google_fli"]["status"] == "skipped"
@@ -214,9 +340,6 @@ def test_providers_test_default_does_not_run_live_provider(monkeypatch) -> None:
     assert providers["traveloka"]["status"] == "skipped"
     assert providers["traveloka"]["provider_kind"] == "live"
     assert providers["traveloka"]["live_smoke"] == "not_run"
-    assert providers["skyscanner"]["status"] == "skipped"
-    assert providers["skyscanner"]["provider_kind"] == "live"
-    assert providers["skyscanner"]["live_smoke"] == "not_run"
 
 
 def test_providers_test_human_prints_success_report() -> None:
@@ -226,7 +349,6 @@ def test_providers_test_human_prints_success_report() -> None:
     assert result.stderr == ""
     assert "manual_fixture fixture exact_one_way: success" in result.stdout
     assert "google_fli live exact_one_way: skipped" in result.stdout
-    assert "skyscanner live exact_one_way: skipped" in result.stdout
     assert "traveloka live exact_one_way: skipped" in result.stdout
     assert result.stdout.endswith("status: ok\n")
 
@@ -502,3 +624,497 @@ def test_providers_test_reports_unexpected_provider_exception(monkeypatch) -> No
         "message": "A provider check raised an unexpected exception.",
         "suggestion": "Run 'cheapy providers test --human' for a concise provider report.",
     }
+
+
+def test_history_list_prints_json(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(tmp_path / "cheapy.sqlite3"))
+    with storage.open_database() as conn:
+        storage.insert_search_snapshot(conn, _cli_request(), _cli_response())
+
+    result = runner.invoke(app, ["history", "list", "--limit", "5"])
+
+    assert result.exit_code == 0
+    assert result.stderr == ""
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "ok"
+    assert payload["runs"][0]["origin"] == "CXR"
+    assert payload["runs"][0]["best_price_amount"] == 1_280_000.0
+
+
+def test_history_show_prints_json(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(tmp_path / "cheapy.sqlite3"))
+    with storage.open_database() as conn:
+        run_id = storage.insert_search_snapshot(conn, _cli_request(), _cli_response())
+
+    result = runner.invoke(app, ["history", "show", str(run_id)])
+
+    assert result.exit_code == 0
+    assert result.stderr == ""
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "ok"
+    assert payload["search_run"]["id"] == run_id
+    assert payload["provider_runs"][0]["provider_name"] == "manual_fixture"
+    assert payload["offer_observations"][0]["offer_id"] == "fixture:1"
+    assert payload["response"]["request_id"] == _cli_response().request_id
+
+
+def test_history_show_json_keeps_public_search_url_out_of_observations(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    public_search_url = (
+        "https://www.traveloka.com/en-en/flight/fulltwosearch?"
+        "ap=CXR.SGN&dt=10-7-2026&ps=1.0.0&sc=ECONOMY"
+    )
+    response = _cli_response(
+        offers=[
+            _offer(
+                offer_id="traveloka:CXR-SGN:2026-07-10:1",
+                provider="traveloka",
+                public_search_url=public_search_url,
+            )
+        ],
+        provider_statuses=[_provider_status(provider_name="traveloka")],
+    )
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(tmp_path / "cheapy.sqlite3"))
+    with storage.open_database() as conn:
+        run_id = storage.insert_search_snapshot(conn, _cli_request(), response)
+
+    result = runner.invoke(app, ["history", "show", str(run_id)])
+
+    assert result.exit_code == 0
+    assert result.stderr == ""
+    payload = json.loads(result.stdout)
+    assert payload["response"]["offers"][0]["public_search_url"] == public_search_url
+    assert "public_search_url" not in payload["offer_observations"][0]
+    assert not any("url" in key.lower() for key in payload["offer_observations"][0])
+
+
+def test_history_show_reports_not_found(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(tmp_path / "cheapy.sqlite3"))
+
+    result = runner.invoke(app, ["history", "show", "999"])
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert json.loads(result.stderr) == {
+        "error": True,
+        "code": "HISTORY_RUN_NOT_FOUND",
+        "message": "Search run was not found.",
+        "suggestion": "Run 'cheapy history list' to see available search runs.",
+    }
+
+
+def test_history_commands_fail_when_storage_disabled(monkeypatch) -> None:
+    monkeypatch.setenv("CHEAPY_DISABLE_STORAGE", "1")
+    opened_database = False
+
+    def fake_open_database():
+        nonlocal opened_database
+        opened_database = True
+        raise AssertionError("storage should not open when disabled")
+
+    monkeypatch.setattr("cheapy.cli.storage.open_database", fake_open_database)
+
+    for command in (["history", "list"], ["history", "show", "1"]):
+        result = runner.invoke(app, command)
+
+        assert result.exit_code == 1
+        assert result.stdout == ""
+        assert json.loads(result.stderr)["code"] == "STORAGE_DISABLED"
+    assert opened_database is False
+
+
+def test_history_list_reports_storage_open_error_without_details(monkeypatch) -> None:
+    secret_path = "/tmp/secret-cheapy-token.sqlite3"
+
+    def raise_open_error():
+        raise OSError(f"cannot open {secret_path}")
+
+    monkeypatch.setattr("cheapy.cli.storage.open_database", raise_open_error)
+
+    result = runner.invoke(app, ["history", "list"])
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert json.loads(result.stderr) == {
+        "error": True,
+        "code": "HISTORY_STORAGE_ERROR",
+        "message": "Local search history could not be read.",
+        "suggestion": "Verify local storage permissions or set CHEAPY_DB_PATH to a readable SQLite database.",
+    }
+    assert secret_path not in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_history_list_reports_schema_migration_error_without_details(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    secret_path = tmp_path / "secret-cheapy-token.sqlite3"
+    conn = sqlite3.connect(secret_path)
+    conn.execute(
+        "CREATE TABLE schema_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO schema_metadata(key, value) VALUES (?, ?)",
+        ("schema_version", "999"),
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(secret_path))
+
+    result = runner.invoke(app, ["history", "list"])
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert json.loads(result.stderr) == {
+        "error": True,
+        "code": "HISTORY_STORAGE_ERROR",
+        "message": "Local search history could not be read.",
+        "suggestion": "Verify local storage permissions or set CHEAPY_DB_PATH to a readable SQLite database.",
+    }
+    assert str(secret_path) not in result.stderr
+    assert "Traceback" not in result.stderr
+    assert "schema_version" not in result.stderr
+
+
+def test_history_show_reports_storage_read_error_without_details(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    secret_path = "/tmp/secret-cheapy-token.sqlite3"
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(tmp_path / "cheapy.sqlite3"))
+
+    def raise_read_error(conn, run_id):
+        raise sqlite3.OperationalError(f"cannot read {secret_path}")
+
+    monkeypatch.setattr("cheapy.cli.storage.show_history", raise_read_error)
+
+    result = runner.invoke(app, ["history", "show", "1"])
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert json.loads(result.stderr) == {
+        "error": True,
+        "code": "HISTORY_STORAGE_ERROR",
+        "message": "Local search history could not be read.",
+        "suggestion": "Verify local storage permissions or set CHEAPY_DB_PATH to a readable SQLite database.",
+    }
+    assert secret_path not in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_watchlist_list_reports_schema_migration_error_without_details(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    secret_path = tmp_path / "secret-cheapy-token.sqlite3"
+    conn = sqlite3.connect(secret_path)
+    conn.execute(
+        "CREATE TABLE schema_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO schema_metadata(key, value) VALUES (?, ?)",
+        ("schema_version", "999"),
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(secret_path))
+
+    result = runner.invoke(app, ["watchlist", "list"])
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert json.loads(result.stderr) == {
+        "error": True,
+        "code": "WATCHLIST_STORAGE_ERROR",
+        "message": "Local watchlists could not be read or written.",
+        "suggestion": (
+            "Verify local storage permissions or set CHEAPY_DB_PATH to a "
+            "writable SQLite database."
+        ),
+    }
+    assert str(secret_path) not in result.stderr
+    assert "Traceback" not in result.stderr
+    assert "schema_version" not in result.stderr
+
+
+def test_history_without_subcommand_prints_help_successfully() -> None:
+    result = runner.invoke(app, ["history"])
+
+    assert result.exit_code == 0
+    assert "Inspect local Cheapy search history." in result.stdout
+    assert result.stderr == ""
+
+
+def test_watchlist_add_and_list_print_json(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(tmp_path / "cheapy.sqlite3"))
+
+    add_result = runner.invoke(
+        app,
+        [
+            "watchlist",
+            "add",
+            "--name",
+            "CXR SGN",
+            "--origin",
+            "cxr",
+            "--destination",
+            "sgn",
+            "--departure-date",
+            "2026-07-10",
+            "--max-price-amount",
+            "1300000",
+            "--currency",
+            "VND",
+            "--max-stops",
+            "0",
+        ],
+    )
+    list_result = runner.invoke(app, ["watchlist", "list"])
+
+    assert add_result.exit_code == 0
+    assert add_result.stderr == ""
+    added = json.loads(add_result.stdout)
+    assert added["status"] == "ok"
+    assert added["watchlist"]["origin"] == "CXR"
+    assert added["watchlist"]["destination"] == "SGN"
+    assert list_result.exit_code == 0
+    assert list_result.stderr == ""
+    listed = json.loads(list_result.stdout)
+    assert listed["watchlists"][0]["name"] == "CXR SGN"
+
+
+def test_watchlist_add_rejects_non_iata_airport(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(tmp_path / "cheapy.sqlite3"))
+
+    result = runner.invoke(
+        app,
+        [
+            "watchlist",
+            "add",
+            "--name",
+            "Bad",
+            "--origin",
+            "saigon",
+            "--destination",
+            "SGN",
+            "--departure-date",
+            "2026-07-10",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    assert json.loads(result.stderr)["code"] == "USAGE_ERROR"
+
+
+def test_watchlist_add_rejects_invalid_currency(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(tmp_path / "cheapy.sqlite3"))
+
+    result = runner.invoke(
+        app,
+        [
+            "watchlist",
+            "add",
+            "--name",
+            "Bad currency",
+            "--origin",
+            "CXR",
+            "--destination",
+            "SGN",
+            "--departure-date",
+            "2026-07-10",
+            "--currency",
+            "BAD1",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    assert json.loads(result.stderr)["code"] == "USAGE_ERROR"
+
+
+def test_watchlist_add_rejects_negative_max_price(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(tmp_path / "cheapy.sqlite3"))
+
+    result = runner.invoke(
+        app,
+        [
+            "watchlist",
+            "add",
+            "--name",
+            "Bad price",
+            "--origin",
+            "CXR",
+            "--destination",
+            "SGN",
+            "--departure-date",
+            "2026-07-10",
+            "--max-price-amount",
+            "-1",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    assert json.loads(result.stderr)["code"] == "USAGE_ERROR"
+
+
+def test_watchlist_check_runs_search_records_check_and_prints_decision(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(tmp_path / "cheapy.sqlite3"))
+    with storage.open_database() as conn:
+        watchlist = storage.add_watchlist(
+            conn,
+            name="CXR SGN",
+            origin="CXR",
+            destination="SGN",
+            departure_date="2026-07-10",
+            return_date=None,
+            max_price_amount=1_300_000.0,
+            currency="VND",
+            max_stops=0,
+            max_results=5,
+        )
+        prior_run_id = storage.insert_search_snapshot(
+            conn,
+            _cli_request(),
+            _cli_response(),
+            now_utc="2026-05-01T00:00:00Z",
+        )
+    fresh_run_id = None
+
+    def fake_search_with_storage(request):
+        nonlocal fresh_run_id
+        assert request.origin == "CXR"
+        assert request.destination == "SGN"
+        fresh_response = _cli_response(
+            offers=[
+                _offer(
+                    offer_id="fixture:fresh",
+                    price_amount=900_000.0,
+                )
+            ]
+        )
+        with storage.open_database() as conn:
+            fresh_run_id = storage.insert_search_snapshot(
+                conn,
+                request,
+                fresh_response,
+                now_utc="2026-05-02T00:00:00Z",
+            )
+        return SearchWithStorageResult(
+            response=fresh_response,
+            search_run_id=fresh_run_id,
+            storage_enabled=True,
+            storage_warning=None,
+        )
+
+    monkeypatch.setattr("cheapy.cli.search_with_storage", fake_search_with_storage)
+
+    result = runner.invoke(app, ["watchlist", "check", str(watchlist["id"])])
+
+    assert result.exit_code == 0
+    assert result.stderr == ""
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "ok"
+    assert payload["search_run_id"] == fresh_run_id
+    assert payload["decision"] == "book_now"
+    assert payload["best_offer"]["offer_id"] == "fixture:fresh"
+    assert payload["historical_comparison"] == {
+        "historical_low": 1_280_000.0,
+        "latest_price_amount": 1_280_000.0,
+        "currency": "VND",
+    }
+    with storage.open_database() as conn:
+        check_count = conn.execute(
+            "SELECT COUNT(*) FROM watchlist_checks WHERE watchlist_id = ?",
+            (watchlist["id"],),
+        ).fetchone()[0]
+        recorded_search_run_id = conn.execute(
+            "SELECT search_run_id FROM watchlist_checks WHERE watchlist_id = ?",
+            (watchlist["id"],),
+        ).fetchone()[0]
+        rationale = json.loads(
+            conn.execute(
+                "SELECT rationale_json FROM watchlist_checks WHERE watchlist_id = ?",
+                (watchlist["id"],),
+            ).fetchone()[0]
+        )
+    assert check_count == 1
+    assert recorded_search_run_id == fresh_run_id
+    assert rationale == {
+        "historical_comparison": {
+            "historical_low": 1_280_000.0,
+            "latest_price_amount": 1_280_000.0,
+            "currency": "VND",
+        },
+        "provider_confidence": "high",
+        "rationale": ["Best fare is at or below the configured threshold."],
+        "threshold_comparison": {
+            "best_price_amount": 900_000.0,
+            "currency": "VND",
+            "max_price_amount": 1_300_000.0,
+            "threshold_met": True,
+        },
+    }
+    assert fresh_run_id != prior_run_id
+
+
+def test_watchlist_check_fails_when_search_run_is_not_persisted(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(tmp_path / "cheapy.sqlite3"))
+    with storage.open_database() as conn:
+        watchlist = storage.add_watchlist(
+            conn,
+            name="CXR SGN",
+            origin="CXR",
+            destination="SGN",
+            departure_date="2026-07-10",
+            return_date=None,
+            max_price_amount=1_300_000.0,
+            currency="VND",
+            max_stops=0,
+            max_results=5,
+        )
+
+    def fake_search_with_storage(request):
+        return SearchWithStorageResult(
+            response=_cli_response(),
+            search_run_id=None,
+            storage_enabled=True,
+            storage_warning=None,
+        )
+
+    monkeypatch.setattr("cheapy.cli.search_with_storage", fake_search_with_storage)
+
+    result = runner.invoke(app, ["watchlist", "check", str(watchlist["id"])])
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert json.loads(result.stderr)["code"] == "WATCHLIST_CHECK_NOT_RECORDED"
+
+
+def test_watchlist_check_fails_before_search_when_storage_disabled(monkeypatch) -> None:
+    called = False
+
+    def fake_search_with_storage(request):
+        nonlocal called
+        called = True
+        raise AssertionError("search must not be called")
+
+    monkeypatch.setenv("CHEAPY_DISABLE_STORAGE", "1")
+    monkeypatch.setattr("cheapy.cli.search_with_storage", fake_search_with_storage)
+
+    result = runner.invoke(app, ["watchlist", "check", "1"])
+
+    assert result.exit_code == 1
+    assert called is False
+    assert result.stdout == ""
+    assert json.loads(result.stderr)["code"] == "STORAGE_DISABLED"

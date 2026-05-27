@@ -7,14 +7,17 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sqlite3
 import sys
 from typing import Any
 
 import click
+from pydantic import ValidationError
 import typer
 from typer.core import TyperGroup
 
 from cheapy import __version__
+from cheapy.airports import AirportNotFound, resolve_airport
 from cheapy.mcp import run_stdio_server
 from cheapy.mcp_installer import InstallerClient, InstallerError, install_mcp
 from cheapy.models import ProviderStatusCode, SearchRequestV1, SearchResponseV1
@@ -25,9 +28,13 @@ from cheapy.providers.registry import (
     discover_provider_manifests,
     load_enabled_providers,
 )
+from cheapy.search_service import search_with_storage
+from cheapy.storage import sqlite as storage
+from cheapy.watchlist import build_watchlist_request, evaluate_watchlist
 
 
 LIVE_TEST_ENV = "CHEAPY_RUN_LIVE_TESTS"
+STORAGE_ERROR_TYPES = (OSError, RuntimeError, sqlite3.Error)
 
 
 def _json_echo(payload: dict[str, Any], *, err: bool = False) -> None:
@@ -81,12 +88,23 @@ providers_app = typer.Typer(
     help="Inspect packaged Cheapy providers.",
     no_args_is_help=True,
 )
+history_app = typer.Typer(
+    help="Inspect local Cheapy search history.",
+    no_args_is_help=False,
+    invoke_without_command=True,
+)
+watchlist_app = typer.Typer(
+    help="Manage local Cheapy price watchlists.",
+    no_args_is_help=True,
+)
 mcp_app = typer.Typer(
     help="Run or install the Cheapy MCP server.",
     no_args_is_help=False,
     invoke_without_command=True,
 )
 app.add_typer(providers_app, name="providers")
+app.add_typer(history_app, name="history")
+app.add_typer(watchlist_app, name="watchlist")
 app.add_typer(mcp_app, name="mcp")
 
 
@@ -180,6 +198,331 @@ def _provider_fixture_request() -> ProviderExactOneWayRequest:
         origin="CXR",
         destination="SGN",
         departure_date="2026-07-10",
+    )
+
+
+def _storage_disabled_exit() -> None:
+    _json_echo(
+        _error_payload(
+            "STORAGE_DISABLED",
+            "Local Cheapy storage is disabled.",
+            "Unset CHEAPY_DISABLE_STORAGE or set it to a value other than 1.",
+        ),
+        err=True,
+    )
+    raise typer.Exit(code=1)
+
+
+def _history_storage_error_exit() -> None:
+    _json_echo(
+        _error_payload(
+            "HISTORY_STORAGE_ERROR",
+            "Local search history could not be read.",
+            "Verify local storage permissions or set CHEAPY_DB_PATH to a readable SQLite database.",
+        ),
+        err=True,
+    )
+    raise typer.Exit(code=1)
+
+
+def _watchlist_storage_error_exit() -> None:
+    _json_echo(
+        _error_payload(
+            "WATCHLIST_STORAGE_ERROR",
+            "Local watchlists could not be read or written.",
+            (
+                "Verify local storage permissions or set CHEAPY_DB_PATH to a "
+                "writable SQLite database."
+            ),
+        ),
+        err=True,
+    )
+    raise typer.Exit(code=1)
+
+
+def _watchlist_check_rationale(decision_payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "threshold_comparison": decision_payload["threshold_comparison"],
+        "historical_comparison": decision_payload["historical_comparison"],
+        "provider_confidence": decision_payload["provider_confidence"],
+        "rationale": decision_payload["rationale"],
+    }
+
+
+def _normalize_iata(value: str) -> str:
+    normalized = value.strip().upper()
+    if len(normalized) != 3 or not normalized.isascii() or not normalized.isalpha():
+        raise click.BadParameter("Airport must be a 3-letter IATA code.")
+    try:
+        resolve_airport(normalized)
+    except AirportNotFound as exc:
+        raise click.BadParameter(
+            "Airport is not in Cheapy's packaged airport catalog."
+        ) from exc
+    return normalized
+
+
+def _normalize_currency(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip().upper()
+    if len(normalized) != 3 or not normalized.isascii() or not normalized.isalpha():
+        raise click.BadParameter("Currency must be a 3-letter alphabetic code.")
+    return normalized
+
+
+@history_app.callback(invoke_without_command=True)
+def history(ctx: typer.Context) -> None:
+    """Inspect local Cheapy search history."""
+    if ctx.invoked_subcommand is None:
+        typer.echo(ctx.get_help())
+        raise typer.Exit()
+
+
+@history_app.command("list")
+def history_list(
+    limit: int = typer.Option(
+        20,
+        "--limit",
+        min=1,
+        max=100,
+        help="Maximum number of search runs to list.",
+    ),
+) -> None:
+    """List local search history."""
+    if storage.is_storage_disabled():
+        _storage_disabled_exit()
+
+    try:
+        with storage.open_database() as conn:
+            runs = storage.list_history(conn, limit=limit)
+    except storage.StorageDisabled:
+        _storage_disabled_exit()
+    except STORAGE_ERROR_TYPES:
+        _history_storage_error_exit()
+    _json_echo({"status": "ok", "runs": runs})
+
+
+@history_app.command("show")
+def history_show(run_id: int = typer.Argument(..., help="Search run id.")) -> None:
+    """Show one local search run."""
+    if storage.is_storage_disabled():
+        _storage_disabled_exit()
+
+    try:
+        with storage.open_database() as conn:
+            payload = storage.show_history(conn, run_id)
+    except storage.StorageDisabled:
+        _storage_disabled_exit()
+    except STORAGE_ERROR_TYPES:
+        _history_storage_error_exit()
+    if payload is None:
+        _json_echo(
+            _error_payload(
+                "HISTORY_RUN_NOT_FOUND",
+                "Search run was not found.",
+                "Run 'cheapy history list' to see available search runs.",
+            ),
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    _json_echo({"status": "ok", **payload})
+
+
+@watchlist_app.command("add")
+def watchlist_add(
+    name: str = typer.Option(..., "--name", help="Watchlist name."),
+    origin: str = typer.Option(..., "--origin", help="Origin IATA code."),
+    destination: str = typer.Option(
+        ...,
+        "--destination",
+        help="Destination IATA code.",
+    ),
+    departure_date: str = typer.Option(
+        ...,
+        "--departure-date",
+        help="Departure date in YYYY-MM-DD format.",
+    ),
+    return_date: str | None = typer.Option(
+        None,
+        "--return-date",
+        help="Optional return date in YYYY-MM-DD format.",
+    ),
+    max_price_amount: float | None = typer.Option(
+        None,
+        "--max-price-amount",
+        help="Maximum acceptable price.",
+    ),
+    currency: str | None = typer.Option(
+        None,
+        "--currency",
+        help="Currency code for price comparison.",
+    ),
+    max_stops: int | None = typer.Option(
+        None,
+        "--max-stops",
+        min=0,
+        help="Maximum allowed stops.",
+    ),
+    max_results: int = typer.Option(
+        5,
+        "--max-results",
+        min=1,
+        max=20,
+        help="Maximum search results.",
+    ),
+) -> None:
+    """Add a local watchlist."""
+    if storage.is_storage_disabled():
+        _storage_disabled_exit()
+
+    normalized_origin = _normalize_iata(origin)
+    normalized_destination = _normalize_iata(destination)
+    currency_code = _normalize_currency(currency)
+    if max_price_amount is not None and max_price_amount <= 0:
+        raise click.BadParameter("Maximum price must be positive.")
+    try:
+        SearchRequestV1.model_validate(
+            {
+                "schema_version": "1",
+                "origin": normalized_origin,
+                "destination": normalized_destination,
+                "departure_date": departure_date,
+                "return_date": return_date,
+                "max_results": max_results,
+            }
+        )
+    except ValidationError as exc:
+        raise click.BadParameter("Watchlist search parameters are invalid.") from exc
+
+    try:
+        with storage.open_database() as conn:
+            watchlist = storage.add_watchlist(
+                conn,
+                name=name,
+                origin=normalized_origin,
+                destination=normalized_destination,
+                departure_date=departure_date,
+                return_date=return_date,
+                max_price_amount=max_price_amount,
+                currency=currency_code,
+                max_stops=max_stops,
+                max_results=max_results,
+            )
+    except storage.StorageDisabled:
+        _storage_disabled_exit()
+    except STORAGE_ERROR_TYPES:
+        _watchlist_storage_error_exit()
+
+    _json_echo({"status": "ok", "watchlist": watchlist})
+
+
+@watchlist_app.command("list")
+def watchlist_list() -> None:
+    """List local watchlists."""
+    if storage.is_storage_disabled():
+        _storage_disabled_exit()
+
+    try:
+        with storage.open_database() as conn:
+            watchlists = storage.list_watchlists(conn)
+    except storage.StorageDisabled:
+        _storage_disabled_exit()
+    except STORAGE_ERROR_TYPES:
+        _watchlist_storage_error_exit()
+
+    _json_echo({"status": "ok", "watchlists": watchlists})
+
+
+@watchlist_app.command("check")
+def watchlist_check(
+    watchlist_id: int = typer.Argument(..., help="Watchlist id."),
+) -> None:
+    """Run a manual watchlist check."""
+    if storage.is_storage_disabled():
+        _storage_disabled_exit()
+
+    try:
+        with storage.open_database() as conn:
+            watchlist = storage.get_watchlist(conn, watchlist_id)
+    except storage.StorageDisabled:
+        _storage_disabled_exit()
+    except STORAGE_ERROR_TYPES:
+        _watchlist_storage_error_exit()
+
+    if watchlist is None:
+        _json_echo(
+            _error_payload(
+                "WATCHLIST_NOT_FOUND",
+                "Watchlist was not found.",
+                "Run 'cheapy watchlist list' to see available watchlists.",
+            ),
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    request = build_watchlist_request(watchlist)
+    try:
+        with storage.open_database() as conn:
+            historical_comparison = storage.watchlist_historical_comparison(
+                conn,
+                watchlist,
+            )
+    except storage.StorageDisabled:
+        _storage_disabled_exit()
+    except STORAGE_ERROR_TYPES:
+        _watchlist_storage_error_exit()
+
+    result = search_with_storage(request)
+    if result.search_run_id is None:
+        _json_echo(
+            _error_payload(
+                "WATCHLIST_CHECK_NOT_RECORDED",
+                "Watchlist check could not be recorded.",
+                "Verify local storage is writable and rerun the check.",
+            ),
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    decision_payload = evaluate_watchlist(
+        response=result.response,
+        watchlist=watchlist,
+        historical_comparison=historical_comparison,
+    )
+    best_offer = decision_payload["best_offer"]
+    try:
+        with storage.open_database() as conn:
+            storage.record_watchlist_check(
+                conn,
+                watchlist_id=watchlist_id,
+                search_run_id=result.search_run_id,
+                decision=decision_payload["decision"],
+                best_offer_id=(
+                    best_offer["offer_id"] if best_offer is not None else None
+                ),
+                best_price_amount=(
+                    best_offer["price_amount"] if best_offer is not None else None
+                ),
+                currency=(
+                    best_offer["currency"]
+                    if best_offer is not None
+                    else watchlist.get("currency")
+                ),
+                rationale=_watchlist_check_rationale(decision_payload),
+            )
+    except storage.StorageDisabled:
+        _storage_disabled_exit()
+    except STORAGE_ERROR_TYPES:
+        _watchlist_storage_error_exit()
+
+    _json_echo(
+        {
+            "status": "ok",
+            "watchlist_id": watchlist_id,
+            "search_run_id": result.search_run_id,
+            **decision_payload,
+        }
     )
 
 

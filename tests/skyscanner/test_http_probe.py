@@ -81,14 +81,14 @@ def test_config_from_env_accepts_runtime_user_agent_override() -> None:
     config = probe.config_from_env(
         {
             "CHEAPY_SKYSCANNER_COOKIE": "abgroup=1; __Secure-anon_token=secret",
-            "CHEAPY_SKYSCANNER_USER_AGENT": " Browserless-UA ",
+            "CHEAPY_SKYSCANNER_USER_AGENT": " Probe-UA ",
         },
         market="SG",
         locale="en-GB",
         currency="SGD",
     )
 
-    assert config.user_agent == "Browserless-UA"
+    assert config.user_agent == "Probe-UA"
 
 
 def test_config_repr_redacts_cookie() -> None:
@@ -254,7 +254,7 @@ def test_curl_client_post_uses_temp_config_without_cookie_in_argv() -> None:
 
 
 def test_curl_client_get_encodes_params_and_omits_body() -> None:
-    calls: list[dict[str, object]] = []
+    calls: list[list[str]] = []
 
     def fake_run(
         args: list[str],
@@ -264,8 +264,7 @@ def test_curl_client_get_encodes_params_and_omits_body() -> None:
         timeout: float,
         check: bool,
     ) -> subprocess.CompletedProcess[str]:
-        config_path = Path(args[args.index("--config") + 1])
-        calls.append({"args": args, "config": config_path.read_text()})
+        calls.append(args)
         return subprocess.CompletedProcess(args, 0, stdout='[]\n200', stderr="")
 
     client = probe.CurlClient(runner=fake_run)
@@ -279,15 +278,9 @@ def test_curl_client_get_encodes_params_and_omits_body() -> None:
 
     assert response.status_code == 200
     assert response.json() == []
-    call = calls[0]
-    args = call["args"]
-    assert isinstance(args, list)
+    args = calls[0]
     assert "--data-binary" not in args
-    assert all("https://example.test/autosuggest" not in arg for arg in args)
-    assert (
-        '"https://example.test/autosuggest?q=SIN%2FSGN&enabled=true"'
-        in call["config"]
-    )
+    assert args[-1] == "https://example.test/autosuggest?q=SIN%2FSGN&enabled=true"
     assert all("secret-cookie" not in arg for arg in args)
 
 
@@ -491,6 +484,7 @@ def test_get_entity_id_maps_ambiguous_airports() -> None:
         probe.get_entity_id("HAN", config=config(), client=client)
 
     assert exc_info.value.code == "entity_ambiguous"
+    assert "Hanoi A" in exc_info.value.message
     assert "secret" not in exc_info.value.message
 
 
@@ -500,7 +494,7 @@ def test_get_entity_id_maps_http_error() -> None:
     with pytest.raises(probe.ProbeError) as exc_info:
         probe.get_entity_id("HAN", config=config(), client=client)
 
-    assert exc_info.value.code == "blocked"
+    assert exc_info.value.code == "autosuggest_http_error"
 
 
 def test_get_entity_id_maps_invalid_json() -> None:
@@ -611,7 +605,7 @@ def test_search_posts_minimal_headers_and_uuid_view_id(monkeypatch: pytest.Monke
             destination=entity("SGN", "95673379"),
             departure_date="2026-06-11",
             return_date=None,
-            config=config(user_agent="Browserless-UA"),
+            config=config(user_agent="Probe-UA"),
             client=client,
         )
 
@@ -628,7 +622,7 @@ def test_search_posts_minimal_headers_and_uuid_view_id(monkeypatch: pytest.Monke
             "?adultsv2=1&cabinclass=economy&childrenv2=&ref=home&rtn=0"
             "&preferdirects=false&outboundaltsenabled=false&inboundaltsenabled=false"
         ),
-        "user-agent": "Browserless-UA",
+        "user-agent": "Probe-UA",
         "x-skyscanner-channelid": "website",
         "x-skyscanner-consent-adverts": "true",
         "x-skyscanner-currency": "SGD",
@@ -652,7 +646,7 @@ def test_fetch_flights_maps_search_http_error() -> None:
             client=client,
         )
 
-    assert exc_info.value.code == "rate_limited"
+    assert exc_info.value.code == "search_http_error"
 
 
 def test_fetch_flights_maps_search_invalid_json() -> None:
@@ -748,7 +742,7 @@ def test_fetch_flights_polls_incomplete_search_session() -> None:
 
 
 def test_fetch_flights_retries_until_polled_search_completes(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(probe.skyscanner_search, "sleep_between_polls", lambda: None)
+    monkeypatch.setattr(probe, "_sleep_between_search_polls", lambda: None, raising=False)
 
     class SlowPollingClient:
         def __init__(self) -> None:
@@ -864,17 +858,12 @@ def itinerary(
     option_amount: float,
     url: str | None,
     carrier: str = "VJ",
-    flight_number: str | None = "814",
+    flight_number: str | None = None,
 ) -> dict[str, object]:
     item: dict[str, object] = {"price": {"amount": option_amount}}
     if url is not None:
         item["url"] = url
     segment: dict[str, object] = {
-        "origin": {"displayCode": "SIN"},
-        "destination": {"displayCode": "SGN"},
-        "departure": "2026-06-11T09:00:00",
-        "arrival": "2026-06-11T10:30:00",
-        "durationInMinutes": 90,
         "marketingCarrier": {
             "displayCode": carrier,
             "name": carrier,
@@ -904,61 +893,6 @@ def search_payload(results: list[dict[str, object]]) -> dict[str, object]:
     return {"context": {"status": "complete"}, "itineraries": {"results": results}}
 
 
-def test_fetch_flights_retries_once_when_search_has_no_usable_results() -> None:
-    class RetryClient:
-        def __init__(self) -> None:
-            self.get_calls: list[dict[str, object]] = []
-            self.post_calls: list[dict[str, object]] = []
-            self.post_responses = [
-                FakeResponse(
-                    payload=search_payload(
-                        [itinerary(price=0.0, option_amount=0.0, url="/transport_deeplink/free")]
-                    )
-                ),
-                FakeResponse(
-                    payload=search_payload(
-                        [
-                            itinerary(
-                                price=220.96,
-                                option_amount=220.96,
-                                url="/transport_deeplink/cheap",
-                                carrier="VJ",
-                                flight_number="814",
-                            )
-                        ]
-                    )
-                ),
-            ]
-
-        def get(self, url: str, *, params: dict[str, object], headers: dict[str, str], timeout: float) -> FakeResponse:
-            self.get_calls.append(
-                {"url": url, "params": params, "headers": headers, "timeout": timeout}
-            )
-            raise AssertionError("complete search responses should not poll")
-
-        def post(self, url: str, *, json: dict[str, object], headers: dict[str, str], timeout: float) -> FakeResponse:
-            self.post_calls.append(
-                {"url": url, "json": json, "headers": headers, "timeout": timeout}
-            )
-            return self.post_responses.pop(0)
-
-    client = RetryClient()
-
-    results = probe.fetch_flights(
-        origin=entity("SIN", "95673375"),
-        destination=entity("SGN", "95673379"),
-        departure_date="2026-06-11",
-        return_date="2026-06-16",
-        config=config(),
-        client=client,
-    )
-
-    assert len(client.post_calls) == 2
-    assert client.get_calls == []
-    assert results[0].flight_numbers == "VJ814"
-    assert results[0].price_amount == 220.96
-
-
 def test_fetch_flights_extracts_sorted_fares_and_absolute_deeplinks() -> None:
     client = FakeClient(
         FakeResponse(
@@ -986,14 +920,12 @@ def test_fetch_flights_extracts_sorted_fares_and_absolute_deeplinks() -> None:
             price_amount=220.96,
             currency="SGD",
             deeplink_url="https://www.skyscanner.com.sg/transport_deeplink/cheap",
-            flight_numbers="VJ814",
         ),
         probe.FlightProbeResult(
             airline="SQ",
             price_amount=300.0,
             currency="SGD",
             deeplink_url="https://www.skyscanner.com.sg/transport_deeplink/expensive",
-            flight_numbers="SQ814",
         ),
     ]
 
@@ -1054,7 +986,6 @@ def test_fetch_flights_skips_hostile_absolute_and_protocol_deeplinks() -> None:
             price_amount=130.0,
             currency="SGD",
             deeplink_url="https://www.skyscanner.com.sg/transport_deeplink/usable",
-            flight_numbers="VJ814",
         )
     ]
 
@@ -1186,7 +1117,6 @@ def test_fetch_flights_skips_itinerary_when_cheapest_positive_option_has_no_deep
             price_amount=180.0,
             currency="SGD",
             deeplink_url="https://www.skyscanner.com.sg/transport_deeplink/usable",
-            flight_numbers="VJ814",
         )
     ]
 

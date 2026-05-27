@@ -9,7 +9,14 @@ from mcp import ClientSession, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
 
 from cheapy.mcp import create_mcp_server
-from cheapy.models import SearchMode, SearchResponseV1, SearchStatus
+from cheapy.models import (
+    FlightLegV1,
+    OfferFlagsV1,
+    SearchMode,
+    SearchResponseV1,
+    SearchStatus,
+)
+from cheapy.search_service import SearchWithStorageResult
 
 
 T = TypeVar("T")
@@ -130,22 +137,30 @@ def test_mcp_search_tool_uses_top_level_contract_fields() -> None:
     assert properties["max_results"]["maximum"] == 20
 
 
-def test_mcp_search_tool_annotation_marks_open_world() -> None:
+def test_mcp_search_tool_annotations_reflect_local_history_write() -> None:
     tool = _mcp_tool()
 
     assert tool.annotations.openWorldHint is True
+    assert tool.annotations.readOnlyHint is False
+    assert tool.annotations.idempotentHint is False
+    assert tool.annotations.destructiveHint is False
 
 
 def test_mcp_search_tool_returns_structured_contract_response(
     monkeypatch: Any,
 ) -> None:
-    def fake_search_exact(request: Any) -> SearchResponseV1:
+    public_search_url = (
+        "https://www.traveloka.com/en-en/flight/fulltwosearch?"
+        "ap=CXR.SGN&dt=10-7-2026.15-7-2026&ps=1.0.0&sc=ECONOMY"
+    )
+
+    def fake_search_with_storage(request: Any) -> SearchWithStorageResult:
         assert request.origin == "CXR"
         assert request.destination == "SGN"
         assert request.departure_date == "2026-07-10"
         assert request.return_date == "2026-07-15"
         assert request.search_mode == SearchMode.EXPANDED
-        return SearchResponseV1.model_validate(
+        response = SearchResponseV1.model_validate(
             {
                 "schema_version": "1",
                 "status": "success",
@@ -153,7 +168,45 @@ def test_mcp_search_tool_returns_structured_contract_response(
                     "search:round_trip:CXR:SGN:2026-07-10:2026-07-15:"
                     "expanded:1:0:0:0:5"
                 ),
-                "offers": [],
+                "offers": [
+                    {
+                        "offer_id": "traveloka:CXR-SGN:2026-07-10:1",
+                        "price_amount": 1_280_000.0,
+                        "currency": "VND",
+                        "comparable": True,
+                        "rank_within_currency": 1,
+                        "global_rank": 1,
+                        "provider": "traveloka",
+                        "requested_origin": "CXR",
+                        "requested_destination": "SGN",
+                        "actual_origin": "CXR",
+                        "actual_destination": "SGN",
+                        "nearby_origin_distance_km": None,
+                        "nearby_destination_distance_km": None,
+                        "requested_departure_date": "2026-07-10",
+                        "actual_departure_date": "2026-07-10",
+                        "departure_offset_days": 0,
+                        "requested_return_date": "2026-07-15",
+                        "actual_return_date": "2026-07-15",
+                        "return_offset_days": 0,
+                        "legs": [
+                            FlightLegV1(
+                                origin="CXR",
+                                destination="SGN",
+                                departure_time="2026-07-10T08:15:00",
+                                arrival_time="2026-07-10T09:25:00",
+                                airline_code="VJ",
+                                flight_number="VJ601",
+                                duration_minutes=70,
+                            )
+                        ],
+                        "total_duration_minutes": 70,
+                        "stops": 0,
+                        "flags": OfferFlagsV1(),
+                        "fare_details_status": "not_collected",
+                        "public_search_url": public_search_url,
+                    }
+                ],
                 "warnings": [],
                 "errors": [],
                 "provider_statuses": [],
@@ -175,8 +228,14 @@ def test_mcp_search_tool_returns_structured_contract_response(
                 "candidates": None,
             }
         )
+        return SearchWithStorageResult(
+            response=response,
+            search_run_id=1,
+            storage_enabled=True,
+            storage_warning=None,
+        )
 
-    monkeypatch.setattr("cheapy.mcp.search_exact", fake_search_exact)
+    monkeypatch.setattr("cheapy.mcp.search_with_storage", fake_search_with_storage)
     tool = _mcp_tool()
     arguments = {
         "schema_version": "1",
@@ -204,7 +263,8 @@ def test_mcp_search_tool_returns_structured_contract_response(
         "search:round_trip:CXR:SGN:2026-07-10:2026-07-15:"
         "expanded:1:0:0:0:5"
     ) in response.request_id
-    assert response.offers == []
+    assert payload["offers"][0]["public_search_url"] == public_search_url
+    assert response.offers[0].public_search_url == public_search_url
     assert response.errors == []
 
 

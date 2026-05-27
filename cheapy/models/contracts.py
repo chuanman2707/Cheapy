@@ -100,6 +100,7 @@ class WarningCode(StrEnum):
     SELF_TRANSFER = "self_transfer"
     NEARBY_AIRPORT_USED = "nearby_airport_used"
     FLEXIBLE_DATE_USED = "flexible_date_used"
+    LOCAL_STORAGE_FAILED = "local_storage_failed"
 
 
 class ErrorCode(StrEnum):
@@ -359,6 +360,7 @@ class FlightOfferV1(StrictModel):
     stops: int = Field(ge=0)
     flags: OfferFlagsV1
     fare_details_status: Literal["not_collected"]
+    public_search_url: str | None = None
 
     @field_validator(
         "requested_departure_date",
@@ -371,6 +373,21 @@ class FlightOfferV1(StrictModel):
         if value is None:
             return None
         return _validate_yyyy_mm_dd(value)
+
+    @model_validator(mode="after")
+    def validate_public_search_url(self) -> Self:
+        if self.public_search_url is None:
+            return self
+
+        from cheapy.public_url_safety import validate_public_search_url
+
+        public_search_url = validate_public_search_url(
+            self.provider, self.public_search_url
+        )
+        if public_search_url is None:
+            raise ValueError("public_search_url is not safe for provider")
+        self.public_search_url = public_search_url
+        return self
 
 
 class CurrencyGroupV1(StrictModel):
