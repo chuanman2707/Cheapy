@@ -1,7 +1,26 @@
 from __future__ import annotations
 
+from typing import Any
+from urllib.parse import parse_qs, urlparse
+
 import pytest
 
+from cheapy.models import (
+    CandidateFamily,
+    CurrencyGroupV1,
+    FlightLegV1,
+    FlightOfferV1,
+    OfferFlagsV1,
+    PassengersV1,
+    ProviderStatusCode,
+    ProviderStatusV1,
+    SearchMode,
+    SearchPlanV1,
+    SearchRequestV1,
+    SearchResponseV1,
+    SearchStatus,
+)
+from cheapy.public_links import attach_public_search_urls, build_public_search_url
 from cheapy.public_url_safety import validate_public_search_url
 
 
@@ -231,3 +250,272 @@ def test_validate_public_search_url_rejects_unsafe_urls(
     provider: str, url: str
 ) -> None:
     assert validate_public_search_url(provider, url) is None
+
+
+def _request(**overrides: Any) -> SearchRequestV1:
+    data: dict[str, Any] = {
+        "schema_version": "1",
+        "origin": "CXR",
+        "destination": "SIN",
+        "departure_date": "2026-07-01",
+        "return_date": None,
+        "passengers": {
+            "adults": 1,
+            "children": 0,
+            "infants_on_lap": 0,
+            "infants_in_seat": 0,
+        },
+        "max_results": 5,
+    }
+    data.update(overrides)
+    return SearchRequestV1.model_validate(data)
+
+
+def _offer(**overrides: Any) -> FlightOfferV1:
+    data: dict[str, Any] = {
+        "offer_id": "offer-1",
+        "price_amount": 120.0,
+        "currency": "USD",
+        "comparable": True,
+        "rank_within_currency": 1,
+        "global_rank": 1,
+        "provider": "google_fli",
+        "requested_origin": "CXR",
+        "requested_destination": "SIN",
+        "actual_origin": "SGN",
+        "actual_destination": "BKK",
+        "nearby_origin_distance_km": None,
+        "nearby_destination_distance_km": None,
+        "requested_departure_date": "2026-07-01",
+        "actual_departure_date": "2026-07-10",
+        "departure_offset_days": 9,
+        "requested_return_date": None,
+        "actual_return_date": None,
+        "return_offset_days": None,
+        "legs": [
+            FlightLegV1(
+                origin="SGN",
+                destination="BKK",
+                departure_time="2026-07-10T08:15:00",
+                arrival_time="2026-07-10T09:45:00",
+                airline_code="VJ",
+                flight_number="VJ801",
+                duration_minutes=90,
+            )
+        ],
+        "total_duration_minutes": 90,
+        "stops": 0,
+        "flags": OfferFlagsV1(),
+        "fare_details_status": "not_collected",
+    }
+    data.update(overrides)
+    return FlightOfferV1.model_validate(data)
+
+
+def _response(*offers: FlightOfferV1) -> SearchResponseV1:
+    response_offers = list(offers) or [_offer()]
+    return SearchResponseV1(
+        schema_version="1",
+        status=SearchStatus.SUCCESS,
+        request_id="req-public-links",
+        offers=response_offers,
+        warnings=[],
+        errors=[],
+        provider_statuses=[
+            ProviderStatusV1(
+                provider_name="google_fli",
+                capability="exact_one_way",
+                status=ProviderStatusCode.SUCCESS,
+                planned_call_count=1,
+                executed_call_count=1,
+                succeeded_call_count=1,
+                failed_call_count=0,
+                duration_ms=10,
+                warnings=[],
+                errors=[],
+                retryable=False,
+            )
+        ],
+        search_plan=SearchPlanV1(
+            search_mode=SearchMode.EXACT,
+            planned_candidate_count=1,
+            executed_candidate_count=1,
+            planned_provider_call_count=1,
+            executed_provider_call_count=1,
+            candidate_count_by_family={CandidateFamily.EXACT: 1},
+            provider_call_count_by_family={CandidateFamily.EXACT: 1},
+            truncated=False,
+            truncated_families=[],
+            candidate_families=[CandidateFamily.EXACT],
+        ),
+        mixed_currency=False,
+        currency_groups=[
+            CurrencyGroupV1(
+                currency="USD",
+                offer_ids=[offer.offer_id for offer in response_offers],
+            )
+        ],
+        currency_notes=[],
+        candidates=None,
+    )
+
+
+def test_build_public_search_url_builds_traveloka_one_way_from_offer_actuals() -> None:
+    offer = _offer(provider="traveloka")
+
+    url = build_public_search_url("traveloka", _request(), offer)
+
+    assert url is not None
+    parsed = urlparse(url)
+    params = parse_qs(parsed.query)
+    assert parsed.scheme == "https"
+    assert parsed.netloc == "www.traveloka.com"
+    assert parsed.path == "/en-en/flight/fulltwosearch"
+    assert params["ap"] == ["SGN.BKK"]
+    assert params["dt"] == ["10-7-2026"]
+    assert params["ps"] == ["1.0.0"]
+    assert validate_public_search_url("traveloka", url) == url
+
+
+def test_build_public_search_url_builds_traveloka_round_trip_actuals() -> None:
+    offer = _offer(provider="traveloka", actual_return_date="2026-07-17")
+
+    url = build_public_search_url(
+        "traveloka",
+        _request(return_date="2026-07-20"),
+        offer,
+    )
+
+    assert url is not None
+    params = parse_qs(urlparse(url).query)
+    assert params["ap"] == ["SGN.BKK"]
+    assert params["dt"] == ["10-7-2026.17-7-2026"]
+    assert validate_public_search_url("traveloka", url) == url
+
+
+def test_build_public_search_url_builds_google_one_way_from_offer_actuals() -> None:
+    offer = _offer(provider="google_fli")
+
+    url = build_public_search_url("google_fli", _request(), offer)
+
+    assert url is not None
+    parsed = urlparse(url)
+    assert parsed.scheme == "https"
+    assert parsed.netloc == "www.google.com"
+    assert parsed.path == "/travel/flights"
+    assert parse_qs(parsed.query) == {
+        "q": [
+            "Flights from SGN to BKK on 2026-07-10 "
+            "for 1 adult, 0 children, 0 infants"
+        ]
+    }
+    assert validate_public_search_url("google_fli", url) == url
+
+
+def test_build_public_search_url_builds_google_round_trip_from_offer_actuals() -> None:
+    offer = _offer(provider="google_fli", actual_return_date="2026-07-17")
+
+    url = build_public_search_url(
+        "google_fli",
+        _request(return_date="2026-07-20"),
+        offer,
+    )
+
+    assert url is not None
+    assert parse_qs(urlparse(url).query) == {
+        "q": [
+            "Flights from SGN to BKK on 2026-07-10 returning 2026-07-17 "
+            "for 1 adult, 0 children, 0 infants"
+        ]
+    }
+    assert validate_public_search_url("google_fli", url) == url
+
+
+def test_build_public_search_url_builds_skyscanner_one_way_from_offer_actuals() -> None:
+    offer = _offer(provider="skyscanner")
+
+    url = build_public_search_url("skyscanner", _request(), offer)
+
+    assert url == (
+        "https://www.skyscanner.com.sg/transport/flights/sgn/bkk/260710/"
+        "?adultsv2=1&cabinclass=economy&childrenv2=&ref=home&rtn=0"
+    )
+    assert validate_public_search_url("skyscanner", url) == url
+
+
+def test_build_public_search_url_builds_skyscanner_round_trip_actuals() -> None:
+    offer = _offer(provider="skyscanner", actual_return_date="2026-07-17")
+
+    url = build_public_search_url(
+        "skyscanner",
+        _request(return_date="2026-07-20"),
+        offer,
+    )
+
+    assert url == (
+        "https://www.skyscanner.com.sg/transport/flights/sgn/bkk/260710/260717/"
+        "?adultsv2=1&cabinclass=economy&childrenv2=&ref=home&rtn=1"
+    )
+    assert validate_public_search_url("skyscanner", url) == url
+
+
+def test_build_public_search_url_returns_none_for_skyscanner_child_passengers() -> None:
+    request = _request(passengers=PassengersV1(adults=1, children=1))
+    offer = _offer(provider="skyscanner")
+
+    assert build_public_search_url("skyscanner", request, offer) is None
+
+
+def test_build_public_search_url_uses_one_way_without_actual_return_date() -> None:
+    request = _request(return_date="2026-07-20")
+    offer = _offer(provider="skyscanner", actual_return_date=None)
+
+    url = build_public_search_url("skyscanner", request, offer)
+
+    assert url is not None
+    assert "/260710/?" in url
+    assert "260720" not in url
+    assert "rtn=0" in url
+
+
+def test_attach_public_search_urls_uses_offer_actual_route_and_dates() -> None:
+    request = _request(
+        origin="CXR",
+        destination="SIN",
+        departure_date="2026-07-01",
+        return_date="2026-07-20",
+    )
+    offer = _offer(
+        provider="traveloka",
+        requested_origin="CXR",
+        requested_destination="SIN",
+        actual_origin="SGN",
+        actual_destination="BKK",
+        requested_departure_date="2026-07-01",
+        actual_departure_date="2026-07-10",
+        requested_return_date="2026-07-20",
+        actual_return_date="2026-07-17",
+    )
+    response = _response(offer)
+
+    updated = attach_public_search_urls(request, response)
+
+    assert updated is not response
+    assert updated.offers[0] is not offer
+    assert updated.warnings == response.warnings
+    assert updated.errors == response.errors
+    assert updated.provider_statuses == response.provider_statuses
+    assert updated.search_plan == response.search_plan
+    assert updated.currency_groups == response.currency_groups
+    params = parse_qs(urlparse(updated.offers[0].public_search_url or "").query)
+    assert params["ap"] == ["SGN.BKK"]
+    assert params["dt"] == ["10-7-2026.17-7-2026"]
+
+
+def test_attach_public_search_urls_keeps_unknown_provider_url_none() -> None:
+    offer = _offer(provider="manual_fixture")
+    response = _response(offer)
+
+    updated = attach_public_search_urls(_request(), response)
+
+    assert updated.offers[0].public_search_url is None
