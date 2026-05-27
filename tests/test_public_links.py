@@ -206,6 +206,31 @@ def test_validate_public_search_url_rejects_cross_provider_urls(
             "https://www.google.com/travel/flights?next=https%3A%2F%2Fexample.test%2Fchallenge%2Fabc",
         ),
         (
+            "traveloka",
+            "https://www.traveloka.com/en-en/flight/fulltwosearch?"
+            "ap=SGN.BKK&dt=10-7-2026&ps=1.0.0&sc=ECONOMY"
+            "&next=%2Fapi%2Fv2%2Fflight%2Fsearch%2Finitial",
+        ),
+        (
+            "traveloka",
+            "https://www.traveloka.com/en-en/flight/fulltwosearch?"
+            "ap=SGN.BKK&dt=10-7-2026&ps=1.0.0&sc=ECONOMY"
+            "&funnelSource=%2Fapi%2Fv2%2Fflight%2Fsearch%2Finitial",
+        ),
+        (
+            "skyscanner",
+            "https://www.skyscanner.com.sg/transport/flights/sgn/bkk/260710/?"
+            "adultsv2=1&cabinclass=economy&childrenv2=&ref=%2Ftransport_deeplink%2Fcheap&rtn=0",
+        ),
+        (
+            "google_fli",
+            "https://www.google.com/travel/flights?q=%2Fg%2Fradar%2Fsearch",
+        ),
+        (
+            "google_fli",
+            "https://www.google.com/travel/flights?q=%2F%2Fevil.example%2Fsearch",
+        ),
+        (
             "google_fli",
             "https://www.google.com/travel/flights?cookie%5Bsession%5D=secret",
         ),

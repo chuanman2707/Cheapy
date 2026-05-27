@@ -21,6 +21,13 @@ _PROVIDER_HOSTS = {
     "traveloka": "www.traveloka.com",
     "skyscanner": "www.skyscanner.com.sg",
 }
+_PROVIDER_QUERY_KEYS = {
+    "google_fli": frozenset({"q"}),
+    "traveloka": frozenset({"ap", "dt", "ps", "sc", "funnelSource"}),
+    "skyscanner": frozenset(
+        {"adultsv2", "cabinclass", "childrenv2", "ref", "rtn"}
+    ),
+}
 
 _SENSITIVE_TERMS = {
     "auth",
@@ -85,7 +92,7 @@ def validate_public_search_url(provider: str, url: str) -> str | None:
         return None
     if not _is_allowed_provider_path(provider, parsed.path):
         return None
-    if _has_sensitive_query_material(parsed.query):
+    if _has_sensitive_query_material(provider, parsed.query):
         return None
 
     return url
@@ -188,13 +195,16 @@ def _is_allowed_provider_path(provider: str, path: str) -> bool:
     return False
 
 
-def _has_sensitive_query_material(query: str) -> bool:
+def _has_sensitive_query_material(provider: str, query: str) -> bool:
     decoded_query = _decode_to_stability(query)
     if decoded_query is None:
         return True
     if _has_control_character(decoded_query):
         return True
+    allowed_keys = _PROVIDER_QUERY_KEYS.get(provider, frozenset())
     for key, value in parse_qsl(decoded_query, keep_blank_values=True):
+        if key not in allowed_keys:
+            return True
         if _contains_sensitive_term(key) or _contains_sensitive_term(value):
             return True
     return _contains_sensitive_term(decoded_query)
@@ -208,8 +218,23 @@ def _contains_sensitive_term(value: str) -> bool:
         return True
     if _contains_jwt_shape(decoded_value):
         return True
+    if _contains_forbidden_query_url_material(decoded_value):
+        return True
     normalized = re.sub(r"[^a-z0-9]+", "", decoded_value.lower())
     return any(term in normalized for term in _SENSITIVE_TERMS)
+
+
+def _contains_forbidden_query_url_material(value: str) -> bool:
+    lowered = value.lower().replace("\\", "/")
+    if "://" in lowered or "//" in lowered:
+        return True
+    segments = [segment.split(";", 1)[0] for segment in lowered.split("/") if segment]
+    if "api" in segments or "transport_deeplink" in segments:
+        return True
+    return any(
+        first == "g" and second == "radar"
+        for first, second in zip(segments, segments[1:])
+    )
 
 
 def _contains_jwt_shape(value: str) -> bool:

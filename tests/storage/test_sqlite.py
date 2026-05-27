@@ -608,34 +608,55 @@ def test_offer_observations_has_no_public_url_column_or_value(
 
 
 def test_sanitized_response_json_drops_unsafe_public_url_strings() -> None:
-    unsafe_urls = [
-        "https://www.skyscanner.com.sg/transport_deeplink/sgn/bkk",
-        "https://www.traveloka.com/en-en/flight/fulltwosearch?token=secret",
-        "https://www.google.com/travel/flights?cookie=session-secret",
-        "https://www.google.com/travel/flights?session=secret",
-        "https://www.traveloka.com/en-en/flight/fulltwosearch?challenge=block",
-        "https://www.traveloka.com/api/flight/search",
+    unsafe_cases = [
+        ("skyscanner", "https://www.skyscanner.com.sg/transport_deeplink/sgn/bkk"),
+        (
+            "traveloka",
+            "https://www.traveloka.com/en-en/flight/fulltwosearch?token=secret",
+        ),
+        ("google_fli", "https://www.google.com/travel/flights?cookie=session-secret"),
+        ("google_fli", "https://www.google.com/travel/flights?session=secret"),
+        (
+            "traveloka",
+            "https://www.traveloka.com/en-en/flight/fulltwosearch?challenge=block",
+        ),
+        ("traveloka", "https://www.traveloka.com/api/flight/search"),
+        (
+            "traveloka",
+            "https://www.traveloka.com/en-en/flight/fulltwosearch?"
+            "ap=CXR.SGN&dt=10-7-2026&ps=1.0.0&sc=ECONOMY"
+            "&funnelSource=%2Fapi%2Fv2%2Fflight%2Fsearch%2Finitial",
+        ),
+        (
+            "skyscanner",
+            "https://www.skyscanner.com.sg/transport/flights/cxr/sgn/260710/?"
+            "adultsv2=1&cabinclass=economy&childrenv2=&ref=%2Ftransport_deeplink%2Fcheap&rtn=0",
+        ),
+        (
+            "google_fli",
+            "https://www.google.com/travel/flights?q=%2F%2Fevil.example%2Fsearch",
+        ),
     ]
     offers = [
         _offer(
-            offer_id=f"traveloka:cxr-sgn-20260710-{index}",
-            provider="traveloka",
+            offer_id=f"{provider}:cxr-sgn-20260710-{index}",
+            provider=provider,
         ).model_copy(update={"public_search_url": unsafe_url})
-        for index, unsafe_url in enumerate(unsafe_urls, start=1)
+        for index, (provider, unsafe_url) in enumerate(unsafe_cases, start=1)
     ]
     response = _response(
         offers=[
             _offer(
-                offer_id=f"traveloka:cxr-sgn-20260710-{index}",
-                provider="traveloka",
+                offer_id=f"{provider}:cxr-sgn-20260710-{index}",
+                provider=provider,
             )
-            for index in range(1, len(unsafe_urls) + 1)
+            for index, (provider, _) in enumerate(unsafe_cases, start=1)
         ]
     ).model_copy(update={"offers": offers})
 
     payload = sanitize_response_for_storage(response).model_dump_json()
 
-    for unsafe_url in unsafe_urls:
+    for _, unsafe_url in unsafe_cases:
         assert unsafe_url not in payload
     for unsafe_fragment in (
         "transport_deeplink",
@@ -644,6 +665,8 @@ def test_sanitized_response_json_drops_unsafe_public_url_strings() -> None:
         "session=secret",
         "challenge=block",
         "/api/flight/search",
+        "/api/v2/flight/search/initial",
+        "evil.example",
     ):
         assert unsafe_fragment not in payload
 
@@ -651,28 +674,49 @@ def test_sanitized_response_json_drops_unsafe_public_url_strings() -> None:
 def test_insert_search_snapshot_drops_unsafe_public_url_strings(
     tmp_path: Path,
 ) -> None:
-    unsafe_urls = [
-        "https://www.skyscanner.com.sg/transport_deeplink/sgn/bkk",
-        "https://www.traveloka.com/en-en/flight/fulltwosearch?token=secret",
-        "https://www.google.com/travel/flights?cookie=session-secret",
-        "https://www.google.com/travel/flights?session=secret",
-        "https://www.traveloka.com/en-en/flight/fulltwosearch?challenge=block",
-        "https://www.traveloka.com/api/flight/search",
+    unsafe_cases = [
+        ("skyscanner", "https://www.skyscanner.com.sg/transport_deeplink/sgn/bkk"),
+        (
+            "traveloka",
+            "https://www.traveloka.com/en-en/flight/fulltwosearch?token=secret",
+        ),
+        ("google_fli", "https://www.google.com/travel/flights?cookie=session-secret"),
+        ("google_fli", "https://www.google.com/travel/flights?session=secret"),
+        (
+            "traveloka",
+            "https://www.traveloka.com/en-en/flight/fulltwosearch?challenge=block",
+        ),
+        ("traveloka", "https://www.traveloka.com/api/flight/search"),
+        (
+            "traveloka",
+            "https://www.traveloka.com/en-en/flight/fulltwosearch?"
+            "ap=CXR.SGN&dt=10-7-2026&ps=1.0.0&sc=ECONOMY"
+            "&funnelSource=%2Fapi%2Fv2%2Fflight%2Fsearch%2Finitial",
+        ),
+        (
+            "skyscanner",
+            "https://www.skyscanner.com.sg/transport/flights/cxr/sgn/260710/?"
+            "adultsv2=1&cabinclass=economy&childrenv2=&ref=%2Ftransport_deeplink%2Fcheap&rtn=0",
+        ),
+        (
+            "google_fli",
+            "https://www.google.com/travel/flights?q=%2F%2Fevil.example%2Fsearch",
+        ),
     ]
     offers = [
         _offer(
-            offer_id=f"traveloka:cxr-sgn-20260710-{index}",
-            provider="traveloka",
+            offer_id=f"{provider}:cxr-sgn-20260710-{index}",
+            provider=provider,
         ).model_copy(update={"public_search_url": unsafe_url})
-        for index, unsafe_url in enumerate(unsafe_urls, start=1)
+        for index, (provider, unsafe_url) in enumerate(unsafe_cases, start=1)
     ]
     response = _response(
         offers=[
             _offer(
-                offer_id=f"traveloka:cxr-sgn-20260710-{index}",
-                provider="traveloka",
+                offer_id=f"{provider}:cxr-sgn-20260710-{index}",
+                provider=provider,
             )
-            for index in range(1, len(unsafe_urls) + 1)
+            for index, (provider, _) in enumerate(unsafe_cases, start=1)
         ]
     ).model_copy(update={"offers": offers})
 
@@ -689,7 +733,7 @@ def test_insert_search_snapshot_drops_unsafe_public_url_strings(
 
     payload = json.loads(response_json)
     assert {offer["public_search_url"] for offer in payload["offers"]} == {None}
-    for unsafe_url in unsafe_urls:
+    for _, unsafe_url in unsafe_cases:
         assert unsafe_url not in response_json
     for unsafe_fragment in (
         "transport_deeplink",
@@ -698,6 +742,8 @@ def test_insert_search_snapshot_drops_unsafe_public_url_strings(
         "session=secret",
         "challenge=block",
         "/api/flight/search",
+        "/api/v2/flight/search/initial",
+        "evil.example",
     ):
         assert unsafe_fragment not in response_json
 
