@@ -663,7 +663,7 @@ def test_history_show_json_keeps_public_search_url_out_of_observations(
 ) -> None:
     public_search_url = (
         "https://www.traveloka.com/en-en/flight/fulltwosearch?"
-        "ap=CXR.SGN&dt=10-07-2026.NA&ps=1.0.0&sc=ECONOMY"
+        "ap=CXR.SGN&dt=10-7-2026&ps=1.0.0&sc=ECONOMY"
     )
     response = _cli_response(
         offers=[

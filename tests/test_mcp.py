@@ -151,7 +151,7 @@ def test_mcp_search_tool_returns_structured_contract_response(
 ) -> None:
     public_search_url = (
         "https://www.traveloka.com/en-en/flight/fulltwosearch?"
-        "ap=CXR.SGN&dt=10-07-2026.15-07-2026&ps=1.0.0&sc=ECONOMY"
+        "ap=CXR.SGN&dt=10-7-2026.15-7-2026&ps=1.0.0&sc=ECONOMY"
     )
 
     def fake_search_with_storage(request: Any) -> SearchWithStorageResult:
