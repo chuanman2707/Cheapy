@@ -377,6 +377,12 @@ def test_build_public_search_url_builds_traveloka_one_way_from_offer_actuals() -
     assert validate_public_search_url("traveloka", url) == url
 
 
+def test_build_public_search_url_rejects_provider_mismatch() -> None:
+    offer = _offer(provider="google_fli")
+
+    assert build_public_search_url("traveloka", _request(), offer) is None
+
+
 def test_build_public_search_url_builds_traveloka_round_trip_actuals() -> None:
     offer = _offer(provider="traveloka", actual_return_date="2026-07-17")
 
@@ -391,6 +397,27 @@ def test_build_public_search_url_builds_traveloka_round_trip_actuals() -> None:
     assert params["ap"] == ["SGN.BKK"]
     assert params["dt"] == ["10-7-2026.17-7-2026"]
     assert validate_public_search_url("traveloka", url) == url
+
+
+def test_build_public_search_url_builds_traveloka_one_way_no_actual_return() -> None:
+    request = _request(return_date="2026-07-20")
+    offer = _offer(provider="traveloka", actual_return_date=None)
+
+    url = build_public_search_url("traveloka", request, offer)
+
+    assert url is not None
+    params = parse_qs(urlparse(url).query)
+    assert params["dt"] == ["10-7-2026"]
+
+
+def test_build_public_search_url_builds_traveloka_non_default_passengers() -> None:
+    request = _request(passengers=PassengersV1(adults=2, children=1, infants_in_seat=2))
+    offer = _offer(provider="traveloka")
+
+    url = build_public_search_url("traveloka", request, offer)
+
+    assert url is not None
+    assert parse_qs(urlparse(url).query)["ps"] == ["2.1.2"]
 
 
 def test_build_public_search_url_builds_google_one_way_from_offer_actuals() -> None:
@@ -412,6 +439,14 @@ def test_build_public_search_url_builds_google_one_way_from_offer_actuals() -> N
     assert validate_public_search_url("google_fli", url) == url
 
 
+def test_build_public_search_url_returns_none_for_google_bad_departure() -> None:
+    offer = _offer(provider="google_fli").model_copy(
+        update={"actual_departure_date": "not-a-date"}
+    )
+
+    assert build_public_search_url("google_fli", _request(), offer) is None
+
+
 def test_build_public_search_url_builds_google_round_trip_from_offer_actuals() -> None:
     offer = _offer(provider="google_fli", actual_return_date="2026-07-17")
 
@@ -429,6 +464,54 @@ def test_build_public_search_url_builds_google_round_trip_from_offer_actuals() -
         ]
     }
     assert validate_public_search_url("google_fli", url) == url
+
+
+def test_build_public_search_url_returns_none_for_google_invalid_return_date() -> None:
+    offer = _offer(provider="google_fli").model_copy(
+        update={"actual_return_date": "not-a-date"}
+    )
+
+    assert (
+        build_public_search_url(
+            "google_fli",
+            _request(return_date="2026-07-20"),
+            offer,
+        )
+        is None
+    )
+
+
+def test_build_public_search_url_builds_google_one_way_without_actual_return() -> None:
+    request = _request(return_date="2026-07-20")
+    offer = _offer(provider="google_fli", actual_return_date=None)
+
+    url = build_public_search_url("google_fli", request, offer)
+
+    assert url is not None
+    query = parse_qs(urlparse(url).query)["q"][0]
+    assert "on 2026-07-10" in query
+    assert "returning" not in query
+    assert "2026-07-20" not in query
+
+
+def test_build_public_search_url_builds_google_non_default_passengers() -> None:
+    request = _request(
+        passengers=PassengersV1(
+            adults=2,
+            children=1,
+            infants_on_lap=1,
+            infants_in_seat=1,
+        )
+    )
+    offer = _offer(provider="google_fli")
+
+    url = build_public_search_url("google_fli", request, offer)
+
+    assert url is not None
+    assert parse_qs(urlparse(url).query)["q"] == [
+        "Flights from SGN to BKK on 2026-07-10 "
+        "for 2 adults, 1 child, 2 infants"
+    ]
 
 
 def test_build_public_search_url_builds_skyscanner_one_way_from_offer_actuals() -> None:
@@ -461,6 +544,13 @@ def test_build_public_search_url_builds_skyscanner_round_trip_actuals() -> None:
 
 def test_build_public_search_url_returns_none_for_skyscanner_child_passengers() -> None:
     request = _request(passengers=PassengersV1(adults=1, children=1))
+    offer = _offer(provider="skyscanner")
+
+    assert build_public_search_url("skyscanner", request, offer) is None
+
+
+def test_build_public_search_url_returns_none_for_skyscanner_infants() -> None:
+    request = _request(passengers=PassengersV1(adults=1, infants_on_lap=1))
     offer = _offer(provider="skyscanner")
 
     assert build_public_search_url("skyscanner", request, offer) is None

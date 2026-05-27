@@ -22,6 +22,8 @@ def build_public_search_url(
     offer: FlightOfferV1,
 ) -> str | None:
     """Build a safe public search URL for a provider offer."""
+    if provider != offer.provider:
+        return None
     if provider == "traveloka":
         return _validated(provider, _build_traveloka_url(request, offer))
     if provider == "google_fli":
@@ -85,14 +87,24 @@ def _build_google_fli_url(
     request: SearchRequestV1,
     offer: FlightOfferV1,
 ) -> str | None:
+    try:
+        departure_date = date.fromisoformat(offer.actual_departure_date).isoformat()
+        return_date = (
+            date.fromisoformat(offer.actual_return_date).isoformat()
+            if offer.actual_return_date is not None
+            else None
+        )
+    except ValueError:
+        return None
+
     passengers = request.passengers
     infant_count = passengers.infants_on_lap + passengers.infants_in_seat
     trip_text = (
         f"Flights from {offer.actual_origin} to {offer.actual_destination} "
-        f"on {offer.actual_departure_date}"
+        f"on {departure_date}"
     )
-    if offer.actual_return_date is not None:
-        trip_text = f"{trip_text} returning {offer.actual_return_date}"
+    if return_date is not None:
+        trip_text = f"{trip_text} returning {return_date}"
     query_text = (
         f"{trip_text} for "
         f"{_count_label(passengers.adults, 'adult')}, "
