@@ -6,6 +6,10 @@ from urllib.parse import parse_qsl, unquote, urlsplit
 
 
 _MAX_URL_DECODE_ROUNDS = 10
+_JWT_SHAPE_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])(?:[A-Za-z0-9_-]{10,}\.){2}[A-Za-z0-9_-]{3,}"
+    r"(?![A-Za-z0-9_-])"
+)
 
 _PROVIDER_HOSTS = {
     "google_fli": "www.google.com",
@@ -102,7 +106,9 @@ def _normalize_path(path: str) -> str | None:
 
 def _has_internal_path_material(decoded_path: str, normalized_path: str) -> bool:
     for path in (decoded_path.lower(), normalized_path):
-        segments = [segment for segment in path.split("/") if segment]
+        segments = [
+            segment.split(";", 1)[0] for segment in path.split("/") if segment
+        ]
         if "api" in segments or "transport_deeplink" in segments:
             return True
         if any(
@@ -119,6 +125,8 @@ def _is_allowed_provider_path(provider: str, path: str) -> bool:
     if provider == "traveloka":
         return path == "/en-en/flight/fulltwosearch"
     if provider == "skyscanner":
+        if path != path.lower() or "//" in path or ";" in path:
+            return False
         return path.startswith("/transport/flights/")
     return False
 
@@ -136,6 +144,8 @@ def _has_sensitive_query_material(query: str) -> bool:
 def _contains_sensitive_term(value: str) -> bool:
     decoded_value = _decode_to_stability(value)
     if decoded_value is None:
+        return True
+    if _JWT_SHAPE_RE.search(decoded_value):
         return True
     normalized = re.sub(r"[^a-z0-9]+", "", decoded_value.lower())
     return any(term in normalized for term in _SENSITIVE_TERMS)
