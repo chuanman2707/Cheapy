@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Browserless Skyscanner HTTP research probe.
+"""Skyscanner HTTP research probe.
 
 This script is intentionally not a Cheapy provider. It resolves Skyscanner
 entity IDs, calls the researched web-unified-search endpoint, and prints a

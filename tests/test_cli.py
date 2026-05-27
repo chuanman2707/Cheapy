@@ -332,6 +332,7 @@ def test_providers_test_default_does_not_run_live_provider(monkeypatch) -> None:
     assert result.stderr == ""
     payload = json.loads(result.stdout)
     providers = {provider["name"]: provider for provider in payload["providers"]}
+    assert "skyscanner" not in providers
     assert providers["manual_fixture"]["status"] == "success"
     assert providers["manual_fixture"]["live_smoke"] == "not_applicable"
     assert providers["google_fli"]["status"] == "skipped"

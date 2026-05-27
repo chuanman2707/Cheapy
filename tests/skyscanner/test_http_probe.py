@@ -81,14 +81,14 @@ def test_config_from_env_accepts_runtime_user_agent_override() -> None:
     config = probe.config_from_env(
         {
             "CHEAPY_SKYSCANNER_COOKIE": "abgroup=1; __Secure-anon_token=secret",
-            "CHEAPY_SKYSCANNER_USER_AGENT": " Browserless-UA ",
+            "CHEAPY_SKYSCANNER_USER_AGENT": " Probe-UA ",
         },
         market="SG",
         locale="en-GB",
         currency="SGD",
     )
 
-    assert config.user_agent == "Browserless-UA"
+    assert config.user_agent == "Probe-UA"
 
 
 def test_config_repr_redacts_cookie() -> None:
@@ -605,7 +605,7 @@ def test_search_posts_minimal_headers_and_uuid_view_id(monkeypatch: pytest.Monke
             destination=entity("SGN", "95673379"),
             departure_date="2026-06-11",
             return_date=None,
-            config=config(user_agent="Browserless-UA"),
+            config=config(user_agent="Probe-UA"),
             client=client,
         )
 
@@ -622,7 +622,7 @@ def test_search_posts_minimal_headers_and_uuid_view_id(monkeypatch: pytest.Monke
             "?adultsv2=1&cabinclass=economy&childrenv2=&ref=home&rtn=0"
             "&preferdirects=false&outboundaltsenabled=false&inboundaltsenabled=false"
         ),
-        "user-agent": "Browserless-UA",
+        "user-agent": "Probe-UA",
         "x-skyscanner-channelid": "website",
         "x-skyscanner-consent-adverts": "true",
         "x-skyscanner-currency": "SGD",
