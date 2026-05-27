@@ -77,6 +77,7 @@ def test_validate_public_search_url_rejects_cross_provider_urls(
             "traveloka",
             "https://www.traveloka.com:notaport/en-en/flight/fulltwosearch?ap=SGN.BKK",
         ),
+        ("google_fli", "https://www.google.com:/travel/flights?q=x"),
         (
             "traveloka",
             "https://www.traveloka.com/en-en/flight/fulltwosearch?ap=SGN.BKK#results",
