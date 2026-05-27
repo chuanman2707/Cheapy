@@ -34,6 +34,7 @@ from cheapy.providers.registry import (
     ProviderManifestError,
     load_search_providers,
 )
+from cheapy.public_links import attach_public_search_urls
 from cheapy.search_planner import (
     EXACT_ONE_WAY_CAPABILITY,
     EXACT_ROUND_TRIP_CAPABILITY,
@@ -324,7 +325,7 @@ def _response_from_provider_results(
     errors = [error for result in provider_results for error in result.errors]
     mixed_currency = len({offer.currency for offer in returned_offers}) > 1
 
-    return SearchResponseV1(
+    response = SearchResponseV1(
         schema_version="1",
         status=_response_status(returned_offers, errors),
         request_id=request_id,
@@ -340,6 +341,10 @@ def _response_from_provider_results(
         currency_notes=[_MIXED_CURRENCY_NOTE] if mixed_currency else [],
         candidates=None,
     )
+    try:
+        return attach_public_search_urls(request, response)
+    except Exception:
+        return response
 
 
 def _response_warnings(
