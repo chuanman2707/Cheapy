@@ -120,6 +120,10 @@ def test_validate_public_search_url_rejects_cross_provider_urls(
             "google_fli",
             "https://www.google.com/travel/flights?auth=basic",
         ),
+        (
+            "google_fli",
+            "https://www.google.com/travel/flights?body=raw-provider-data",
+        ),
         ("unknown", "https://www.google.com/travel/flights?q=Flights"),
         ("google_fli", "not a url"),
     ],
