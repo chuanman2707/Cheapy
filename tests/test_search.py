@@ -439,6 +439,51 @@ def test_search_exact_public_search_url_uses_actual_offer_date_for_flexible_offe
     assert "10-7-2026" not in public_search_url
 
 
+def test_search_exact_returns_results_when_public_search_url_attachment_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = ProviderResult(
+        provider_name="traveloka",
+        capability="exact_one_way",
+        status=ProviderStatusCode.SUCCESS,
+        offers=[
+            _offer(
+                offer_id="traveloka:1",
+                provider="traveloka",
+                currency="USD",
+                price_amount=100.0,
+            )
+        ],
+        warnings=[],
+        errors=[],
+        duration_ms=1,
+        retryable=False,
+    )
+    monkeypatch.setattr(
+        "cheapy.search.load_search_providers",
+        lambda: [_ProviderFromResult(result)],
+    )
+
+    def raise_link_failure(
+        request: SearchRequestV1,
+        response: object,
+    ) -> object:
+        raise RuntimeError("link builder failed")
+
+    monkeypatch.setattr(
+        "cheapy.search.attach_public_search_urls",
+        raise_link_failure,
+    )
+
+    response = search_exact(_request())
+
+    assert response.status == SearchStatus.SUCCESS
+    assert [offer.offer_id for offer in response.offers] == ["traveloka:1"]
+    assert response.offers[0].public_search_url is None
+    assert response.errors == []
+    assert response.provider_statuses[0].provider_name == "traveloka"
+
+
 def test_search_exact_round_trip_routes_to_round_trip_capability(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
