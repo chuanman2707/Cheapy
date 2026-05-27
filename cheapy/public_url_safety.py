@@ -58,6 +58,8 @@ def validate_public_search_url(provider: str, url: str) -> str | None:
     decoded_path = _decode_to_stability(parsed.path)
     if decoded_path is None:
         return None
+    if "\\" in decoded_path:
+        return None
 
     normalized_path = _normalize_path(decoded_path)
     if normalized_path is None:
