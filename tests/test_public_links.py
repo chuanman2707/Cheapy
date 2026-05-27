@@ -17,6 +17,10 @@ from cheapy.public_url_safety import validate_public_search_url
             "https://www.google.com/travel/flights?q=Flights+from+SGN+to+BKK+on+2026-07-10",
         ),
         (
+            "google_fli",
+            "https://www.google.com:443/travel/flights?q=Flights+from+SGN+to+BKK+on+2026-07-10",
+        ),
+        (
             "skyscanner",
             "https://www.skyscanner.com.sg/transport/flights/sgn/bkk/260710/?adultsv2=1&cabinclass=economy&childrenv2=&ref=home&rtn=0",
         ),

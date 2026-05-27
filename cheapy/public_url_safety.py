@@ -54,7 +54,7 @@ def validate_public_search_url(provider: str, url: str) -> str | None:
         return None
     if parsed.username is not None or parsed.password is not None:
         return None
-    if port is not None:
+    if port not in (None, 443):
         return None
     if parsed.fragment:
         return None
