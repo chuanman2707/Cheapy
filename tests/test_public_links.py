@@ -32,6 +32,15 @@ def test_validate_public_search_url_accepts_provider_search_urls(
     assert validate_public_search_url(provider, url) == url
 
 
+def test_validate_public_search_url_accepts_traveloka_numeric_version_query() -> None:
+    url = (
+        "https://www.traveloka.com/en-en/flight/fulltwosearch?"
+        "ap=SGN.BKK&dt=10-7-2026&ps=1.0.0&sc=ECONOMY"
+    )
+
+    assert validate_public_search_url("traveloka", url) == url
+
+
 @pytest.mark.parametrize(
     ("provider", "url"),
     [
@@ -200,6 +209,10 @@ def test_validate_public_search_url_rejects_cross_provider_urls(
         (
             "google_fli",
             "https://www.google.com/travel/flights?id=eyJhbGciOiJIUzI1NiJ9.e30.c2lnbmF0dXJl",
+        ),
+        (
+            "google_fli",
+            "https://www.google.com/travel/flights?id=e30.e30.sig",
         ),
         (
             "google_fli",

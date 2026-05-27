@@ -8,8 +8,8 @@ from urllib.parse import parse_qsl, unquote, urlsplit
 _MAX_URL_DECODE_ROUNDS = 10
 _HEX_DIGITS = set("0123456789abcdefABCDEF")
 _JWT_SHAPE_RE = re.compile(
-    r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{2,}"
-    r"\.[A-Za-z0-9_-]{3,}"
+    r"(?<![A-Za-z0-9_-])([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)"
+    r"\.([A-Za-z0-9_-]+)"
     r"(?![A-Za-z0-9_-])"
 )
 _SKYSCANNER_SEARCH_PATH_RE = re.compile(
@@ -206,10 +206,17 @@ def _contains_sensitive_term(value: str) -> bool:
         return True
     if _has_control_character(decoded_value):
         return True
-    if _JWT_SHAPE_RE.search(decoded_value):
+    if _contains_jwt_shape(decoded_value):
         return True
     normalized = re.sub(r"[^a-z0-9]+", "", decoded_value.lower())
     return any(term in normalized for term in _SENSITIVE_TERMS)
+
+
+def _contains_jwt_shape(value: str) -> bool:
+    return any(
+        max(len(segment) for segment in match.groups()) >= 3
+        for match in _JWT_SHAPE_RE.finditer(value)
+    )
 
 
 def _has_control_character(value: str) -> bool:
