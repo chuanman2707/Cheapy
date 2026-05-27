@@ -95,3 +95,15 @@ def test_schema_exports_local_storage_warning_code() -> None:
     assert result.exit_code == 0
     exported = json.loads(result.output)
     assert "local_storage_failed" in json.dumps(exported["SearchResponseV1"])
+
+
+def test_schema_exports_flight_offer_public_search_url() -> None:
+    result = runner.invoke(app, ["schema"])
+
+    assert result.exit_code == 0
+    exported = json.loads(result.output)
+
+    offer_properties = exported["SearchResponseV1"]["$defs"]["FlightOfferV1"][
+        "properties"
+    ]
+    assert "public_search_url" in offer_properties

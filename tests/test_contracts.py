@@ -22,6 +22,45 @@ from cheapy.models import (
 )
 
 
+def _flight_offer_kwargs(**overrides: object) -> dict[str, object]:
+    offer = {
+        "offer_id": "google_fli:offer-1",
+        "price_amount": 120.5,
+        "currency": "USD",
+        "comparable": True,
+        "rank_within_currency": 1,
+        "global_rank": 1,
+        "provider": "google_fli",
+        "requested_origin": "SGN",
+        "requested_destination": "BKK",
+        "actual_origin": "SGN",
+        "actual_destination": "BKK",
+        "requested_departure_date": "2026-07-10",
+        "actual_departure_date": "2026-07-10",
+        "departure_offset_days": 0,
+        "requested_return_date": None,
+        "actual_return_date": None,
+        "return_offset_days": None,
+        "legs": [
+            FlightLegV1(
+                origin="SGN",
+                destination="BKK",
+                departure_time="2026-07-10T09:00:00",
+                arrival_time="2026-07-10T10:30:00",
+                airline_code="VN",
+                flight_number="VN601",
+                duration_minutes=90,
+            )
+        ],
+        "total_duration_minutes": 90,
+        "stops": 0,
+        "flags": OfferFlagsV1(),
+        "fare_details_status": "not_collected",
+    }
+    offer.update(overrides)
+    return offer
+
+
 def test_search_request_defaults_to_exact_mode_and_one_adult() -> None:
     request = SearchRequestV1(
         schema_version="1",
@@ -168,41 +207,34 @@ def test_flight_leg_rejects_date_only_times() -> None:
         )
 
 
-def test_response_uses_offers_as_canonical_source() -> None:
-    offer = FlightOfferV1(
-        offer_id="google_fli:offer-1",
-        price_amount=120.5,
-        currency="USD",
-        comparable=True,
-        rank_within_currency=1,
-        global_rank=1,
-        provider="google_fli",
-        requested_origin="SGN",
-        requested_destination="BKK",
-        actual_origin="SGN",
-        actual_destination="BKK",
-        requested_departure_date="2026-07-10",
-        actual_departure_date="2026-07-10",
-        departure_offset_days=0,
-        requested_return_date=None,
-        actual_return_date=None,
-        return_offset_days=None,
-        legs=[
-            FlightLegV1(
-                origin="SGN",
-                destination="BKK",
-                departure_time="2026-07-10T09:00:00",
-                arrival_time="2026-07-10T10:30:00",
-                airline_code="VN",
-                flight_number="VN601",
-                duration_minutes=90,
+def test_flight_offer_accepts_null_public_search_url() -> None:
+    offer = FlightOfferV1(**_flight_offer_kwargs(public_search_url=None))
+
+    assert offer.public_search_url is None
+
+
+def test_flight_offer_accepts_provider_matching_public_search_url() -> None:
+    public_search_url = "https://www.google.com/travel/flights?q=SGN%20BKK"
+
+    offer = FlightOfferV1(**_flight_offer_kwargs(public_search_url=public_search_url))
+
+    assert offer.public_search_url == public_search_url
+
+
+def test_flight_offer_rejects_cross_provider_public_search_url() -> None:
+    with pytest.raises(ValidationError, match="public_search_url"):
+        FlightOfferV1(
+            **_flight_offer_kwargs(
+                provider="google_fli",
+                public_search_url=(
+                    "https://www.traveloka.com/en-en/flight/fulltwosearch?ap=SGN.BKK"
+                ),
             )
-        ],
-        total_duration_minutes=90,
-        stops=0,
-        flags=OfferFlagsV1(),
-        fare_details_status="not_collected",
-    )
+        )
+
+
+def test_response_uses_offers_as_canonical_source() -> None:
+    offer = FlightOfferV1(**_flight_offer_kwargs())
     plan = SearchPlanV1(
         search_mode=SearchMode.EXACT,
         planned_candidate_count=1,
