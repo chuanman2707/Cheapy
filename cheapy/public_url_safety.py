@@ -6,6 +6,7 @@ from urllib.parse import parse_qsl, unquote, urlsplit
 
 
 _MAX_URL_DECODE_ROUNDS = 10
+_HEX_DIGITS = set("0123456789abcdefABCDEF")
 _JWT_SHAPE_RE = re.compile(
     r"(?<![A-Za-z0-9_-])(?:[A-Za-z0-9_-]{10,}\.){2}[A-Za-z0-9_-]{3,}"
     r"(?![A-Za-z0-9_-])"
@@ -83,19 +84,35 @@ def validate_public_search_url(provider: str, url: str) -> str | None:
 def _decode_to_stability(value: str) -> str | None:
     previous = value
     for _ in range(_MAX_URL_DECODE_ROUNDS):
+        if _has_malformed_percent_escape(previous):
+            return None
         current = unquote(previous)
         if current == previous:
             return current
         previous = current
+    if _has_malformed_percent_escape(previous):
+        return None
     if unquote(previous) != previous:
         return None
     return previous
+
+
+def _has_malformed_percent_escape(value: str) -> bool:
+    for index, char in enumerate(value):
+        if char != "%":
+            continue
+        escape = value[index + 1 : index + 3]
+        if len(escape) != 2 or not all(digit in _HEX_DIGITS for digit in escape):
+            return True
+    return False
 
 
 def _decoding_reveals_reserved_path_delimiter(path: str) -> bool:
     previous = path
     previous_counts = _reserved_path_delimiter_counts(previous)
     for _ in range(_MAX_URL_DECODE_ROUNDS):
+        if _has_malformed_percent_escape(previous):
+            return True
         current = unquote(previous)
         current_counts = _reserved_path_delimiter_counts(current)
         if any(

@@ -137,6 +137,14 @@ def test_validate_public_search_url_rejects_cross_provider_urls(
             "https://www.skyscanner.com.sg/transport/flights/sgn/bkk/foo%253bbar",
         ),
         (
+            "skyscanner",
+            "https://www.skyscanner.com.sg/transport/flights/sgn/bkk/%",
+        ),
+        (
+            "skyscanner",
+            "https://www.skyscanner.com.sg/transport/flights/sgn/bkk/%2",
+        ),
+        (
             "google_fli",
             "https://www.google.com/Travel/Flights?q=Flights+from+SGN+to+BKK",
         ),
