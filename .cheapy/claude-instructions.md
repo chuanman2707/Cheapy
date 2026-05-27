@@ -18,6 +18,7 @@ Use Cheapy for one-way and round-trip MVP flight searches.
 - Cheapy may call multiple enabled live providers, including google_fli and traveloka.
 - Do not ask the user to choose providers.
 - Use each offer's `provider` field when explaining where a fare came from.
+- When an offer includes `public_search_url`, render the fare/provider as a Markdown link, for example [4,920,000 VND on Traveloka](...). If `public_search_url` is absent, show plain text and do not invent a link.
 - Traveloka is a default-enabled research provider for this codebase under the project permission assumption and may return structured timeout, block, or parse failures.
 - Choose the cheapest result from the returned `offers` list when currencies are comparable.
 - Explain mixed currency cautiously; preserve provider currency and do not overstate comparisons.
