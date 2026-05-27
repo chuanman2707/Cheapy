@@ -62,6 +62,8 @@ def validate_public_search_url(provider: str, url: str) -> str | None:
     decoded_path = _decode_to_stability(parsed.path)
     if decoded_path is None:
         return None
+    if _decoding_reveals_reserved_path_delimiter(parsed.path):
+        return None
     if "\\" in decoded_path:
         return None
 
@@ -88,6 +90,28 @@ def _decode_to_stability(value: str) -> str | None:
     if unquote(previous) != previous:
         return None
     return previous
+
+
+def _decoding_reveals_reserved_path_delimiter(path: str) -> bool:
+    previous = path
+    previous_counts = _reserved_path_delimiter_counts(previous)
+    for _ in range(_MAX_URL_DECODE_ROUNDS):
+        current = unquote(previous)
+        current_counts = _reserved_path_delimiter_counts(current)
+        if any(
+            current_count > previous_count
+            for current_count, previous_count in zip(current_counts, previous_counts)
+        ):
+            return True
+        if current == previous:
+            return False
+        previous = current
+        previous_counts = current_counts
+    return True
+
+
+def _reserved_path_delimiter_counts(path: str) -> tuple[int, int, int]:
+    return path.count("/"), path.count("\\"), path.count(";")
 
 
 def _normalize_path(path: str) -> str | None:

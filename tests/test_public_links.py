@@ -121,6 +121,22 @@ def test_validate_public_search_url_rejects_cross_provider_urls(
             "https://www.skyscanner.com.sg/transport/flights//sgn/bkk/260710/",
         ),
         (
+            "skyscanner",
+            "https://www.skyscanner.com.sg/transport/flights/sgn/bkk/%2fnotinternal",
+        ),
+        (
+            "skyscanner",
+            "https://www.skyscanner.com.sg/transport/flights/sgn/bkk/foo%3bbar",
+        ),
+        (
+            "skyscanner",
+            "https://www.skyscanner.com.sg/transport/flights/sgn/bkk/%252fnotinternal",
+        ),
+        (
+            "skyscanner",
+            "https://www.skyscanner.com.sg/transport/flights/sgn/bkk/foo%253bbar",
+        ),
+        (
             "google_fli",
             "https://www.google.com/Travel/Flights?q=Flights+from+SGN+to+BKK",
         ),
