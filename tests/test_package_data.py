@@ -126,6 +126,9 @@ skyscanner_root = files("cheapy.providers").joinpath("skyscanner")
 assert skyscanner_root.joinpath("__init__.py").is_file()
 assert skyscanner_root.joinpath("scan_graphql_bundles.py").is_file()
 skyscanner_manifest = skyscanner_root.joinpath("manifest.toml").read_text(encoding="utf-8")
+assert skyscanner_root.joinpath("adapter.py").is_file()
+assert skyscanner_root.joinpath("normalizer.py").is_file()
+assert skyscanner_root.joinpath("provider.py").is_file()
 
 assert airports["version"] == 1
 assert hubs["version"] == 1
