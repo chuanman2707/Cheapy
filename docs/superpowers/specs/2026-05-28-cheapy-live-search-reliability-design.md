@@ -98,9 +98,24 @@ The provider batch uses a shared monotonic deadline:
 deadline = start + 45 seconds
 ```
 
-Provider attempts run only with the remaining time. If the deadline expires,
-unfinished provider tasks are cancelled and converted into sanitized retryable
-timeout failures with `failure_type = "timeout"`.
+Provider attempts run only with the remaining time. The implementation must not
+rely on cancelling `asyncio.to_thread()` work to enforce this budget, because
+cancelling the asyncio task does not necessarily stop the underlying blocking
+thread. Any provider attempt that enters blocking work must be bounded by the
+remaining batch time before it starts.
+
+For the built-in live providers, the implementation should make provider
+wrappers budget-aware so their internal transport timeout is no greater than
+the remaining batch time. Skyscanner's curl timeout and Traveloka's browser
+workflow timeout are provider-owned deadlines and can be lowered per logical
+call. Google Fli cannot depend on a cancelled `to_thread()` future as its only
+deadline; if its upstream sync search has no safe per-call timeout, the plan
+must either introduce a killable execution boundary for that call or avoid
+starting any retry that cannot finish within the remaining budget.
+
+If the deadline expires before a provider produces a bounded result, convert
+that logical call into a sanitized retryable timeout failure with
+`failure_type = "timeout"`. Completed provider results must still be returned.
 
 Provider status accounting stays logical:
 
@@ -130,6 +145,10 @@ The final result is what appears in `response.errors` and
 
 No backoff is needed for this milestone; the retry budget is the shared 45-second
 deadline.
+
+The final logical `ProviderResult.duration_ms` should measure elapsed time for
+the whole logical provider call, including retry time, not only the final
+attempt. This keeps duration aligned with logical `1/1` provider accounting.
 
 ### Safe Failure Reasons
 
@@ -206,12 +225,20 @@ For each Skyscanner leg:
 6. Require segment dates and route values to stay internally consistent.
 7. Return one `SkyscannerLegCandidate` per segment.
 
-The itinerary extractor then validates the flattened segment sequence against
-the expected route:
+The itinerary extractor then validates the provider-leg groups and flattened
+segment sequence against the expected route:
 
 - one-way expected route starts at request origin and ends at request
   destination
 - round-trip expected route contains an outbound chain and an inbound chain
+
+Round-trip handling must preserve provider-leg boundaries internally until
+normalization, or carry an internal inbound-start marker/date. Flattening all
+segments too early is not enough: an inbound chain such as `SGN -> DOH -> DUS`
+does not contain a single segment with `origin == SGN` and `destination == DUS`.
+The normalizer must set `actual_return_date` from the first inbound segment's
+departure date before flattening segments into Contract V1 `FlightLegV1`
+entries.
 
 Malformed, wrong-route, missing-flight-number, or broken-chain payloads remain
 skipped safely. If no usable itinerary remains, the adapter raises the existing
@@ -219,8 +246,11 @@ sanitized `no_usable_results` error.
 
 The normalizer already maps `SkyscannerLegCandidate` objects into
 `FlightLegV1`; it should preserve all segment flight numbers in offer legs.
-`total_duration_minutes` and `stops` should reflect the provider itinerary or
-the safe sum of emitted segment durations and stop counts.
+Prefer the provider leg-level duration sum for itinerary
+`total_duration_minutes`, because segment duration sums exclude layovers. Fall
+back to the emitted segment duration sum only when every provider leg duration
+is unavailable or invalid. `stops` should reflect provider leg stop counts, with
+a safe fallback to the number of intermediate segment connections.
 
 ### Public Link Safety
 
