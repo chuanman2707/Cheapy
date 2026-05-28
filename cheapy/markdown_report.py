@@ -25,7 +25,7 @@ def render_search_report(request: SearchRequestV1, response: SearchResponseV1) -
     ]
     if response.provider_statuses:
         sections.append(_render_provider_statuses(response.provider_statuses))
-    messages = [*response.warnings, *response.errors]
+    messages = _warning_error_rows(response)
     if messages:
         sections.append(_render_warnings_and_errors(messages))
     return "\n\n".join(sections).rstrip() + "\n"
@@ -47,7 +47,7 @@ def render_offer_price(offer: FlightOfferV1) -> str:
 def _render_header(request: SearchRequestV1) -> str:
     date = request.departure_date
     if request.return_date is not None:
-        date = f"{date}, {request.return_date}"
+        date = f"{date} -> {request.return_date}"
     return (
         f"## {_table_text(request.origin)} -> {_table_text(request.destination)}"
         f" | {_table_text(date)} | {_table_text(_passenger_summary(request))} | Economy"
@@ -113,21 +113,75 @@ def _render_provider_statuses(statuses: list[ProviderStatusV1]) -> str:
     )
 
 
-def _render_warnings_and_errors(messages: list[WarningV1 | ErrorV1]) -> str:
-    rows = [
-        (
-            message.code.value,
-            message.severity.value,
-            message.message_en,
-            "yes" if message.retryable else "no",
-        )
-        for message in messages
-    ]
+def _render_warnings_and_errors(rows: list[tuple[str, str, str, str, str, str, str]]) -> str:
     return "\n".join(
         [
             "## Warnings And Errors",
-            _markdown_table(["Code", "Severity", "Message", "Retryable"], rows),
+            _markdown_table(
+                [
+                    "Provider",
+                    "Status",
+                    "Calls",
+                    "Code",
+                    "Severity",
+                    "Message",
+                    "Retryable",
+                ],
+                rows,
+            ),
         ]
+    )
+
+
+def _warning_error_rows(
+    response: SearchResponseV1,
+) -> list[tuple[str, str, str, str, str, str, str]]:
+    rows = []
+    report_calls = (
+        f"{response.search_plan.executed_provider_call_count}/"
+        f"{response.search_plan.planned_provider_call_count}"
+    )
+    rows.extend(
+        _message_row(
+            provider="Report",
+            status=response.status.value,
+            calls=report_calls,
+            message=message,
+        )
+        for message in [*response.warnings, *response.errors]
+    )
+    for provider_status in response.provider_statuses:
+        calls = (
+            f"{provider_status.executed_call_count}/"
+            f"{provider_status.planned_call_count}"
+        )
+        rows.extend(
+            _message_row(
+                provider=_provider_label(provider_status.provider_name),
+                status=provider_status.status.value,
+                calls=calls,
+                message=message,
+            )
+            for message in [*provider_status.warnings, *provider_status.errors]
+        )
+    return rows
+
+
+def _message_row(
+    *,
+    provider: str,
+    status: str,
+    calls: str,
+    message: WarningV1 | ErrorV1,
+) -> tuple[str, str, str, str, str, str, str]:
+    return (
+        provider,
+        status,
+        calls,
+        message.code.value,
+        message.severity.value,
+        message.message_en,
+        "yes" if message.retryable else "no",
     )
 
 
@@ -150,29 +204,51 @@ def _provider_notes(status: ProviderStatusV1) -> str:
     if status.retryable:
         notes.append("retryable: yes")
     for warning in status.warnings:
-        notes.append(f"warning: {warning.message_en}")
+        notes.append(_provider_message_note("warning", warning))
     for error in status.errors:
-        notes.append(f"error: {error.message_en}")
+        notes.append(_provider_message_note("error", error))
     return "; ".join(notes) if notes else "-"
 
 
+def _provider_message_note(kind: str, message: WarningV1 | ErrorV1) -> str:
+    retryable = "yes" if message.retryable else "no"
+    return (
+        f"{kind} {message.code.value}: {message.message_en} "
+        f"retryable: {retryable}"
+    )
+
+
 def _provider_summary(response: SearchResponseV1) -> str:
-    providers = [
-        status.provider_name
-        for status in response.provider_statuses
-        if status.provider_name
-    ]
-    if not providers:
-        providers = [offer.provider for offer in response.offers if offer.provider]
+    if response.provider_statuses:
+        return "; ".join(_provider_status_summary(status) for status in response.provider_statuses)
+
     labels = []
     seen = set()
-    for provider in providers:
+    for provider in [offer.provider for offer in response.offers if offer.provider]:
         label = _provider_label(provider)
         if label in seen:
             continue
         seen.add(label)
         labels.append(label)
     return ", ".join(labels) if labels else "-"
+
+
+def _provider_status_summary(status: ProviderStatusV1) -> str:
+    parts = [
+        (
+            f"{_provider_label(status.provider_name)} {status.status.value} "
+            f"{status.executed_call_count}/{status.planned_call_count}"
+        )
+    ]
+    if status.failed_call_count:
+        parts.append(f"failed: {status.failed_call_count}")
+    if status.warnings:
+        parts.append(f"warnings: {len(status.warnings)}")
+    if status.errors:
+        parts.append(f"errors: {len(status.errors)}")
+    if status.retryable:
+        parts.append("retryable")
+    return ", ".join(parts)
 
 
 def _passenger_summary(request: SearchRequestV1) -> str:

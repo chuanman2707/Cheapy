@@ -106,6 +106,23 @@ def _provider_status(**overrides: Any) -> ProviderStatusV1:
     return ProviderStatusV1.model_validate(data)
 
 
+def _search_plan(**overrides: Any) -> SearchPlanV1:
+    data: dict[str, Any] = {
+        "search_mode": SearchMode.EXACT,
+        "planned_candidate_count": 1,
+        "executed_candidate_count": 1,
+        "planned_provider_call_count": 1,
+        "executed_provider_call_count": 1,
+        "candidate_count_by_family": {CandidateFamily.EXACT: 1},
+        "provider_call_count_by_family": {CandidateFamily.EXACT: 1},
+        "truncated": False,
+        "truncated_families": [],
+        "candidate_families": [CandidateFamily.EXACT],
+    }
+    data.update(overrides)
+    return SearchPlanV1.model_validate(data)
+
+
 def _response(**overrides: Any) -> SearchResponseV1:
     offers = list(overrides.pop("offers", [_offer()]))
     mixed_currency = overrides.pop(
@@ -119,18 +136,7 @@ def _response(**overrides: Any) -> SearchResponseV1:
         "warnings": [],
         "errors": [],
         "provider_statuses": [_provider_status()],
-        "search_plan": SearchPlanV1(
-            search_mode=SearchMode.EXACT,
-            planned_candidate_count=1,
-            executed_candidate_count=1,
-            planned_provider_call_count=1,
-            executed_provider_call_count=1,
-            candidate_count_by_family={CandidateFamily.EXACT: 1},
-            provider_call_count_by_family={CandidateFamily.EXACT: 1},
-            truncated=False,
-            truncated_families=[],
-            candidate_families=[CandidateFamily.EXACT],
-        ),
+        "search_plan": _search_plan(),
         "mixed_currency": mixed_currency,
         "currency_groups": [
             CurrencyGroupV1(
@@ -176,11 +182,28 @@ def test_report_renders_header_summary_and_best_offers_without_raw_url_field() -
     assert "| Status | success |" in report
     assert "| Offers | 1 |" in report
     assert "| Search mode | exact |" in report
-    assert "| Providers | Traveloka |" in report
+    assert "| Providers | Traveloka success 1/1 |" in report
     assert "| Mixed currency | no |" in report
     assert f"[4,920,000 VND on Traveloka]({TRAVELOKA_URL})" in report
     assert report.count(TRAVELOKA_URL) == 1
     assert "public_search_url" not in report
+
+
+def test_report_round_trip_header_uses_clear_date_arrow() -> None:
+    report = render_search_report(
+        _request(return_date="2026-07-17"),
+        _response(
+            offers=[
+                _offer(
+                    requested_return_date="2026-07-17",
+                    actual_return_date="2026-07-17",
+                    return_offset_days=0,
+                )
+            ]
+        ),
+    )
+
+    assert "## CXR -> SGN | 2026-07-10 -> 2026-07-17 | 1 adult | Economy" in report
 
 
 def test_report_empty_offers() -> None:
@@ -189,7 +212,7 @@ def test_report_empty_offers() -> None:
     assert "No offers returned." in report
 
 
-def test_provider_status_warnings_and_errors_hide_details() -> None:
+def test_provider_status_warnings_and_errors_include_safe_context_hide_details() -> None:
     warning = WarningV1(
         code=WarningCode.SEARCH_TRUNCATED,
         severity=Severity.WARNING,
@@ -207,6 +230,10 @@ def test_provider_status_warnings_and_errors_hide_details() -> None:
     response = _response(
         warnings=[warning],
         errors=[error],
+        search_plan=_search_plan(
+            planned_provider_call_count=4,
+            executed_provider_call_count=3,
+        ),
         provider_statuses=[
             _provider_status(
                 status=ProviderStatusCode.PARTIAL,
@@ -224,10 +251,13 @@ def test_provider_status_warnings_and_errors_hide_details() -> None:
     report = render_search_report(_request(), response)
 
     assert "## Provider Status" in report
-    assert "| Traveloka | partial | 2/2 | succeeded: 1; failed: 1; retryable: yes; warning: Provider warning is safe.; error: Provider error is safe. |" in report
+    assert "| Providers | Traveloka partial 2/2, failed: 1, warnings: 1, errors: 1, retryable |" in report
+    assert "| Traveloka | partial | 2/2 | succeeded: 1; failed: 1; retryable: yes; warning search_truncated: Provider warning is safe. retryable: yes; error provider_timeout: Provider error is safe. retryable: no |" in report
     assert "## Warnings And Errors" in report
-    assert "| search_truncated | warning | Provider warning is safe. | yes |" in report
-    assert "| provider_timeout | error | Provider error is safe. | no |" in report
+    assert "| Report | success | 3/4 | search_truncated | warning | Provider warning is safe. | yes |" in report
+    assert "| Report | success | 3/4 | provider_timeout | error | Provider error is safe. | no |" in report
+    assert "| Traveloka | partial | 2/2 | search_truncated | warning | Provider warning is safe. | yes |" in report
+    assert "| Traveloka | partial | 2/2 | provider_timeout | error | Provider error is safe. | no |" in report
     for unsafe_text in (
         "details",
         "url",
@@ -240,3 +270,49 @@ def test_provider_status_warnings_and_errors_hide_details() -> None:
         "secret-header",
     ):
         assert unsafe_text not in report
+
+
+def test_provider_summary_includes_multiple_provider_status_details() -> None:
+    warning = WarningV1(
+        code=WarningCode.FARE_DETAILS_NOT_COLLECTED,
+        severity=Severity.INFO,
+        message_en="Fare details were skipped.",
+        details={},
+        retryable=False,
+    )
+    response = _response(
+        provider_statuses=[
+            _provider_status(
+                status=ProviderStatusCode.PARTIAL,
+                planned_call_count=2,
+                executed_call_count=2,
+                failed_call_count=1,
+                warnings=[warning],
+                retryable=True,
+            ),
+            _provider_status(
+                provider_name="google_fli",
+                status=ProviderStatusCode.FAILED,
+                planned_call_count=1,
+                executed_call_count=1,
+                succeeded_call_count=0,
+                failed_call_count=1,
+                errors=[
+                    ErrorV1(
+                        code=ErrorCode.PROVIDER_FAILED,
+                        severity=Severity.ERROR,
+                        message_en="Provider failed safely.",
+                        details={},
+                        retryable=True,
+                    )
+                ],
+            ),
+        ],
+    )
+
+    report = render_search_report(_request(), response)
+
+    assert (
+        "| Providers | Traveloka partial 2/2, failed: 1, warnings: 1, retryable; "
+        "Google Fli failed 1/1, failed: 1, errors: 1 |"
+    ) in report
