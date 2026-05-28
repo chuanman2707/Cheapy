@@ -26,6 +26,9 @@ from cheapy.providers.registry import (
     ProviderLoadError,
     discover_provider_manifests,
 )
+from cheapy.providers.skyscanner.provider import (
+    create_provider as create_skyscanner_provider,
+)
 
 
 def _manifest_by_name(name: str) -> ProviderManifest:
@@ -646,6 +649,51 @@ def test_google_fli_round_trip_missing_adapter_method_returns_controlled_failure
     assert result.errors[0].details["provider"] == "google_fli"
     assert result.errors[0].details["capability"] == "exact_round_trip"
     assert result.errors[0].details["failure_type"] == "unexpected_error"
+
+
+def test_skyscanner_stub_returns_skipped_one_way_result() -> None:
+    provider = create_skyscanner_provider()
+
+    result = asyncio.run(
+        provider.search_exact_one_way(
+            ProviderExactOneWayRequest(
+                origin="SGN",
+                destination="BKK",
+                departure_date="2026-07-10",
+            )
+        )
+    )
+
+    assert result.provider_name == "skyscanner"
+    assert result.capability == "exact_one_way"
+    assert result.status == ProviderStatusCode.SKIPPED
+    assert result.offers == []
+    assert result.errors == []
+    assert result.duration_ms == 0
+    assert result.retryable is False
+
+
+def test_skyscanner_stub_returns_skipped_round_trip_result() -> None:
+    provider = create_skyscanner_provider()
+
+    result = asyncio.run(
+        provider.search_exact_round_trip(
+            ProviderExactRoundTripRequest(
+                origin="SGN",
+                destination="BKK",
+                departure_date="2026-07-10",
+                return_date="2026-07-17",
+            )
+        )
+    )
+
+    assert result.provider_name == "skyscanner"
+    assert result.capability == "exact_round_trip"
+    assert result.status == ProviderStatusCode.SKIPPED
+    assert result.offers == []
+    assert result.errors == []
+    assert result.duration_ms == 0
+    assert result.retryable is False
 
 
 def test_load_enabled_providers_loads_all_default_enabled_providers() -> None:

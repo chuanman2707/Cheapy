@@ -219,6 +219,8 @@ def _skipped_result(capability: str) -> ProviderResult:
     )
 ```
 
+This skipped stub is an intermediate development state only. It prevents placeholder exceptions while the branch is between Task 1 and Task 4, but it can still consume provider-call budget because the manifest is default-enabled. Do not release or final-verify the branch until Task 4 replaces this stub with the real provider wrapper.
+
 - [ ] **Step 4: Run focused tests**
 
 Run:
