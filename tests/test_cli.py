@@ -16,6 +16,7 @@ from cheapy.models import (
     FlightLegV1,
     FlightOfferV1,
     OfferFlagsV1,
+    PassengersV1,
     ProviderStatusCode,
     ProviderStatusV1,
     SearchMode,
@@ -42,6 +43,21 @@ def _cli_request() -> SearchRequestV1:
             "destination": "SGN",
             "departure_date": "2026-07-10",
             "return_date": None,
+            "max_results": 5,
+        }
+    )
+
+
+def _cli_markdown_request() -> SearchRequestV1:
+    return SearchRequestV1.model_validate(
+        {
+            "schema_version": "1",
+            "origin": "CXR",
+            "destination": "SGN",
+            "departure_date": "2026-07-10",
+            "return_date": None,
+            "search_mode": SearchMode.EXACT,
+            "passengers": PassengersV1(adults=2, children=1),
             "max_results": 5,
         }
     )
@@ -690,6 +706,75 @@ def test_history_show_json_keeps_public_search_url_out_of_observations(
     assert not any("url" in key.lower() for key in payload["offer_observations"][0])
 
 
+def test_history_show_markdown_prints_search_report(tmp_path, monkeypatch) -> None:
+    public_search_url = (
+        "https://www.traveloka.com/en-en/flight/fulltwosearch?"
+        "ap=CXR.SGN&dt=10-07-2026.NA&ps=2.1.0&sc=ECONOMY&funnelSource=flight"
+    )
+    request = _cli_markdown_request()
+    response = _cli_response(
+        offers=[
+            _offer(
+                offer_id="traveloka:CXR-SGN:2026-07-10:1",
+                price_amount=1_111_000.0,
+                provider="traveloka",
+                public_search_url=public_search_url,
+            )
+        ],
+        provider_statuses=[_provider_status(provider_name="traveloka")],
+    )
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(tmp_path / "cheapy.sqlite3"))
+    with storage.open_database() as conn:
+        run_id = storage.insert_search_snapshot(conn, request, response)
+
+    result = runner.invoke(app, ["history", "show", str(run_id), "--markdown"])
+
+    assert result.exit_code == 0
+    assert result.stderr == ""
+    assert result.stdout.startswith(
+        "## CXR -> SGN | 2026-07-10 | 2 adults, 1 child | Economy\n"
+    )
+    assert f"[1,111,000 VND on Traveloka]({public_search_url})" in result.stdout
+    assert result.stdout.count(public_search_url) == 1
+    assert "public_search_url" not in result.stdout
+
+
+def test_history_show_markdown_reports_malformed_storage_without_details(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    secret = "secret-passenger-json"
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(tmp_path / "cheapy.sqlite3"))
+
+    def fake_show_history(conn, run_id):
+        return {
+            "search_run": {
+                "schema_version": "1",
+                "origin": "CXR",
+                "destination": "SGN",
+                "departure_date": "2026-07-10",
+                "return_date": None,
+                "search_mode": "exact",
+                "passengers_json": f"not-json-{secret}",
+                "max_results": 5,
+                "storage_only": "ignored",
+            },
+            "provider_runs": [],
+            "offer_observations": [],
+            "response": _cli_response().model_dump(mode="json"),
+        }
+
+    monkeypatch.setattr("cheapy.cli.storage.show_history", fake_show_history)
+
+    result = runner.invoke(app, ["history", "show", "1", "--markdown"])
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert json.loads(result.stderr)["code"] == "HISTORY_STORAGE_ERROR"
+    assert secret not in result.stderr
+    assert "Traceback" not in result.stderr
+
+
 def test_history_show_reports_not_found(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("CHEAPY_DB_PATH", str(tmp_path / "cheapy.sqlite3"))
 
@@ -1063,6 +1148,79 @@ def test_watchlist_check_runs_search_records_check_and_prints_decision(
         },
     }
     assert fresh_run_id != prior_run_id
+
+
+def test_watchlist_check_markdown_prints_search_report(tmp_path, monkeypatch) -> None:
+    public_search_url = (
+        "https://www.traveloka.com/en-en/flight/fulltwosearch?"
+        "ap=CXR.SGN&dt=10-07-2026.NA&ps=1.0.0&sc=ECONOMY&funnelSource=flight"
+    )
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(tmp_path / "cheapy.sqlite3"))
+    with storage.open_database() as conn:
+        watchlist = storage.add_watchlist(
+            conn,
+            name="CXR SGN",
+            origin="CXR",
+            destination="SGN",
+            departure_date="2026-07-10",
+            return_date=None,
+            max_price_amount=1_300_000.0,
+            currency="VND",
+            max_stops=0,
+            max_results=5,
+        )
+    fresh_run_id = None
+
+    def fake_search_with_storage(request):
+        nonlocal fresh_run_id
+        fresh_response = _cli_response(
+            offers=[
+                _offer(
+                    offer_id="traveloka:fresh",
+                    price_amount=900_000.0,
+                    provider="traveloka",
+                    public_search_url=public_search_url,
+                )
+            ],
+            provider_statuses=[_provider_status(provider_name="traveloka")],
+        )
+        with storage.open_database() as conn:
+            fresh_run_id = storage.insert_search_snapshot(
+                conn,
+                request,
+                fresh_response,
+                now_utc="2026-05-02T00:00:00Z",
+            )
+        return SearchWithStorageResult(
+            response=fresh_response,
+            search_run_id=fresh_run_id,
+            storage_enabled=True,
+            storage_warning=None,
+        )
+
+    monkeypatch.setattr("cheapy.cli.search_with_storage", fake_search_with_storage)
+
+    result = runner.invoke(
+        app,
+        ["watchlist", "check", str(watchlist["id"]), "--markdown"],
+    )
+
+    assert result.exit_code == 0
+    assert result.stderr == ""
+    assert result.stdout.startswith(
+        "## CXR -> SGN | 2026-07-10 | 1 adult | Economy\n"
+    )
+    assert f"[900,000 VND on Traveloka]({public_search_url})" in result.stdout
+    assert result.stdout.count(public_search_url) == 1
+    assert "public_search_url" not in result.stdout
+    assert '"decision"' not in result.stdout
+    with storage.open_database() as conn:
+        check_count = conn.execute(
+            "SELECT COUNT(*) FROM watchlist_checks WHERE watchlist_id = ?",
+            (watchlist["id"],),
+        ).fetchone()[0]
+    assert check_count == 1
+    assert fresh_run_id is not None
 
 
 def test_watchlist_check_fails_when_search_run_is_not_persisted(
