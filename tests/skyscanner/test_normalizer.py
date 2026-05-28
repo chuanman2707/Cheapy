@@ -147,6 +147,78 @@ def test_normalize_round_trip_candidate_sets_return_date_and_legs() -> None:
     assert offer.total_duration_minutes == 300
 
 
+def test_normalize_round_trip_multisegment_sets_return_date_from_inbound_group() -> None:
+    outbound_1 = _leg(
+        origin="DUS",
+        destination="DOH",
+        departure_time="2026-07-11T15:25:00",
+        arrival_time="2026-07-11T23:35:00",
+        airline_code="QR",
+        flight_number="QR86",
+        duration_minutes=370,
+    )
+    outbound_2 = _leg(
+        origin="DOH",
+        destination="SGN",
+        departure_time="2026-07-12T02:00:00",
+        arrival_time="2026-07-12T13:55:00",
+        airline_code="QR",
+        flight_number="QR970",
+        duration_minutes=475,
+    )
+    inbound_1 = _leg(
+        origin="SGN",
+        destination="DOH",
+        departure_time="2026-08-14T20:00:00",
+        arrival_time="2026-08-15T00:15:00",
+        airline_code="QR",
+        flight_number="QR971",
+        duration_minutes=435,
+    )
+    inbound_2 = _leg(
+        origin="DOH",
+        destination="DUS",
+        departure_time="2026-08-15T02:30:00",
+        arrival_time="2026-08-15T07:50:00",
+        airline_code="QR",
+        flight_number="QR85",
+        duration_minutes=380,
+    )
+    request = ProviderExactRoundTripRequest(
+        origin="DUS",
+        destination="SGN",
+        departure_date="2026-07-11",
+        return_date="2026-08-14",
+    )
+    candidate = SkyscannerItineraryCandidate(
+        item_id="longhaul-1",
+        price_amount=920.0,
+        currency="SGD",
+        legs=(outbound_1, outbound_2, inbound_1, inbound_2),
+        total_duration_minutes=1980,
+        stops=2,
+        outbound_leg_count=2,
+    )
+
+    offers, errors = normalize_candidates([candidate], request)
+
+    assert errors == []
+    offer = offers[0]
+    assert offer.actual_origin == "DUS"
+    assert offer.actual_destination == "SGN"
+    assert offer.actual_departure_date == "2026-07-11"
+    assert offer.actual_return_date == "2026-08-14"
+    assert offer.return_offset_days == 0
+    assert [leg.flight_number for leg in offer.legs] == [
+        "QR86",
+        "QR970",
+        "QR971",
+        "QR85",
+    ]
+    assert offer.total_duration_minutes == 1980
+    assert offer.stops == 2
+
+
 def test_normalize_candidate_with_no_legs_returns_parse_error() -> None:
     candidate = SkyscannerItineraryCandidate(
         item_id="broken",

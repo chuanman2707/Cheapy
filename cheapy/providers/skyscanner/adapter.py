@@ -102,6 +102,7 @@ class SkyscannerItineraryCandidate:
     legs: tuple[SkyscannerLegCandidate, ...]
     total_duration_minutes: int
     stops: int
+    outbound_leg_count: int | None = None
 
 
 class SkyscannerProviderError(Exception):
@@ -909,35 +910,50 @@ def _segment_flight_number(segment: object) -> tuple[str, str] | None:
     return compact_carrier, f"{compact_carrier}{compact_number}"
 
 
-def _candidate_leg(leg: object) -> SkyscannerLegCandidate | None:
+def _candidate_leg_segments(leg: object) -> tuple[SkyscannerLegCandidate, ...] | None:
     if not isinstance(leg, dict):
         return None
     origin = _as_str(_field(leg, ("origin.displayCode",)))
     destination = _as_str(_field(leg, ("destination.displayCode",)))
-    departure = _as_str(_field(leg, ("departure",)))
-    arrival = _as_str(_field(leg, ("arrival",)))
     duration = _int_value(_field(leg, ("durationInMinutes",)))
     segments = leg.get("segments")
+    if (
+        origin is None
+        or destination is None
+        or duration is None
+        or not isinstance(segments, list)
+        or not segments
+    ):
+        return None
+    candidates = tuple(
+        candidate
+        for segment in segments
+        if (candidate := _candidate_segment(segment)) is not None
+    )
+    if len(candidates) != len(segments):
+        return None
+    if candidates[0].origin != origin or candidates[-1].destination != destination:
+        return None
+    for current, next_segment in zip(candidates, candidates[1:], strict=False):
+        if current.destination != next_segment.origin:
+            return None
+    return candidates
+
+
+def _candidate_segment(segment: object) -> SkyscannerLegCandidate | None:
+    if not isinstance(segment, dict):
+        return None
+    origin = _as_str(_field(segment, ("origin.displayCode",)))
+    destination = _as_str(_field(segment, ("destination.displayCode",)))
+    departure = _as_str(_field(segment, ("departure",)))
+    arrival = _as_str(_field(segment, ("arrival",)))
+    duration = _int_value(_field(segment, ("durationInMinutes",)))
     if (
         origin is None
         or destination is None
         or departure is None
         or arrival is None
         or duration is None
-        or not isinstance(segments, list)
-        or len(segments) != 1
-    ):
-        return None
-    segment = segments[0]
-    segment_origin = _as_str(_field(segment, ("origin.displayCode",)))
-    segment_destination = _as_str(_field(segment, ("destination.displayCode",)))
-    segment_departure = _as_str(_field(segment, ("departure",)))
-    segment_arrival = _as_str(_field(segment, ("arrival",)))
-    if (
-        segment_origin != origin
-        or segment_destination != destination
-        or segment_departure != departure
-        or segment_arrival != arrival
     ):
         return None
     flight = _segment_flight_number(segment)
@@ -975,27 +991,43 @@ def _extract_candidate(
         or not _has_usable_pricing_option(itinerary, config=config)
     ):
         return None
-    legs = tuple(
-        candidate
+    leg_groups = tuple(
+        group
         for leg in legs_payload
-        if (candidate := _candidate_leg(leg)) is not None
+        if (group := _candidate_leg_segments(leg)) is not None
     )
-    if not legs or len(legs) != len(legs_payload) or len(legs) != len(expected_routes):
+    if (
+        not leg_groups
+        or len(leg_groups) != len(legs_payload)
+        or len(leg_groups) != len(expected_routes)
+    ):
         return None
-    for leg, (expected_origin, expected_destination) in zip(
-        legs,
+    for group, (expected_origin, expected_destination) in zip(
+        leg_groups,
         expected_routes,
         strict=True,
     ):
-        if leg.origin != expected_origin or leg.destination != expected_destination:
+        if group[0].origin != expected_origin or group[-1].destination != expected_destination:
             return None
-    total_duration = sum(leg.duration_minutes for leg in legs)
+    legs = tuple(segment for group in leg_groups for segment in group)
+    leg_durations = [
+        duration
+        for leg in legs_payload
+        if (duration := _int_value(_field(leg, ("durationInMinutes",)))) is not None
+        and duration >= 0
+    ]
+    total_duration = (
+        sum(leg_durations)
+        if len(leg_durations) == len(legs_payload)
+        else sum(leg.duration_minutes for leg in legs)
+    )
     stop_count = 0
-    for leg in legs_payload:
+    for leg, group in zip(legs_payload, leg_groups, strict=True):
         stops = _int_value(_field(leg, ("stopCount",)))
         if stops is None or stops < 0:
-            return None
-        stop_count += stops
+            stop_count += max(0, len(group) - 1)
+        else:
+            stop_count += stops
     return SkyscannerItineraryCandidate(
         item_id=item_id,
         price_amount=price_amount,
@@ -1003,6 +1035,7 @@ def _extract_candidate(
         legs=legs,
         total_duration_minutes=total_duration,
         stops=stop_count,
+        outbound_leg_count=len(leg_groups[0]) if len(expected_routes) == 2 else None,
     )
 
 

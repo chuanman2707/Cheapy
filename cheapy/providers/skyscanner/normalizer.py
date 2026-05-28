@@ -68,7 +68,7 @@ def _normalize_candidate(
 
     legs = [_normalize_leg(leg) for leg in candidate.legs]
     actual_departure_date = legs[0].departure_time[:10]
-    actual_return_date = _actual_return_date(legs, request)
+    actual_return_date = _actual_return_date(candidate, legs, request)
     if isinstance(request, ProviderExactRoundTripRequest) and actual_return_date is None:
         raise ValueError("round-trip itinerary candidate has no return leg")
 
@@ -132,10 +132,15 @@ def _normalize_leg(leg: SkyscannerLegCandidate) -> FlightLegV1:
 
 
 def _actual_return_date(
+    candidate: SkyscannerItineraryCandidate,
     legs: list[FlightLegV1],
     request: ProviderRequest,
 ) -> str | None:
     if not isinstance(request, ProviderExactRoundTripRequest):
+        return None
+    if candidate.outbound_leg_count is not None:
+        if candidate.outbound_leg_count < len(legs):
+            return legs[candidate.outbound_leg_count].departure_time[:10]
         return None
     for leg in legs:
         if leg.origin == request.destination and leg.destination == request.origin:

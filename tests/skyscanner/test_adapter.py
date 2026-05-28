@@ -459,24 +459,92 @@ def test_get_entity_id_accepts_top_level_autosuggest_list() -> None:
     assert result.entity_id == "95673375"
 
 
-def test_multisegment_leg_is_skipped_instead_of_misrepresented() -> None:
+def test_multisegment_leg_returns_segment_candidates() -> None:
     payload = search_payload()
     itinerary = payload["itineraries"]["results"][0]
     leg = itinerary["legs"][0]
-    leg["segments"].append(
+    leg["origin"]["displayCode"] = "DUS"
+    leg["destination"]["displayCode"] = "SGN"
+    leg["durationInMinutes"] = 990
+    leg["stopCount"] = 1
+    leg["segments"] = [
         {
-            "origin": {"displayCode": "BKK"},
+            "origin": {"displayCode": "DUS"},
+            "destination": {"displayCode": "DOH"},
+            "departure": "2026-07-11T15:25:00",
+            "arrival": "2026-07-11T23:35:00",
+            "durationInMinutes": 370,
+            "marketingCarrier": {"displayCode": "QR", "name": "Qatar Airways"},
+            "flightNumber": "86",
+        },
+        {
+            "origin": {"displayCode": "DOH"},
             "destination": {"displayCode": "SGN"},
-            "departure": "2026-06-11T12:15:00",
-            "arrival": "2026-06-11T14:45:00",
-            "durationInMinutes": 150,
-            "marketingCarrier": {"displayCode": "VJ", "name": "VietJet"},
-            "flightNumber": "816",
-        }
-    )
+            "departure": "2026-07-12T02:00:00",
+            "arrival": "2026-07-12T13:55:00",
+            "durationInMinutes": 475,
+            "marketingCarrier": {"displayCode": "QR", "name": "Qatar Airways"},
+            "flightNumber": "970",
+        },
+    ]
     client = FakeClient(
         [
-            FakeResponse(payload=entity("SIN", "95673375")),
+            FakeResponse(payload=entity("DUS", "95565012")),
+            FakeResponse(payload=entity("SGN", "95673379")),
+            FakeResponse(payload=payload),
+        ]
+    )
+
+    candidates = adapter.SkyscannerAdapter(config=config(), client=client).search_exact_one_way(
+        ProviderExactOneWayRequest(
+            origin="DUS",
+            destination="SGN",
+            departure_date="2026-07-11",
+        )
+    )
+
+    assert len(candidates) == 1
+    assert [
+        (leg.origin, leg.destination, leg.flight_number)
+        for leg in candidates[0].legs
+    ] == [
+        ("DUS", "DOH", "QR86"),
+        ("DOH", "SGN", "QR970"),
+    ]
+    assert candidates[0].total_duration_minutes == 990
+    assert candidates[0].stops == 1
+    assert_no_sensitive_tokens(candidates)
+
+
+def test_multisegment_broken_chain_is_skipped_as_no_usable_results() -> None:
+    payload = search_payload()
+    leg = payload["itineraries"]["results"][0]["legs"][0]
+    leg["origin"]["displayCode"] = "DUS"
+    leg["destination"]["displayCode"] = "SGN"
+    leg["stopCount"] = 1
+    leg["segments"] = [
+        {
+            "origin": {"displayCode": "DUS"},
+            "destination": {"displayCode": "DOH"},
+            "departure": "2026-07-11T15:25:00",
+            "arrival": "2026-07-11T23:35:00",
+            "durationInMinutes": 370,
+            "marketingCarrier": {"displayCode": "QR"},
+            "flightNumber": "86",
+        },
+        {
+            "origin": {"displayCode": "DXB"},
+            "destination": {"displayCode": "SGN"},
+            "departure": "2026-07-12T02:00:00",
+            "arrival": "2026-07-12T13:55:00",
+            "durationInMinutes": 475,
+            "marketingCarrier": {"displayCode": "QR"},
+            "flightNumber": "970",
+        },
+    ]
+    client = FakeClient(
+        [
+            FakeResponse(payload=entity("DUS", "95565012")),
             FakeResponse(payload=entity("SGN", "95673379")),
             FakeResponse(payload=payload),
         ]
@@ -485,13 +553,14 @@ def test_multisegment_leg_is_skipped_instead_of_misrepresented() -> None:
     with pytest.raises(adapter.SkyscannerProviderError) as exc_info:
         adapter.SkyscannerAdapter(config=config(), client=client).search_exact_one_way(
             ProviderExactOneWayRequest(
-                origin="SIN",
+                origin="DUS",
                 destination="SGN",
-                departure_date="2026-06-11",
+                departure_date="2026-07-11",
             )
         )
 
     assert exc_info.value.failure_type == "no_usable_results"
+    assert_error_is_sanitized(exc_info.value)
 
 
 def test_entity_ambiguous_error_does_not_leak_provider_fields() -> None:
