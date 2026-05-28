@@ -11,6 +11,7 @@ from cheapy.models import ErrorCode, ProviderStatusCode
 from cheapy.providers.base import (
     ProviderExactOneWayRequest,
     ProviderExactRoundTripRequest,
+    ProviderResult,
 )
 from cheapy.providers.traveloka import provider as traveloka_provider
 from cheapy.providers.traveloka.errors import TravelokaProviderError
@@ -172,20 +173,119 @@ def _selected_round_trip_result(
     )
 
 
-def test_traveloka_provider_builds_default_adapter_with_provider_timeout(
+def test_traveloka_default_provider_delegates_to_process_helper(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    captured_timeout: list[float] = []
+    def fail_if_constructed(*, timeout_seconds: float) -> object:
+        raise AssertionError("default live adapter must be isolated in child process")
 
-    class FakeDefaultAdapter:
-        def __init__(self, *, timeout_seconds: float) -> None:
-            captured_timeout.append(timeout_seconds)
+    calls: list[dict[str, object]] = []
 
-    monkeypatch.setattr(traveloka_provider, "TravelokaAdapter", FakeDefaultAdapter)
+    def fake_process_helper(
+        request: ProviderExactOneWayRequest,
+        *,
+        capability: str,
+        search_method_name: str,
+        timeout_seconds: float,
+    ) -> ProviderResult:
+        calls.append(
+            {
+                "request": request,
+                "capability": capability,
+                "search_method_name": search_method_name,
+                "timeout_seconds": timeout_seconds,
+            }
+        )
+        return ProviderResult(
+            provider_name="traveloka",
+            capability=capability,
+            status=ProviderStatusCode.SUCCESS,
+            offers=[],
+            warnings=[],
+            errors=[],
+            duration_ms=1,
+            retryable=False,
+        )
 
-    TravelokaProvider(timeout_seconds=12.5)
+    monkeypatch.setattr(traveloka_provider, "TravelokaAdapter", fail_if_constructed)
+    monkeypatch.setattr(
+        traveloka_provider,
+        "_run_default_adapter_search",
+        fake_process_helper,
+        raising=False,
+    )
+    provider = TravelokaProvider(timeout_seconds=12.5)
 
-    assert captured_timeout == [12.5]
+    result = asyncio.run(provider.search_exact_one_way(_request()))
+
+    assert calls == [
+        {
+            "request": _request(),
+            "capability": "exact_one_way",
+            "search_method_name": "search_exact_one_way",
+            "timeout_seconds": 12.5,
+        }
+    ]
+    assert result.status == ProviderStatusCode.SUCCESS
+
+
+def test_default_adapter_process_cleanup_stays_inside_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeQueue:
+        pass
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.join_timeouts: list[float | None] = []
+            self.terminated = False
+            self.killed = False
+
+        def start(self) -> None:
+            pass
+
+        def join(self, timeout: float | None = None) -> None:
+            self.join_timeouts.append(timeout)
+
+        def is_alive(self) -> bool:
+            return True
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def kill(self) -> None:
+            self.killed = True
+
+    class FakeContext:
+        def __init__(self, process: FakeProcess) -> None:
+            self.process = process
+
+        def Queue(self, maxsize: int) -> FakeQueue:
+            assert maxsize == 1
+            return FakeQueue()
+
+        def Process(self, **kwargs: object) -> FakeProcess:
+            assert kwargs["target"] is traveloka_provider._default_adapter_search_worker
+            return self.process
+
+    process = FakeProcess()
+    monkeypatch.setattr(
+        traveloka_provider.multiprocessing,
+        "get_context",
+        lambda: FakeContext(process),
+    )
+
+    with pytest.raises(TimeoutError):
+        traveloka_provider._run_default_adapter_search(
+            _request(),
+            capability="exact_one_way",
+            search_method_name="search_exact_one_way",
+            timeout_seconds=0.1,
+        )
+
+    assert process.terminated is True
+    assert process.killed is True
+    assert sum(timeout or 0 for timeout in process.join_timeouts) <= 0.1
 
 
 def test_traveloka_provider_returns_success_result() -> None:
