@@ -34,6 +34,22 @@ from cheapy.storage import sqlite as storage
 
 runner = CliRunner()
 
+SKYSCANNER_PUBLIC_SEARCH_URL = (
+    "https://www.skyscanner.com.sg/transport/flights/cxr/sgn/260710/"
+    "?adultsv2=1&cabinclass=economy&childrenv2=&ref=home&rtn=0"
+)
+INTERNAL_OUTPUT_DENYLIST = (
+    "/transport_deeplink/",
+    "transport_deeplink",
+    "sessionId",
+    "session_id",
+    "cookie",
+    "headers",
+    "request_body",
+    "raw_payload",
+    "challenge",
+)
+
 
 def _cli_request() -> SearchRequestV1:
     return SearchRequestV1.model_validate(
@@ -718,6 +734,40 @@ def test_history_show_json_keeps_public_search_url_out_of_observations(
     assert not any("url" in key.lower() for key in payload["offer_observations"][0])
 
 
+def test_history_show_json_skyscanner_has_no_internal_url_tokens(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    response = _cli_response(
+        offers=[
+            _offer(
+                offer_id="skyscanner:CXR-SGN:2026-07-10:itinerary-1",
+                provider="skyscanner",
+                public_search_url=SKYSCANNER_PUBLIC_SEARCH_URL,
+            )
+        ],
+        provider_statuses=[_provider_status(provider_name="skyscanner")],
+    )
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(tmp_path / "cheapy.sqlite3"))
+    with storage.open_database() as conn:
+        run_id = storage.insert_search_snapshot(conn, _cli_request(), response)
+
+    result = runner.invoke(app, ["history", "show", str(run_id)])
+
+    assert result.exit_code == 0
+    assert result.stderr == ""
+    payload = json.loads(result.stdout)
+    text = json.dumps(payload, sort_keys=True)
+    assert (
+        payload["response"]["offers"][0]["public_search_url"]
+        == SKYSCANNER_PUBLIC_SEARCH_URL
+    )
+    assert "public_search_url" not in payload["offer_observations"][0]
+    assert not any("url" in key.lower() for key in payload["offer_observations"][0])
+    for token in INTERNAL_OUTPUT_DENYLIST:
+        assert token not in text
+
+
 def test_history_show_markdown_prints_search_report(tmp_path, monkeypatch) -> None:
     public_search_url = (
         "https://www.traveloka.com/en-en/flight/fulltwosearch?"
@@ -749,6 +799,36 @@ def test_history_show_markdown_prints_search_report(tmp_path, monkeypatch) -> No
     assert f"[1,111,000 VND on Traveloka]({public_search_url})" in result.stdout
     assert result.stdout.count(public_search_url) == 1
     assert "public_search_url" not in result.stdout
+
+
+def test_history_show_markdown_links_skyscanner_price_without_raw_url(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    response = _cli_response(
+        offers=[
+            _offer(
+                offer_id="skyscanner:CXR-SGN:2026-07-10:itinerary-1",
+                price_amount=221.0,
+                provider="skyscanner",
+                public_search_url=SKYSCANNER_PUBLIC_SEARCH_URL,
+            )
+        ],
+        provider_statuses=[_provider_status(provider_name="skyscanner")],
+    )
+    monkeypatch.setenv("CHEAPY_DB_PATH", str(tmp_path / "cheapy.sqlite3"))
+    with storage.open_database() as conn:
+        run_id = storage.insert_search_snapshot(conn, _cli_request(), response)
+
+    result = runner.invoke(app, ["history", "show", str(run_id), "--markdown"])
+
+    assert result.exit_code == 0
+    assert result.stderr == ""
+    assert f"[221 VND on Skyscanner]({SKYSCANNER_PUBLIC_SEARCH_URL})" in result.stdout
+    assert result.stdout.count(SKYSCANNER_PUBLIC_SEARCH_URL) == 1
+    assert "public_search_url" not in result.stdout
+    for token in INTERNAL_OUTPUT_DENYLIST:
+        assert token not in result.stdout
 
 
 def test_history_show_markdown_reports_malformed_storage_without_details(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Awaitable, Callable
 import sys
 from typing import Any, TypeVar
@@ -23,6 +24,21 @@ T = TypeVar("T")
 TRAVELOKA_PUBLIC_SEARCH_URL = (
     "https://www.traveloka.com/en-en/flight/fulltwosearch?"
     "ap=CXR.SGN&dt=10-7-2026.15-7-2026&ps=1.0.0&sc=ECONOMY"
+)
+SKYSCANNER_PUBLIC_SEARCH_URL = (
+    "https://www.skyscanner.com.sg/transport/flights/cxr/sgn/260710/"
+    "?adultsv2=1&cabinclass=economy&childrenv2=&ref=home&rtn=0"
+)
+INTERNAL_OUTPUT_DENYLIST = (
+    "/transport_deeplink/",
+    "transport_deeplink",
+    "sessionId",
+    "session_id",
+    "cookie",
+    "headers",
+    "request_body",
+    "raw_payload",
+    "challenge",
 )
 
 
@@ -277,6 +293,46 @@ def test_mcp_search_tool_returns_structured_contract_response(
     assert "## CXR -> SGN | 2026-07-10 -> 2026-07-15 | 1 adult | Economy" in text
     assert f"[1,280,000 VND on Traveloka]({TRAVELOKA_PUBLIC_SEARCH_URL})" in text
     assert text.count(TRAVELOKA_PUBLIC_SEARCH_URL) == 1
+
+
+def test_mcp_search_tool_skyscanner_output_has_public_link_only(
+    monkeypatch: Any,
+) -> None:
+    base_response = _successful_search_response()
+    response = base_response.model_copy(
+        update={
+            "offers": [
+                base_response.offers[0].model_copy(
+                    update={
+                        "offer_id": "skyscanner:CXR-SGN:2026-07-10:itinerary-1",
+                        "provider": "skyscanner",
+                        "public_search_url": SKYSCANNER_PUBLIC_SEARCH_URL,
+                    }
+                )
+            ]
+        }
+    )
+
+    def fake_search_with_storage(request: Any) -> SearchWithStorageResult:
+        return SearchWithStorageResult(
+            response=response,
+            search_run_id=1,
+            storage_enabled=True,
+            storage_warning=None,
+        )
+
+    monkeypatch.setattr("cheapy.mcp.search_with_storage", fake_search_with_storage)
+
+    result = asyncio.run(_mcp_tool().run(_successful_search_arguments(), convert_result=True))
+
+    payload_text = json.dumps(_structured_content(result), sort_keys=True)
+    markdown = _text_content(result)
+    assert SKYSCANNER_PUBLIC_SEARCH_URL in payload_text
+    assert SKYSCANNER_PUBLIC_SEARCH_URL in markdown
+    assert markdown.count(SKYSCANNER_PUBLIC_SEARCH_URL) == 1
+    for token in INTERNAL_OUTPUT_DENYLIST:
+        assert token not in payload_text
+        assert token not in markdown
 
 
 def test_mcp_search_tool_keeps_structured_response_when_markdown_renderer_fails(

@@ -29,6 +29,21 @@ TRAVELOKA_URL = (
     "https://www.traveloka.com/en-en/flight/fulltwosearch"
     "?ap=CXR.SGN&dt=10-07-2026.NA&ps=1.0.0&sc=ECONOMY&funnelSource=flight"
 )
+SKYSCANNER_PUBLIC_SEARCH_URL = (
+    "https://www.skyscanner.com.sg/transport/flights/cxr/sgn/260710/"
+    "?adultsv2=1&cabinclass=economy&childrenv2=&ref=home&rtn=0"
+)
+INTERNAL_OUTPUT_DENYLIST = (
+    "/transport_deeplink/",
+    "transport_deeplink",
+    "sessionId",
+    "session_id",
+    "cookie",
+    "headers",
+    "request_body",
+    "raw_payload",
+    "challenge",
+)
 
 
 def _request(**overrides: Any) -> SearchRequestV1:
@@ -157,6 +172,23 @@ def test_render_offer_price_links_safe_public_search_url() -> None:
         render_offer_price(_offer())
         == f"[4,920,000 VND on Traveloka]({TRAVELOKA_URL})"
     )
+
+
+def test_render_offer_price_links_skyscanner_public_search_url() -> None:
+    rendered = render_offer_price(
+        _offer(
+            provider="skyscanner",
+            public_search_url=SKYSCANNER_PUBLIC_SEARCH_URL,
+        )
+    )
+
+    assert (
+        rendered
+        == f"[4,920,000 VND on Skyscanner]({SKYSCANNER_PUBLIC_SEARCH_URL})"
+    )
+    assert rendered.count(SKYSCANNER_PUBLIC_SEARCH_URL) == 1
+    for token in INTERNAL_OUTPUT_DENYLIST:
+        assert token not in rendered
 
 
 def test_render_offer_price_without_public_search_url_is_plain_text() -> None:
