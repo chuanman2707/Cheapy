@@ -557,6 +557,39 @@ def test_sensitive_provider_message_keeps_safe_failure_reason() -> None:
     assert "| Skyscanner | failed | 1/1 | failed: 1; retryable: yes; error provider_timeout: [redacted] (reason: timeout) retryable: yes |" in report
 
 
+def test_sensitive_provider_warning_keeps_safe_failure_reason() -> None:
+    warning = WarningV1(
+        code=WarningCode.SEARCH_TRUNCATED,
+        severity=Severity.WARNING,
+        message_en="Provider warning included token and session data.",
+        details={"failure_type": "timeout", "token": "secret-token"},
+        retryable=True,
+    )
+    response = _response(
+        warnings=[warning],
+        provider_statuses=[
+            _provider_status(
+                provider_name="skyscanner",
+                status=ProviderStatusCode.PARTIAL,
+                planned_call_count=1,
+                executed_call_count=1,
+                warnings=[warning],
+                retryable=True,
+            )
+        ],
+    )
+
+    report = render_search_report(_request(), response)
+
+    assert "[redacted] (reason: timeout)" in report
+    assert "| Report | success | 1/1 | search_truncated | warning | [redacted] (reason: timeout) | yes |" in report
+    assert "| Skyscanner | partial | 1/1 | succeeded: 1; retryable: yes; warning search_truncated: [redacted] (reason: timeout) retryable: yes |" in report
+    assert "| Skyscanner | partial | 1/1 | search_truncated | warning | [redacted] (reason: timeout) | yes |" in report
+    assert "secret-token" not in report
+    assert "token" not in report
+    assert "session" not in report
+
+
 def test_provider_reason_can_come_from_safe_http_status_code() -> None:
     error = ErrorV1(
         code=ErrorCode.PROVIDER_BLOCKED,
