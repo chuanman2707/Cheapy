@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from time import perf_counter
 
 from cheapy.airports import AirportNotFound, resolve_airport
 from cheapy.models import (
@@ -47,6 +48,8 @@ from cheapy.search_planner import (
 _MIXED_CURRENCY_NOTE = (
     "Currency conversion was not applied; compare mixed-currency offers separately."
 )
+_PROVIDER_BATCH_TIMEOUT_SECONDS = 45.0
+_MIN_RETRY_REMAINING_SECONDS = 0.001
 
 
 def search_exact(request: SearchRequestV1) -> SearchResponseV1:
@@ -160,27 +163,100 @@ async def _call_planned_providers(
     planned_calls: tuple[PlannedProviderCall, ...],
     passengers: PassengersV1,
 ) -> list[ProviderResult]:
-    results: list[ProviderResult] = []
-    for planned_call in planned_calls:
-        provider = planned_call.provider
-        candidate = planned_call.candidate
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _PROVIDER_BATCH_TIMEOUT_SECONDS
+    tasks = [
+        asyncio.create_task(
+            _call_planned_provider_with_retry(planned_call, passengers, deadline)
+        )
+        for planned_call in planned_calls
+    ]
+    return list(await asyncio.gather(*tasks))
+
+
+async def _call_planned_provider_with_retry(
+    planned_call: PlannedProviderCall,
+    passengers: PassengersV1,
+    deadline: float,
+) -> ProviderResult:
+    started = perf_counter()
+    first = await _call_planned_provider_attempt(planned_call, passengers, deadline)
+    if not _should_retry_provider_result(first):
+        return _with_logical_duration(first, started)
+    if _remaining_seconds(deadline) <= _MIN_RETRY_REMAINING_SECONDS:
+        return _with_logical_duration(first, started)
+    second = await _call_planned_provider_attempt(planned_call, passengers, deadline)
+    return _with_logical_duration(second, started)
+
+
+async def _call_planned_provider_attempt(
+    planned_call: PlannedProviderCall,
+    passengers: PassengersV1,
+    deadline: float,
+) -> ProviderResult:
+    provider = planned_call.provider
+    candidate = planned_call.candidate
+    remaining = _remaining_seconds(deadline)
+    if remaining <= 0:
+        return _provider_timeout_result(provider, candidate.capability)
+    budgeted_provider = _provider_with_timeout(provider, remaining)
+    try:
+        raw_result = await asyncio.wait_for(
+            _invoke_provider(budgeted_provider, candidate, passengers),
+            timeout=remaining,
+        )
+        return _normalize_provider_result(
+            budgeted_provider,
+            candidate.capability,
+            raw_result,
+        )
+    except TimeoutError:
+        return _provider_timeout_result(provider, candidate.capability)
+    except Exception as exc:
+        return _provider_exception_result(provider, candidate.capability, exc)
+
+
+async def _invoke_provider(
+    provider: FlightProvider,
+    candidate: SearchCandidate,
+    passengers: PassengersV1,
+) -> object:
+    if candidate.capability == EXACT_ONE_WAY_CAPABILITY:
+        return await provider.search_exact_one_way(
+            _one_way_provider_request(candidate, passengers)
+        )
+    return await provider.search_exact_round_trip(
+        _round_trip_provider_request(candidate, passengers)
+    )
+
+
+def _remaining_seconds(deadline: float) -> float:
+    return max(0.0, deadline - asyncio.get_running_loop().time())
+
+
+def _provider_with_timeout(
+    provider: FlightProvider,
+    timeout_seconds: float,
+) -> FlightProvider:
+    with_timeout = getattr(provider, "with_timeout_seconds", None)
+    if callable(with_timeout):
         try:
-            if candidate.capability == EXACT_ONE_WAY_CAPABILITY:
-                raw_result = await provider.search_exact_one_way(
-                    _one_way_provider_request(candidate, passengers)
-                )
-            else:
-                raw_result = await provider.search_exact_round_trip(
-                    _round_trip_provider_request(candidate, passengers)
-                )
-            results.append(
-                _normalize_provider_result(provider, candidate.capability, raw_result)
-            )
-        except Exception as exc:
-            results.append(
-                _provider_exception_result(provider, candidate.capability, exc)
-            )
-    return results
+            return with_timeout(max(_MIN_RETRY_REMAINING_SECONDS, timeout_seconds))
+        except Exception:
+            return provider
+    return provider
+
+
+def _should_retry_provider_result(result: ProviderResult) -> bool:
+    if result.status != ProviderStatusCode.FAILED:
+        return False
+    return result.retryable or any(error.retryable for error in result.errors)
+
+
+def _with_logical_duration(result: ProviderResult, started: float) -> ProviderResult:
+    return result.model_copy(
+        update={"duration_ms": max(0, round((perf_counter() - started) * 1000))}
+    )
 
 
 def _one_way_provider_request(
@@ -275,6 +351,9 @@ def _provider_failed_result(
     capability: str,
     message_en: str,
     details: dict[str, object],
+    code: ErrorCode = ErrorCode.PROVIDER_FAILED,
+    retryable: bool = False,
+    duration_ms: int = 0,
 ) -> ProviderResult:
     return ProviderResult(
         provider_name=provider_name,
@@ -284,14 +363,37 @@ def _provider_failed_result(
         warnings=[],
         errors=[
             _error(
-                code=ErrorCode.PROVIDER_FAILED,
+                code=code,
                 message_en=message_en,
                 details=details,
+                retryable=retryable,
             )
         ],
-        duration_ms=0,
-        retryable=False,
+        duration_ms=duration_ms,
+        retryable=retryable,
     )
+
+
+def _provider_timeout_result(
+    provider: FlightProvider,
+    capability: str,
+) -> ProviderResult:
+    return _provider_failed_result(
+        provider_name=provider.name,
+        capability=capability,
+        message_en=f"{_provider_display_name(provider.name)} provider timed out.",
+        details={
+            "provider": provider.name,
+            "capability": capability,
+            "failure_type": "timeout",
+        },
+        code=ErrorCode.PROVIDER_TIMEOUT,
+        retryable=True,
+    )
+
+
+def _provider_display_name(provider_name: str) -> str:
+    return provider_name.replace("_", " ").title()
 
 
 def _provider_status_error(result: ProviderResult) -> ErrorV1:
@@ -624,13 +726,14 @@ def _error(
     code: ErrorCode,
     message_en: str,
     details: dict[str, object],
+    retryable: bool = False,
 ) -> ErrorV1:
     return ErrorV1(
         code=code,
         severity=Severity.ERROR,
         message_en=message_en,
         details=details,
-        retryable=False,
+        retryable=retryable,
     )
 
 

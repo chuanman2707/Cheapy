@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from time import perf_counter
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -268,6 +270,112 @@ class _RoundTripProvider:
             duration_ms=1,
             retryable=False,
         )
+
+
+class _AsyncSequencedProvider:
+    capabilities = ("exact_one_way",)
+
+    def __init__(
+        self,
+        name: str,
+        results: list[ProviderResult],
+        *,
+        delay_seconds: float = 0.0,
+        events: list[str] | None = None,
+    ) -> None:
+        self.name = name
+        self._results = list(results)
+        self._delay_seconds = delay_seconds
+        self.calls = 0
+        self.events = events if events is not None else []
+
+    async def search_exact_one_way(
+        self,
+        request: ProviderExactOneWayRequest,
+    ) -> ProviderResult:
+        self.calls += 1
+        self.events.append(f"{self.name}:start:{self.calls}")
+        if self._delay_seconds:
+            await asyncio.sleep(self._delay_seconds)
+        self.events.append(f"{self.name}:finish:{self.calls}")
+        if not self._results:
+            raise AssertionError(f"{self.name} was called too many times")
+        return self._results.pop(0)
+
+    async def search_exact_round_trip(
+        self,
+        request: ProviderExactRoundTripRequest,
+    ) -> ProviderResult:
+        raise AssertionError("round-trip should not be called")
+
+
+class _AsyncNeverFinishesProvider:
+    name = "never_finishes"
+    capabilities = ("exact_one_way",)
+
+    async def search_exact_one_way(
+        self,
+        request: ProviderExactOneWayRequest,
+    ) -> ProviderResult:
+        await asyncio.sleep(60)
+        raise AssertionError("budget should cancel this provider")
+
+    async def search_exact_round_trip(
+        self,
+        request: ProviderExactRoundTripRequest,
+    ) -> ProviderResult:
+        raise AssertionError("round-trip should not be called")
+
+
+def _provider_success_result(provider_name: str, offer_id: str) -> ProviderResult:
+    return ProviderResult(
+        provider_name=provider_name,
+        capability="exact_one_way",
+        status=ProviderStatusCode.SUCCESS,
+        offers=[
+            _offer(
+                offer_id=offer_id,
+                provider=provider_name,
+                currency="USD",
+                price_amount=100.0,
+            )
+        ],
+        warnings=[],
+        errors=[],
+        duration_ms=1,
+        retryable=False,
+    )
+
+
+def _provider_failed_result_for_test(
+    provider_name: str,
+    *,
+    retryable: bool,
+    code: ErrorCode = ErrorCode.PROVIDER_TIMEOUT,
+    failure_type: str = "timeout",
+) -> ProviderResult:
+    return ProviderResult(
+        provider_name=provider_name,
+        capability="exact_one_way",
+        status=ProviderStatusCode.FAILED,
+        offers=[],
+        warnings=[],
+        errors=[
+            ErrorV1(
+                code=code,
+                severity=Severity.ERROR,
+                message_en=f"{provider_name} failed safely.",
+                details={
+                    "provider": provider_name,
+                    "capability": "exact_one_way",
+                    "failure_type": failure_type,
+                },
+                retryable=retryable,
+            )
+        ],
+        duration_ms=1,
+        retryable=retryable,
+    )
 
 
 def _manual_fixture_providers() -> list[object]:
@@ -988,6 +1096,136 @@ def test_search_returns_other_provider_offers_when_traveloka_times_out(
     assert statuses["google_fli"].status == ProviderStatusCode.SUCCESS
     assert statuses["traveloka"].status == ProviderStatusCode.FAILED
     assert statuses["traveloka"].errors[0].code == ErrorCode.PROVIDER_TIMEOUT
+
+
+def test_search_exact_calls_providers_concurrently_and_keeps_status_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    providers = [
+        _AsyncSequencedProvider(
+            "slow_a",
+            [_provider_success_result("slow_a", "slow-a:1")],
+            delay_seconds=0.05,
+            events=events,
+        ),
+        _AsyncSequencedProvider(
+            "slow_b",
+            [_provider_success_result("slow_b", "slow-b:1")],
+            delay_seconds=0.05,
+            events=events,
+        ),
+    ]
+    monkeypatch.setattr("cheapy.search.load_search_providers", lambda: providers)
+
+    started = perf_counter()
+    response = search_exact(_request())
+    elapsed = perf_counter() - started
+
+    assert elapsed < 0.09
+    assert events[:2] == ["slow_a:start:1", "slow_b:start:1"]
+    assert [status.provider_name for status in response.provider_statuses] == [
+        "slow_a",
+        "slow_b",
+    ]
+
+
+def test_search_exact_retries_retryable_failure_once_and_keeps_logical_accounting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _AsyncSequencedProvider(
+        "retry_provider",
+        [
+            _provider_failed_result_for_test("retry_provider", retryable=True),
+            _provider_success_result("retry_provider", "retry-provider:1"),
+        ],
+    )
+    monkeypatch.setattr("cheapy.search.load_search_providers", lambda: [provider])
+
+    response = search_exact(_request())
+
+    assert response.status == SearchStatus.SUCCESS
+    assert provider.calls == 2
+    assert [offer.offer_id for offer in response.offers] == ["retry-provider:1"]
+    assert response.errors == []
+    status = response.provider_statuses[0]
+    assert status.provider_name == "retry_provider"
+    assert status.planned_call_count == 1
+    assert status.executed_call_count == 1
+    assert status.succeeded_call_count == 1
+    assert status.failed_call_count == 0
+
+
+def test_search_exact_retry_exhausted_returns_final_failed_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _AsyncSequencedProvider(
+        "retry_provider",
+        [
+            _provider_failed_result_for_test("retry_provider", retryable=True),
+            _provider_failed_result_for_test("retry_provider", retryable=True),
+        ],
+    )
+    monkeypatch.setattr("cheapy.search.load_search_providers", lambda: [provider])
+
+    response = search_exact(_request())
+
+    assert response.status == SearchStatus.FAILED
+    assert provider.calls == 2
+    assert response.provider_statuses[0].failed_call_count == 1
+    assert response.provider_statuses[0].planned_call_count == 1
+    assert response.provider_statuses[0].executed_call_count == 1
+    assert response.errors[0].details["failure_type"] == "timeout"
+
+
+def test_search_exact_does_not_retry_non_retryable_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _AsyncSequencedProvider(
+        "blocked_provider",
+        [
+            _provider_failed_result_for_test(
+                "blocked_provider",
+                retryable=False,
+                code=ErrorCode.PROVIDER_BLOCKED,
+                failure_type="blocked",
+            ),
+            _provider_success_result("blocked_provider", "blocked-provider:1"),
+        ],
+    )
+    monkeypatch.setattr("cheapy.search.load_search_providers", lambda: [provider])
+
+    response = search_exact(_request())
+
+    assert response.status == SearchStatus.FAILED
+    assert provider.calls == 1
+    assert response.errors[0].code == ErrorCode.PROVIDER_BLOCKED
+
+
+def test_search_exact_global_budget_returns_timeout_without_losing_completed_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("cheapy.search._PROVIDER_BATCH_TIMEOUT_SECONDS", 0.02)
+    success = _AsyncSequencedProvider(
+        "success_provider",
+        [_provider_success_result("success_provider", "success-provider:1")],
+    )
+    slow = _AsyncNeverFinishesProvider()
+    monkeypatch.setattr("cheapy.search.load_search_providers", lambda: [success, slow])
+
+    response = search_exact(_request())
+
+    assert response.status == SearchStatus.PARTIAL
+    assert [offer.offer_id for offer in response.offers] == ["success-provider:1"]
+    statuses = {status.provider_name: status for status in response.provider_statuses}
+    assert statuses["never_finishes"].status == ProviderStatusCode.FAILED
+    assert statuses["never_finishes"].errors[0].code == ErrorCode.PROVIDER_TIMEOUT
+    assert statuses["never_finishes"].errors[0].details == {
+        "provider": "never_finishes",
+        "capability": "exact_one_way",
+        "failure_type": "timeout",
+    }
+    assert statuses["never_finishes"].retryable is True
 
 
 def test_search_exact_synthesizes_error_for_failed_provider_without_errors(

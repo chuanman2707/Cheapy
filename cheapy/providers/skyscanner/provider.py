@@ -61,6 +61,13 @@ class SkyscannerProvider:
         self._timeout_seconds = timeout_seconds
         self._env = dict(os.environ if env is None else env)
 
+    def with_timeout_seconds(self, timeout_seconds: float) -> "SkyscannerProvider":
+        return SkyscannerProvider(
+            adapter=self._adapter,
+            timeout_seconds=max(0.001, timeout_seconds),
+            env=self._env,
+        )
+
     async def search_exact_one_way(
         self,
         request: ProviderExactOneWayRequest,
@@ -165,7 +172,10 @@ class SkyscannerProvider:
     def _adapter_for_call(self) -> object:
         if self._adapter is not None:
             return self._adapter
-        return SkyscannerAdapter.from_env(self._env)
+        return SkyscannerAdapter.from_env(
+            self._env,
+            timeout_seconds=self._timeout_seconds,
+        )
 
     def _search_sync(
         self,

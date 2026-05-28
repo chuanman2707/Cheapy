@@ -70,6 +70,21 @@ class TravelokaProvider:
         )
         self._timeout_seconds = timeout_seconds
 
+    def with_timeout_seconds(self, timeout_seconds: float) -> "TravelokaProvider":
+        bounded_timeout = max(0.001, timeout_seconds)
+        adapter = self._adapter
+        if isinstance(adapter, TravelokaAdapter):
+            adapter = TravelokaAdapter(
+                base_url=adapter._base_url,
+                timeout_seconds=bounded_timeout,
+                poll_interval_seconds=adapter._poll_interval_seconds,
+                launch_browser=adapter._launch_browser,
+            )
+        return TravelokaProvider(
+            adapter=adapter,
+            timeout_seconds=bounded_timeout,
+        )
+
     async def search_exact_one_way(
         self,
         request: ProviderExactOneWayRequest,

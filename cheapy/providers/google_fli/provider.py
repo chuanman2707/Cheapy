@@ -40,6 +40,12 @@ class GoogleFliProvider:
         self._adapter = adapter if adapter is not None else GoogleFliAdapter()
         self._timeout_seconds = timeout_seconds
 
+    def with_timeout_seconds(self, timeout_seconds: float) -> "GoogleFliProvider":
+        return GoogleFliProvider(
+            adapter=self._adapter,
+            timeout_seconds=max(0.001, timeout_seconds),
+        )
+
     async def search_exact_one_way(
         self,
         request: ProviderExactOneWayRequest,
