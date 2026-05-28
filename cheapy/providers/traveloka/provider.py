@@ -127,6 +127,18 @@ class TravelokaProvider:
             search_method = getattr(self._adapter, search_method_name)
             capture = await asyncio.to_thread(search_method, request)
             return _provider_result_from_capture(capture, request, capability, started)
+        except TimeoutError:
+            return self._failed_result(
+                started,
+                capability,
+                _provider_error(
+                    code=ErrorCode.PROVIDER_TIMEOUT,
+                    message_en="Traveloka provider timed out.",
+                    failure_type="timeout",
+                    retryable=True,
+                    capability=capability,
+                ),
+            )
         except TravelokaProviderError as exc:
             return self._failed_result(
                 started,

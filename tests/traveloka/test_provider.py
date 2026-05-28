@@ -288,6 +288,39 @@ def test_default_adapter_process_cleanup_stays_inside_timeout(
     assert sum(timeout or 0 for timeout in process.join_timeouts) <= 0.1
 
 
+def test_default_provider_process_timeout_maps_to_retryable_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def raise_timeout(
+        request: ProviderExactOneWayRequest,
+        *,
+        capability: str,
+        search_method_name: str,
+        timeout_seconds: float,
+    ) -> ProviderResult:
+        raise TimeoutError("secret timeout details")
+
+    monkeypatch.setattr(
+        traveloka_provider,
+        "_run_default_adapter_search",
+        raise_timeout,
+    )
+    provider = TravelokaProvider(timeout_seconds=0.1)
+
+    result = asyncio.run(provider.search_exact_one_way(_request()))
+
+    assert result.status == ProviderStatusCode.FAILED
+    assert result.retryable is True
+    assert result.errors[0].code == ErrorCode.PROVIDER_TIMEOUT
+    assert result.errors[0].retryable is True
+    assert result.errors[0].details == {
+        "provider": "traveloka",
+        "capability": "exact_one_way",
+        "failure_type": "timeout",
+    }
+    assert "secret timeout details" not in result.model_dump_json()
+
+
 def test_traveloka_provider_returns_success_result() -> None:
     adapter = FakeAdapter(_capture(_payload()))
     provider = TravelokaProvider(adapter=adapter, timeout_seconds=1)
