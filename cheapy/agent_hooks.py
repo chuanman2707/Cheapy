@@ -29,12 +29,14 @@ CLAUDE_INSTRUCTIONS_HEADER = """# Cheapy MCP Flight Search
 
 """
 
-INSTRUCTION_BODY = """Use Cheapy for one-way and round-trip MVP flight searches.
+INSTRUCTION_BODY = """Use Cheapy for one-way and round-trip flight searches over the curated packaged airport catalog.
 
 - Call only `search_cheapest_flights`.
 - Pass `schema_version="1"`.
 - Before calls, require origin, destination, and departure date; ask a follow-up if any are missing.
 - Normalize clear origin and destination airports to 3-letter IATA codes.
+- Cheapy's packaged airport catalog is curated, not complete; it includes major global airports and hubs such as DUS, FRA, LHR, CDG, AMS, SIN, DXB, DOH, JFK, LAX, SYD, and MEL.
+- If airport support is uncertain after normalization, inspect `cheapy/data/airports.v1.json` or let Cheapy return a structured `airport_not_found` response instead of declaring unsupported from memory.
 - If airport meaning is unclear, clarify ambiguous airports instead of guessing.
 - Normalize dates to ISO `YYYY-MM-DD`.
 - Use `search_mode="exact"` for fixed exact one-way or exact round-trip searches.

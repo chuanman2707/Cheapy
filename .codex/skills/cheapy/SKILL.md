@@ -40,13 +40,13 @@ Use these aliases only when the user's meaning is clear.
 | phú quốc | PQC |
 | phu quoc | PQC |
 
-## Supported MVP Airports
+## Supported Curated Airports
 
-Vietnam: CXR, SGN, HAN, DAD, PQC.
+Cheapy's packaged airport catalog is curated, not complete. It includes major Vietnam, Asia, Europe, Middle East, North America, South America, Africa, and Oceania airports.
 
-Regional and Asia: SIN, BKK, KUL, TPE, HKG, ICN, NRT, DOH, DXB.
+Examples: CXR, SGN, HAN, DAD, PQC, SIN, BKK, KUL, TPE, HKG, ICN, NRT, HND, DOH, DXB, IST, DEL, LHR, CDG, AMS, FRA, DUS, MUC, ZRH, MAD, FCO, LAX, SFO, JFK, EWR, ATL, ORD, DFW, YYZ, MEX, GRU, BOG, JNB, ADD, SYD, MEL, AKL.
 
-Long haul: LAX, SFO, JFK, LHR, CDG, FRA, SYD, MEL.
+If support is uncertain after normalizing to IATA, inspect `cheapy/data/airports.v1.json` instead of assuming the airport is unsupported from memory.
 
 ## Calling Pattern
 
@@ -56,12 +56,14 @@ Long haul: LAX, SFO, JFK, LHR, CDG, FRA, SYD, MEL.
 5. If an airport is ambiguous or outside the supported list, ask the user to clarify instead of guessing.
 
 <!-- BEGIN CHEAPY MANAGED CODEX INSTRUCTIONS -->
-Use Cheapy for one-way and round-trip MVP flight searches.
+Use Cheapy for one-way and round-trip flight searches over the curated packaged airport catalog.
 
 - Call only `search_cheapest_flights`.
 - Pass `schema_version="1"`.
 - Before calls, require origin, destination, and departure date; ask a follow-up if any are missing.
 - Normalize clear origin and destination airports to 3-letter IATA codes.
+- Cheapy's packaged airport catalog is curated, not complete; it includes major global airports and hubs such as DUS, FRA, LHR, CDG, AMS, SIN, DXB, DOH, JFK, LAX, SYD, and MEL.
+- If airport support is uncertain after normalization, inspect `cheapy/data/airports.v1.json` or let Cheapy return a structured `airport_not_found` response instead of declaring unsupported from memory.
 - If airport meaning is unclear, clarify ambiguous airports instead of guessing.
 - Normalize dates to ISO `YYYY-MM-DD`.
 - Use `search_mode="exact"` for fixed exact one-way or exact round-trip searches.

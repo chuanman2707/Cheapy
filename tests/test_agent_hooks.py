@@ -21,6 +21,9 @@ def _assert_gate_8_instruction_text(text: str) -> None:
     for phrase in (
         "clarify ambiguous airports",
         "origin, destination, and departure date",
+        "curated packaged airport catalog",
+        "DUS, FRA, LHR",
+        "structured `airport_not_found` response",
         "Contract V1 passenger defaults",
         "ambiguous non-default passenger counts",
         "exact one-way",

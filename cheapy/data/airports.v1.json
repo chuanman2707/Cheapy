@@ -3,33 +3,1147 @@
   "source_name": "OurAirports",
   "source_url": "https://ourairports.com/data/",
   "source_license": "public domain / no guarantee of accuracy",
-  "retrieved_date": "2026-05-09",
-  "generation_method": "manual mini snapshot for Gate 2 MVP",
-  "snapshot_version": 1,
-  "notes": "Manual mini snapshot derived from OurAirports airport data for Gate 2 MVP coverage. See https://ourairports.com/help/data-dictionary.html for the data dictionary. OurAirports publishes the data as public domain with no guarantee of accuracy.",
+  "retrieved_date": "2026-05-28",
+  "generation_method": "manual curated global airport snapshot for Cheapy flight-search coverage",
+  "snapshot_version": 2,
+  "notes": "Manual curated global snapshot derived from OurAirports airport data for Cheapy flight-search coverage. See https://ourairports.com/help/data-dictionary.html for the data dictionary. OurAirports publishes the data as public domain with no guarantee of accuracy.",
   "version": 1,
   "airports": [
-    {"iata": "CXR", "name": "Cam Ranh International Airport", "city": "Nha Trang", "country": "Vietnam", "latitude": 11.9982, "longitude": 109.2194},
-    {"iata": "SGN", "name": "Tan Son Nhat International Airport", "city": "Ho Chi Minh City", "country": "Vietnam", "latitude": 10.8188, "longitude": 106.6520},
-    {"iata": "HAN", "name": "Noi Bai International Airport", "city": "Hanoi", "country": "Vietnam", "latitude": 21.2212, "longitude": 105.8072},
-    {"iata": "DAD", "name": "Da Nang International Airport", "city": "Da Nang", "country": "Vietnam", "latitude": 16.0439, "longitude": 108.1994},
-    {"iata": "PQC", "name": "Phu Quoc International Airport", "city": "Phu Quoc", "country": "Vietnam", "latitude": 10.1698, "longitude": 103.9931},
-    {"iata": "SIN", "name": "Singapore Changi Airport", "city": "Singapore", "country": "Singapore", "latitude": 1.3644, "longitude": 103.9915},
-    {"iata": "BKK", "name": "Suvarnabhumi Airport", "city": "Bangkok", "country": "Thailand", "latitude": 13.6900, "longitude": 100.7501},
-    {"iata": "KUL", "name": "Kuala Lumpur International Airport", "city": "Kuala Lumpur", "country": "Malaysia", "latitude": 2.7456, "longitude": 101.7072},
-    {"iata": "TPE", "name": "Taiwan Taoyuan International Airport", "city": "Taipei", "country": "Taiwan", "latitude": 25.0777, "longitude": 121.2328},
-    {"iata": "HKG", "name": "Hong Kong International Airport", "city": "Hong Kong", "country": "Hong Kong", "latitude": 22.3080, "longitude": 113.9185},
-    {"iata": "ICN", "name": "Incheon International Airport", "city": "Seoul", "country": "South Korea", "latitude": 37.4602, "longitude": 126.4407},
-    {"iata": "NRT", "name": "Narita International Airport", "city": "Tokyo", "country": "Japan", "latitude": 35.7720, "longitude": 140.3929},
-    {"iata": "DOH", "name": "Hamad International Airport", "city": "Doha", "country": "Qatar", "latitude": 25.2731, "longitude": 51.6081},
-    {"iata": "DXB", "name": "Dubai International Airport", "city": "Dubai", "country": "United Arab Emirates", "latitude": 25.2532, "longitude": 55.3657},
-    {"iata": "LAX", "name": "Los Angeles International Airport", "city": "Los Angeles", "country": "United States", "latitude": 33.9425, "longitude": -118.4081},
-    {"iata": "SFO", "name": "San Francisco International Airport", "city": "San Francisco", "country": "United States", "latitude": 37.6213, "longitude": -122.3790},
-    {"iata": "JFK", "name": "John F. Kennedy International Airport", "city": "New York", "country": "United States", "latitude": 40.6413, "longitude": -73.7781},
-    {"iata": "LHR", "name": "Heathrow Airport", "city": "London", "country": "United Kingdom", "latitude": 51.4700, "longitude": -0.4543},
-    {"iata": "CDG", "name": "Charles de Gaulle Airport", "city": "Paris", "country": "France", "latitude": 49.0097, "longitude": 2.5479},
-    {"iata": "FRA", "name": "Frankfurt Airport", "city": "Frankfurt", "country": "Germany", "latitude": 50.0379, "longitude": 8.5622},
-    {"iata": "SYD", "name": "Sydney Kingsford Smith Airport", "city": "Sydney", "country": "Australia", "latitude": -33.9399, "longitude": 151.1753},
-    {"iata": "MEL", "name": "Melbourne Airport", "city": "Melbourne", "country": "Australia", "latitude": -37.6733, "longitude": 144.8433}
+    {
+      "iata": "CXR",
+      "name": "Cam Ranh International Airport",
+      "city": "Nha Trang",
+      "country": "Vietnam",
+      "latitude": 11.9982,
+      "longitude": 109.219
+    },
+    {
+      "iata": "SGN",
+      "name": "Tan Son Nhat International Airport",
+      "city": "Ho Chi Minh City",
+      "country": "Vietnam",
+      "latitude": 10.8188,
+      "longitude": 106.652
+    },
+    {
+      "iata": "HAN",
+      "name": "Noi Bai International Airport",
+      "city": "Hanoi",
+      "country": "Vietnam",
+      "latitude": 21.2212,
+      "longitude": 105.807
+    },
+    {
+      "iata": "DAD",
+      "name": "Da Nang International Airport",
+      "city": "Da Nang",
+      "country": "Vietnam",
+      "latitude": 16.0439,
+      "longitude": 108.199
+    },
+    {
+      "iata": "PQC",
+      "name": "Phu Quoc International Airport",
+      "city": "Phu Quoc",
+      "country": "Vietnam",
+      "latitude": 10.1698,
+      "longitude": 103.9935
+    },
+    {
+      "iata": "SIN",
+      "name": "Singapore Changi Airport",
+      "city": "Singapore",
+      "country": "Singapore",
+      "latitude": 1.3502,
+      "longitude": 103.994
+    },
+    {
+      "iata": "BKK",
+      "name": "Suvarnabhumi Airport",
+      "city": "Bangkok",
+      "country": "Thailand",
+      "latitude": 13.6811,
+      "longitude": 100.747
+    },
+    {
+      "iata": "DMK",
+      "name": "Don Mueang International Airport",
+      "city": "Bangkok",
+      "country": "Thailand",
+      "latitude": 13.9126,
+      "longitude": 100.607
+    },
+    {
+      "iata": "KUL",
+      "name": "Kuala Lumpur International Airport",
+      "city": "Kuala Lumpur",
+      "country": "Malaysia",
+      "latitude": 2.7456,
+      "longitude": 101.71
+    },
+    {
+      "iata": "CGK",
+      "name": "Soekarno-Hatta International Airport",
+      "city": "Jakarta",
+      "country": "Indonesia",
+      "latitude": -6.1256,
+      "longitude": 106.656
+    },
+    {
+      "iata": "DPS",
+      "name": "Denpasar I Gusti Ngurah Rai International Airport",
+      "city": "Bali",
+      "country": "Indonesia",
+      "latitude": -8.7484,
+      "longitude": 115.1671
+    },
+    {
+      "iata": "MNL",
+      "name": "Ninoy Aquino International Airport",
+      "city": "Manila (Pasay)",
+      "country": "Philippines",
+      "latitude": 14.5086,
+      "longitude": 121.02
+    },
+    {
+      "iata": "CEB",
+      "name": "Mactan Cebu International Airport",
+      "city": "Cebu",
+      "country": "Philippines",
+      "latitude": 10.3093,
+      "longitude": 123.9797
+    },
+    {
+      "iata": "PNH",
+      "name": "Phnom Penh International Airport",
+      "city": "Phnom Penh (Pou Senchey)",
+      "country": "Cambodia",
+      "latitude": 11.5472,
+      "longitude": 104.8447
+    },
+    {
+      "iata": "SAI",
+      "name": "Siem Reap-Angkor International Airport",
+      "city": "Siem Reap",
+      "country": "Cambodia",
+      "latitude": 13.3697,
+      "longitude": 104.2238
+    },
+    {
+      "iata": "RGN",
+      "name": "Yangon International Airport",
+      "city": "Yangon",
+      "country": "Myanmar",
+      "latitude": 16.9073,
+      "longitude": 96.1332
+    },
+    {
+      "iata": "KNO",
+      "name": "Kualanamu International Airport",
+      "city": "Medan",
+      "country": "Indonesia",
+      "latitude": 3.6378,
+      "longitude": 98.8706
+    },
+    {
+      "iata": "HKG",
+      "name": "Hong Kong International Airport",
+      "city": "Hong Kong",
+      "country": "Hong Kong",
+      "latitude": 22.3118,
+      "longitude": 113.9149
+    },
+    {
+      "iata": "TPE",
+      "name": "Taiwan Taoyuan International Airport",
+      "city": "Taoyuan",
+      "country": "Taiwan",
+      "latitude": 25.0777,
+      "longitude": 121.233
+    },
+    {
+      "iata": "ICN",
+      "name": "Incheon International Airport",
+      "city": "Seoul",
+      "country": "South Korea",
+      "latitude": 37.4691,
+      "longitude": 126.451
+    },
+    {
+      "iata": "GMP",
+      "name": "Gimpo International Airport",
+      "city": "Seoul",
+      "country": "South Korea",
+      "latitude": 37.5583,
+      "longitude": 126.791
+    },
+    {
+      "iata": "NRT",
+      "name": "Narita International Airport",
+      "city": "Tokyo",
+      "country": "Japan",
+      "latitude": 35.7686,
+      "longitude": 140.3887
+    },
+    {
+      "iata": "HND",
+      "name": "Tokyo Haneda International Airport",
+      "city": "Tokyo",
+      "country": "Japan",
+      "latitude": 35.5497,
+      "longitude": 139.787
+    },
+    {
+      "iata": "KIX",
+      "name": "Kansai International Airport",
+      "city": "Osaka",
+      "country": "Japan",
+      "latitude": 34.4273,
+      "longitude": 135.244
+    },
+    {
+      "iata": "NGO",
+      "name": "Chubu Centrair International Airport",
+      "city": "Nagoya",
+      "country": "Japan",
+      "latitude": 34.8584,
+      "longitude": 136.805
+    },
+    {
+      "iata": "FUK",
+      "name": "Fukuoka Airport",
+      "city": "Fukuoka",
+      "country": "Japan",
+      "latitude": 33.5859,
+      "longitude": 130.451
+    },
+    {
+      "iata": "PEK",
+      "name": "Beijing Capital International Airport",
+      "city": "Beijing",
+      "country": "China",
+      "latitude": 40.0773,
+      "longitude": 116.5967
+    },
+    {
+      "iata": "PKX",
+      "name": "Beijing Daxing International Airport",
+      "city": "Beijing",
+      "country": "China",
+      "latitude": 39.5013,
+      "longitude": 116.414
+    },
+    {
+      "iata": "PVG",
+      "name": "Shanghai Pudong International Airport",
+      "city": "Shanghai (Pudong)",
+      "country": "China",
+      "latitude": 31.1434,
+      "longitude": 121.805
+    },
+    {
+      "iata": "SHA",
+      "name": "Shanghai Hongqiao International Airport",
+      "city": "Shanghai (Minhang)",
+      "country": "China",
+      "latitude": 31.1981,
+      "longitude": 121.3343
+    },
+    {
+      "iata": "CAN",
+      "name": "Guangzhou Baiyun International Airport",
+      "city": "Guangzhou (Huadu)",
+      "country": "China",
+      "latitude": 23.3924,
+      "longitude": 113.299
+    },
+    {
+      "iata": "SZX",
+      "name": "Shenzhen Bao'an International Airport",
+      "city": "Shenzhen",
+      "country": "China",
+      "latitude": 22.6395,
+      "longitude": 113.8033
+    },
+    {
+      "iata": "CTU",
+      "name": "Chengdu Shuangliu International Airport",
+      "city": "Chengdu (Shuangliu)",
+      "country": "China",
+      "latitude": 30.5583,
+      "longitude": 103.946
+    },
+    {
+      "iata": "TFU",
+      "name": "Chengdu Tianfu International Airport",
+      "city": "Chengdu (Jianyang)",
+      "country": "China",
+      "latitude": 30.3125,
+      "longitude": 104.4413
+    },
+    {
+      "iata": "CKG",
+      "name": "Chongqing Jiangbei International Airport",
+      "city": "Chongqing",
+      "country": "China",
+      "latitude": 29.7123,
+      "longitude": 106.6519
+    },
+    {
+      "iata": "XIY",
+      "name": "Xi'an Xianyang International Airport",
+      "city": "Xi'an",
+      "country": "China",
+      "latitude": 34.4422,
+      "longitude": 108.7624
+    },
+    {
+      "iata": "TAO",
+      "name": "Qingdao Jiaodong International Airport",
+      "city": "Qingdao (Jiaozhou)",
+      "country": "China",
+      "latitude": 36.362,
+      "longitude": 120.0882
+    },
+    {
+      "iata": "DOH",
+      "name": "Hamad International Airport",
+      "city": "Doha",
+      "country": "Qatar",
+      "latitude": 25.2731,
+      "longitude": 51.6081
+    },
+    {
+      "iata": "DXB",
+      "name": "Dubai International Airport",
+      "city": "Dubai",
+      "country": "United Arab Emirates",
+      "latitude": 25.2498,
+      "longitude": 55.371
+    },
+    {
+      "iata": "AUH",
+      "name": "Zayed International Airport",
+      "city": "Abu Dhabi",
+      "country": "United Arab Emirates",
+      "latitude": 24.441,
+      "longitude": 54.6492
+    },
+    {
+      "iata": "IST",
+      "name": "Istanbul Airport",
+      "city": "Istanbul",
+      "country": "Turkey",
+      "latitude": 41.2749,
+      "longitude": 28.7321
+    },
+    {
+      "iata": "SAW",
+      "name": "Istanbul Sabiha Gokcen International Airport",
+      "city": "Pendik, Istanbul",
+      "country": "Turkey",
+      "latitude": 40.8986,
+      "longitude": 29.3092
+    },
+    {
+      "iata": "TLV",
+      "name": "Ben Gurion International Airport",
+      "city": "Tel Aviv",
+      "country": "Israel",
+      "latitude": 32.0114,
+      "longitude": 34.8867
+    },
+    {
+      "iata": "AMM",
+      "name": "Queen Alia International Airport",
+      "city": "Amman",
+      "country": "Jordan",
+      "latitude": 31.7226,
+      "longitude": 35.9932
+    },
+    {
+      "iata": "CAI",
+      "name": "Cairo International Airport",
+      "city": "Cairo",
+      "country": "Egypt",
+      "latitude": 30.1115,
+      "longitude": 31.3967
+    },
+    {
+      "iata": "DEL",
+      "name": "Indira Gandhi International Airport",
+      "city": "New Delhi",
+      "country": "India",
+      "latitude": 28.5556,
+      "longitude": 77.0952
+    },
+    {
+      "iata": "BOM",
+      "name": "Chhatrapati Shivaji Maharaj International Airport",
+      "city": "Mumbai",
+      "country": "India",
+      "latitude": 19.0887,
+      "longitude": 72.8679
+    },
+    {
+      "iata": "BLR",
+      "name": "Kempegowda International Airport Bengaluru",
+      "city": "Bengaluru",
+      "country": "India",
+      "latitude": 13.1979,
+      "longitude": 77.7063
+    },
+    {
+      "iata": "MAA",
+      "name": "Chennai International Airport",
+      "city": "Chennai",
+      "country": "India",
+      "latitude": 12.99,
+      "longitude": 80.1693
+    },
+    {
+      "iata": "HYD",
+      "name": "Rajiv Gandhi International Airport",
+      "city": "Hyderabad",
+      "country": "India",
+      "latitude": 17.2313,
+      "longitude": 78.4299
+    },
+    {
+      "iata": "COK",
+      "name": "Cochin International Airport",
+      "city": "Kochi",
+      "country": "India",
+      "latitude": 10.151,
+      "longitude": 76.4008
+    },
+    {
+      "iata": "CMB",
+      "name": "Bandaranaike International Colombo Airport",
+      "city": "Colombo",
+      "country": "Sri Lanka",
+      "latitude": 7.1808,
+      "longitude": 79.8841
+    },
+    {
+      "iata": "KTM",
+      "name": "Tribhuvan International Airport",
+      "city": "Kathmandu",
+      "country": "Nepal",
+      "latitude": 27.6966,
+      "longitude": 85.3591
+    },
+    {
+      "iata": "LHR",
+      "name": "Heathrow Airport",
+      "city": "London",
+      "country": "United Kingdom",
+      "latitude": 51.4707,
+      "longitude": -0.4599
+    },
+    {
+      "iata": "LGW",
+      "name": "London Gatwick Airport",
+      "city": "London",
+      "country": "United Kingdom",
+      "latitude": 51.1487,
+      "longitude": -0.1857
+    },
+    {
+      "iata": "STN",
+      "name": "London Stansted Airport",
+      "city": "London, Essex",
+      "country": "United Kingdom",
+      "latitude": 51.885,
+      "longitude": 0.235
+    },
+    {
+      "iata": "CDG",
+      "name": "Charles de Gaulle Airport",
+      "city": "Paris",
+      "country": "France",
+      "latitude": 49.009,
+      "longitude": 2.5541
+    },
+    {
+      "iata": "ORY",
+      "name": "Paris-Orly Airport",
+      "city": "Paris",
+      "country": "France",
+      "latitude": 48.7295,
+      "longitude": 2.359
+    },
+    {
+      "iata": "AMS",
+      "name": "Amsterdam Airport Schiphol",
+      "city": "Amsterdam",
+      "country": "Netherlands",
+      "latitude": 52.3086,
+      "longitude": 4.7639
+    },
+    {
+      "iata": "FRA",
+      "name": "Frankfurt Airport",
+      "city": "Frankfurt",
+      "country": "Germany",
+      "latitude": 50.0267,
+      "longitude": 8.5584
+    },
+    {
+      "iata": "MUC",
+      "name": "Munich Airport",
+      "city": "Munich",
+      "country": "Germany",
+      "latitude": 48.3538,
+      "longitude": 11.7861
+    },
+    {
+      "iata": "DUS",
+      "name": "Dusseldorf Airport",
+      "city": "Dusseldorf",
+      "country": "Germany",
+      "latitude": 51.2895,
+      "longitude": 6.7668
+    },
+    {
+      "iata": "BER",
+      "name": "Berlin Brandenburg Airport",
+      "city": "Berlin",
+      "country": "Germany",
+      "latitude": 52.3617,
+      "longitude": 13.5023
+    },
+    {
+      "iata": "HAM",
+      "name": "Hamburg Helmut Schmidt Airport",
+      "city": "Hamburg",
+      "country": "Germany",
+      "latitude": 53.6304,
+      "longitude": 9.9882
+    },
+    {
+      "iata": "ZRH",
+      "name": "Zurich Airport",
+      "city": "Zurich",
+      "country": "Switzerland",
+      "latitude": 47.4581,
+      "longitude": 8.5481
+    },
+    {
+      "iata": "GVA",
+      "name": "Geneva International Airport",
+      "city": "Geneva",
+      "country": "Switzerland",
+      "latitude": 46.2381,
+      "longitude": 6.109
+    },
+    {
+      "iata": "VIE",
+      "name": "Vienna International Airport",
+      "city": "Vienna",
+      "country": "Austria",
+      "latitude": 48.1103,
+      "longitude": 16.5697
+    },
+    {
+      "iata": "MAD",
+      "name": "Adolfo Suarez Madrid-Barajas Airport",
+      "city": "Madrid",
+      "country": "Spain",
+      "latitude": 40.4934,
+      "longitude": -3.5722
+    },
+    {
+      "iata": "BCN",
+      "name": "Josep Tarradellas Barcelona-El Prat Airport",
+      "city": "Barcelona",
+      "country": "Spain",
+      "latitude": 41.2971,
+      "longitude": 2.0785
+    },
+    {
+      "iata": "LIS",
+      "name": "Lisbon Humberto Delgado Airport",
+      "city": "Lisbon",
+      "country": "Portugal",
+      "latitude": 38.7813,
+      "longitude": -9.1359
+    },
+    {
+      "iata": "OPO",
+      "name": "Francisco de Sa Carneiro Airport",
+      "city": "Porto",
+      "country": "Portugal",
+      "latitude": 41.2481,
+      "longitude": -8.6814
+    },
+    {
+      "iata": "FCO",
+      "name": "Rome-Fiumicino Leonardo da Vinci International Airport",
+      "city": "Rome",
+      "country": "Italy",
+      "latitude": 41.8045,
+      "longitude": 12.252
+    },
+    {
+      "iata": "MXP",
+      "name": "Milan Malpensa International Airport",
+      "city": "Milan",
+      "country": "Italy",
+      "latitude": 45.6306,
+      "longitude": 8.7281
+    },
+    {
+      "iata": "ATH",
+      "name": "Athens Eleftherios Venizelos International Airport",
+      "city": "Athens",
+      "country": "Greece",
+      "latitude": 37.9364,
+      "longitude": 23.9445
+    },
+    {
+      "iata": "CPH",
+      "name": "Copenhagen Kastrup Airport",
+      "city": "Copenhagen",
+      "country": "Denmark",
+      "latitude": 55.6179,
+      "longitude": 12.656
+    },
+    {
+      "iata": "ARN",
+      "name": "Stockholm-Arlanda Airport",
+      "city": "Stockholm",
+      "country": "Sweden",
+      "latitude": 59.6485,
+      "longitude": 17.9288
+    },
+    {
+      "iata": "OSL",
+      "name": "Oslo-Gardermoen International Airport",
+      "city": "Oslo",
+      "country": "Norway",
+      "latitude": 60.1939,
+      "longitude": 11.1004
+    },
+    {
+      "iata": "HEL",
+      "name": "Helsinki Vantaa Airport",
+      "city": "Helsinki (Vantaa)",
+      "country": "Finland",
+      "latitude": 60.3184,
+      "longitude": 24.9633
+    },
+    {
+      "iata": "WAW",
+      "name": "Warsaw Chopin Airport",
+      "city": "Warsaw",
+      "country": "Poland",
+      "latitude": 52.1657,
+      "longitude": 20.9671
+    },
+    {
+      "iata": "PRG",
+      "name": "Vaclav Havel Airport Prague",
+      "city": "Prague",
+      "country": "Czech Republic",
+      "latitude": 50.1009,
+      "longitude": 14.2599
+    },
+    {
+      "iata": "BRU",
+      "name": "Brussels Airport",
+      "city": "Zaventem",
+      "country": "Belgium",
+      "latitude": 50.9014,
+      "longitude": 4.4844
+    },
+    {
+      "iata": "DUB",
+      "name": "Dublin Airport",
+      "city": "Dublin",
+      "country": "Ireland",
+      "latitude": 53.4287,
+      "longitude": -6.2621
+    },
+    {
+      "iata": "MAN",
+      "name": "Manchester Airport",
+      "city": "Manchester",
+      "country": "United Kingdom",
+      "latitude": 53.3494,
+      "longitude": -2.2795
+    },
+    {
+      "iata": "EDI",
+      "name": "Edinburgh Airport",
+      "city": "Edinburgh",
+      "country": "United Kingdom",
+      "latitude": 55.9501,
+      "longitude": -3.3723
+    },
+    {
+      "iata": "KEF",
+      "name": "Keflavik International Airport",
+      "city": "Reykjavik",
+      "country": "Iceland",
+      "latitude": 63.985,
+      "longitude": -22.6056
+    },
+    {
+      "iata": "LAX",
+      "name": "Los Angeles International Airport",
+      "city": "Los Angeles",
+      "country": "United States",
+      "latitude": 33.9425,
+      "longitude": -118.408
+    },
+    {
+      "iata": "SFO",
+      "name": "San Francisco International Airport",
+      "city": "San Francisco",
+      "country": "United States",
+      "latitude": 37.6198,
+      "longitude": -122.3748
+    },
+    {
+      "iata": "JFK",
+      "name": "John F. Kennedy International Airport",
+      "city": "New York",
+      "country": "United States",
+      "latitude": 40.6394,
+      "longitude": -73.7793
+    },
+    {
+      "iata": "EWR",
+      "name": "Newark Liberty International Airport",
+      "city": "Newark",
+      "country": "United States",
+      "latitude": 40.6894,
+      "longitude": -74.1705
+    },
+    {
+      "iata": "BOS",
+      "name": "Boston Logan International Airport",
+      "city": "Boston",
+      "country": "United States",
+      "latitude": 42.362,
+      "longitude": -71.0079
+    },
+    {
+      "iata": "IAD",
+      "name": "Washington Dulles International Airport",
+      "city": "Dulles",
+      "country": "United States",
+      "latitude": 38.9445,
+      "longitude": -77.4558
+    },
+    {
+      "iata": "ATL",
+      "name": "Hartsfield Jackson Atlanta International Airport",
+      "city": "Atlanta",
+      "country": "United States",
+      "latitude": 33.6367,
+      "longitude": -84.4281
+    },
+    {
+      "iata": "ORD",
+      "name": "Chicago O'Hare International Airport",
+      "city": "Chicago",
+      "country": "United States",
+      "latitude": 41.9786,
+      "longitude": -87.9048
+    },
+    {
+      "iata": "DFW",
+      "name": "Dallas Fort Worth International Airport",
+      "city": "Dallas-Fort Worth",
+      "country": "United States",
+      "latitude": 32.8968,
+      "longitude": -97.038
+    },
+    {
+      "iata": "DEN",
+      "name": "Denver International Airport",
+      "city": "Denver",
+      "country": "United States",
+      "latitude": 39.86,
+      "longitude": -104.6738
+    },
+    {
+      "iata": "SEA",
+      "name": "Seattle-Tacoma International Airport",
+      "city": "Seattle",
+      "country": "United States",
+      "latitude": 47.4479,
+      "longitude": -122.3103
+    },
+    {
+      "iata": "LAS",
+      "name": "Harry Reid International Airport",
+      "city": "Las Vegas",
+      "country": "United States",
+      "latitude": 36.0834,
+      "longitude": -115.1518
+    },
+    {
+      "iata": "PHX",
+      "name": "Phoenix Sky Harbor International Airport",
+      "city": "Phoenix",
+      "country": "United States",
+      "latitude": 33.4353,
+      "longitude": -112.0059
+    },
+    {
+      "iata": "MIA",
+      "name": "Miami International Airport",
+      "city": "Miami",
+      "country": "United States",
+      "latitude": 25.796,
+      "longitude": -80.2898
+    },
+    {
+      "iata": "FLL",
+      "name": "Fort Lauderdale Hollywood International Airport",
+      "city": "Fort Lauderdale",
+      "country": "United States",
+      "latitude": 26.0726,
+      "longitude": -80.1527
+    },
+    {
+      "iata": "MCO",
+      "name": "Orlando International Airport",
+      "city": "Orlando",
+      "country": "United States",
+      "latitude": 28.4294,
+      "longitude": -81.309
+    },
+    {
+      "iata": "IAH",
+      "name": "George Bush Intercontinental Airport",
+      "city": "Houston",
+      "country": "United States",
+      "latitude": 29.9844,
+      "longitude": -95.3414
+    },
+    {
+      "iata": "MSP",
+      "name": "Minneapolis-Saint Paul International Airport / Wold-Chamberlain Field",
+      "city": "Minneapolis",
+      "country": "United States",
+      "latitude": 44.8801,
+      "longitude": -93.2217
+    },
+    {
+      "iata": "DTW",
+      "name": "Detroit Metropolitan Wayne County Airport",
+      "city": "Detroit",
+      "country": "United States",
+      "latitude": 42.2138,
+      "longitude": -83.3538
+    },
+    {
+      "iata": "CLT",
+      "name": "Charlotte Douglas International Airport",
+      "city": "Charlotte",
+      "country": "United States",
+      "latitude": 35.214,
+      "longitude": -80.9431
+    },
+    {
+      "iata": "PHL",
+      "name": "Philadelphia International Airport",
+      "city": "Philadelphia",
+      "country": "United States",
+      "latitude": 39.8719,
+      "longitude": -75.2411
+    },
+    {
+      "iata": "SAN",
+      "name": "San Diego International Airport",
+      "city": "San Diego",
+      "country": "United States",
+      "latitude": 32.7336,
+      "longitude": -117.19
+    },
+    {
+      "iata": "PDX",
+      "name": "Portland International Airport",
+      "city": "Portland",
+      "country": "United States",
+      "latitude": 45.5887,
+      "longitude": -122.598
+    },
+    {
+      "iata": "YVR",
+      "name": "Vancouver International Airport",
+      "city": "Vancouver",
+      "country": "Canada",
+      "latitude": 49.1939,
+      "longitude": -123.184
+    },
+    {
+      "iata": "YYZ",
+      "name": "Toronto Pearson International Airport",
+      "city": "Toronto",
+      "country": "Canada",
+      "latitude": 43.6759,
+      "longitude": -79.6294
+    },
+    {
+      "iata": "YUL",
+      "name": "Montreal / Pierre Elliott Trudeau International Airport",
+      "city": "Montreal",
+      "country": "Canada",
+      "latitude": 45.4678,
+      "longitude": -73.7423
+    },
+    {
+      "iata": "YYC",
+      "name": "Calgary International Airport",
+      "city": "Calgary",
+      "country": "Canada",
+      "latitude": 51.1188,
+      "longitude": -114.0099
+    },
+    {
+      "iata": "MEX",
+      "name": "Mexico City Benito Juarez International Airport",
+      "city": "Mexico City",
+      "country": "Mexico",
+      "latitude": 19.4358,
+      "longitude": -99.0703
+    },
+    {
+      "iata": "CUN",
+      "name": "Cancun International Airport",
+      "city": "Cancun",
+      "country": "Mexico",
+      "latitude": 21.0408,
+      "longitude": -86.8735
+    },
+    {
+      "iata": "GDL",
+      "name": "Guadalajara International Airport",
+      "city": "Guadalajara",
+      "country": "Mexico",
+      "latitude": 20.5233,
+      "longitude": -103.3101
+    },
+    {
+      "iata": "PTY",
+      "name": "Tocumen International Airport",
+      "city": "Tocumen",
+      "country": "Panama",
+      "latitude": 9.0714,
+      "longitude": -79.3835
+    },
+    {
+      "iata": "SJO",
+      "name": "Juan Santamaria International Airport",
+      "city": "San Jose",
+      "country": "Costa Rica",
+      "latitude": 9.9939,
+      "longitude": -84.2088
+    },
+    {
+      "iata": "GRU",
+      "name": "Sao Paulo/Guarulhos-Governor Andre Franco Montoro International Airport",
+      "city": "Sao Paulo",
+      "country": "Brazil",
+      "latitude": -23.4313,
+      "longitude": -46.47
+    },
+    {
+      "iata": "GIG",
+      "name": "Rio Galeao - Tom Jobim International Airport",
+      "city": "Rio de Janeiro",
+      "country": "Brazil",
+      "latitude": -22.81,
+      "longitude": -43.2506
+    },
+    {
+      "iata": "BSB",
+      "name": "Presidente Juscelino Kubitschek International Airport",
+      "city": "Brasilia",
+      "country": "Brazil",
+      "latitude": -15.8692,
+      "longitude": -47.9208
+    },
+    {
+      "iata": "EZE",
+      "name": "Ezeiza International Airport - Ministro Pistarini",
+      "city": "Buenos Aires",
+      "country": "Argentina",
+      "latitude": -34.8222,
+      "longitude": -58.5358
+    },
+    {
+      "iata": "AEP",
+      "name": "Aeroparque Jorge Newbery",
+      "city": "Buenos Aires",
+      "country": "Argentina",
+      "latitude": -34.5594,
+      "longitude": -58.4155
+    },
+    {
+      "iata": "SCL",
+      "name": "Comodoro Arturo Merino Benitez International Airport",
+      "city": "Santiago",
+      "country": "Chile",
+      "latitude": -33.393,
+      "longitude": -70.7858
+    },
+    {
+      "iata": "LIM",
+      "name": "Jorge Chavez International Airport",
+      "city": "Lima",
+      "country": "Peru",
+      "latitude": -12.0219,
+      "longitude": -77.1143
+    },
+    {
+      "iata": "BOG",
+      "name": "El Dorado International Airport",
+      "city": "Bogota",
+      "country": "Colombia",
+      "latitude": 4.7016,
+      "longitude": -74.1469
+    },
+    {
+      "iata": "UIO",
+      "name": "Mariscal Sucre International Airport",
+      "city": "Quito",
+      "country": "Ecuador",
+      "latitude": -0.1254,
+      "longitude": -78.3543
+    },
+    {
+      "iata": "GYE",
+      "name": "Jose Joaquin de Olmedo International Airport",
+      "city": "Guayaquil",
+      "country": "Ecuador",
+      "latitude": -2.1574,
+      "longitude": -79.8836
+    },
+    {
+      "iata": "JNB",
+      "name": "O.R. Tambo International Airport",
+      "city": "Johannesburg",
+      "country": "South Africa",
+      "latitude": -26.1401,
+      "longitude": 28.2468
+    },
+    {
+      "iata": "CPT",
+      "name": "Cape Town International Airport",
+      "city": "Cape Town",
+      "country": "South Africa",
+      "latitude": -33.974,
+      "longitude": 18.6043
+    },
+    {
+      "iata": "ADD",
+      "name": "Addis Ababa Bole International Airport",
+      "city": "Addis Ababa",
+      "country": "Ethiopia",
+      "latitude": 8.9779,
+      "longitude": 38.7993
+    },
+    {
+      "iata": "NBO",
+      "name": "Jomo Kenyatta International Airport",
+      "city": "Nairobi",
+      "country": "Kenya",
+      "latitude": -1.3189,
+      "longitude": 36.9282
+    },
+    {
+      "iata": "CMN",
+      "name": "Mohammed V International Airport",
+      "city": "Casablanca",
+      "country": "Morocco",
+      "latitude": 33.3675,
+      "longitude": -7.59
+    },
+    {
+      "iata": "RAK",
+      "name": "Marrakesh Menara Airport",
+      "city": "Marrakesh",
+      "country": "Morocco",
+      "latitude": 31.6048,
+      "longitude": -8.0358
+    },
+    {
+      "iata": "TUN",
+      "name": "Tunis Carthage International Airport",
+      "city": "Tunis",
+      "country": "Tunisia",
+      "latitude": 36.851,
+      "longitude": 10.2272
+    },
+    {
+      "iata": "ALG",
+      "name": "Houari Boumediene Airport",
+      "city": "Algiers",
+      "country": "Algeria",
+      "latitude": 36.6939,
+      "longitude": 3.2145
+    },
+    {
+      "iata": "LOS",
+      "name": "Murtala Muhammed International Airport",
+      "city": "Lagos",
+      "country": "Nigeria",
+      "latitude": 6.5774,
+      "longitude": 3.3212
+    },
+    {
+      "iata": "ACC",
+      "name": "Kotoka International Airport",
+      "city": "Accra",
+      "country": "Ghana",
+      "latitude": 5.6052,
+      "longitude": -0.1668
+    },
+    {
+      "iata": "SYD",
+      "name": "Sydney Kingsford Smith Airport",
+      "city": "Sydney",
+      "country": "Australia",
+      "latitude": -33.9461,
+      "longitude": 151.177
+    },
+    {
+      "iata": "MEL",
+      "name": "Melbourne Airport",
+      "city": "Melbourne",
+      "country": "Australia",
+      "latitude": -37.6707,
+      "longitude": 144.8379
+    },
+    {
+      "iata": "BNE",
+      "name": "Brisbane International Airport",
+      "city": "Brisbane",
+      "country": "Australia",
+      "latitude": -27.3842,
+      "longitude": 153.117
+    },
+    {
+      "iata": "PER",
+      "name": "Perth International Airport",
+      "city": "Perth",
+      "country": "Australia",
+      "latitude": -31.9403,
+      "longitude": 115.967
+    },
+    {
+      "iata": "AKL",
+      "name": "Auckland International Airport",
+      "city": "Auckland",
+      "country": "New Zealand",
+      "latitude": -37.012,
+      "longitude": 174.7863
+    }
   ]
 }

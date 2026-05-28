@@ -54,6 +54,7 @@ def test_load_airport_catalog_indexes_by_iata() -> None:
 
     assert catalog.resolve("SGN").city == "Ho Chi Minh City"
     assert catalog.resolve("CXR").name == "Cam Ranh International Airport"
+    assert catalog.resolve("DUS").name == "Dusseldorf Airport"
 
 
 def test_resolve_airport_normalizes_case_and_whitespace() -> None:
