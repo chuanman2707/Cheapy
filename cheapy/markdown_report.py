@@ -311,10 +311,6 @@ def _safe_message_with_reason(message: WarningV1 | ErrorV1) -> str:
 def _safe_reason(message: WarningV1 | ErrorV1) -> str | None:
     details = message.details
 
-    failure_type = _safe_detail_token(details.get("failure_type"))
-    if failure_type in _SAFE_FAILURE_REASONS:
-        return _FAILURE_REASON_ALIASES.get(failure_type, failure_type)
-
     http_status_code = _detail_http_status_code(details.get("http_status_code"))
     if http_status_code in {401, 403}:
         return "provider_blocked"
@@ -323,8 +319,12 @@ def _safe_reason(message: WarningV1 | ErrorV1) -> str | None:
     if http_status_code is not None and http_status_code >= 500:
         return "transport_error"
 
+    failure_type = _safe_detail_token(details.get("failure_type"))
+    if failure_type in _SAFE_FAILURE_REASONS:
+        return _FAILURE_REASON_ALIASES.get(failure_type, failure_type)
+
     exception_type = _safe_detail_token(details.get("exception_type"), preserve_case=True)
-    if exception_type in _TIMEOUT_EXCEPTION_TYPES:
+    if _is_timeout_exception_type(exception_type):
         return "timeout"
 
     return None
@@ -349,6 +349,14 @@ def _detail_http_status_code(value: object) -> int | None:
     if isinstance(value, str) and value.isdecimal():
         return int(value)
     return None
+
+
+def _is_timeout_exception_type(value: str | None) -> bool:
+    if value is None:
+        return False
+    if value in _TIMEOUT_EXCEPTION_TYPES:
+        return True
+    return value.lower().endswith("timeout") or value.lower().endswith("timeouterror")
 
 
 def _message_appears_sensitive(message: str) -> bool:

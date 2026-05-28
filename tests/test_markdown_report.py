@@ -602,3 +602,60 @@ def test_unsafe_failure_type_is_not_rendered_as_reason() -> None:
     assert "[redacted]" in report
     assert "token_session_header_dump" not in report
     assert "https://example.test" not in report
+
+
+def test_http_status_reason_overrides_generic_failure_type() -> None:
+    error = ErrorV1(
+        code=ErrorCode.PROVIDER_FAILED,
+        severity=Severity.ERROR,
+        message_en="Provider returned HTTP 500 with header token.",
+        details={
+            "provider": "skyscanner",
+            "capability": "exact_one_way",
+            "failure_type": "http_error",
+            "http_status_code": 500,
+        },
+        retryable=True,
+    )
+
+    report = render_search_report(
+        _request(),
+        _response(errors=[error], provider_statuses=[_provider_status(errors=[error])]),
+    )
+
+    assert "(reason: transport_error)" in report
+    assert "(reason: http_error)" not in report
+    assert "http_status_code" not in report
+    assert "500" not in report
+
+
+def test_timeout_shaped_exception_basename_maps_to_timeout_reason() -> None:
+    for exception_type in (
+        "PlaywrightTimeoutError",
+        "InjectedTimeout",
+        "some.module.TimeoutError",
+    ):
+        error = ErrorV1(
+            code=ErrorCode.PROVIDER_TIMEOUT,
+            severity=Severity.ERROR,
+            message_en="Provider timed out with internal browser session data.",
+            details={
+                "provider": "traveloka",
+                "capability": "exact_one_way",
+                "exception_type": exception_type,
+            },
+            retryable=True,
+        )
+
+        report = render_search_report(
+            _request(),
+            _response(
+                errors=[error],
+                provider_statuses=[_provider_status(errors=[error])],
+            ),
+        )
+
+        assert "[redacted] (reason: timeout)" in report
+        assert exception_type not in report
+        assert exception_type.rsplit(".", 1)[-1] not in report
+        assert "exception_type" not in report
