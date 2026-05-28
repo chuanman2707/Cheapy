@@ -400,3 +400,48 @@ def test_nested_sensitive_messages_are_redacted_in_all_sections() -> None:
         "metadata",
     ):
         assert unsafe_text not in report
+
+
+def test_provider_internal_runtime_messages_are_redacted_in_all_sections() -> None:
+    warning = WarningV1(
+        code=WarningCode.SEARCH_TRUNCATED,
+        severity=Severity.WARNING,
+        message_en="Traveloka browser runtime is unavailable.",
+        details={},
+        retryable=True,
+    )
+    error = ErrorV1(
+        code=ErrorCode.PROVIDER_FAILED,
+        severity=Severity.ERROR,
+        message_en="Browserless session failed via Playwright and CloakBrowser.",
+        details={},
+        retryable=False,
+    )
+    response = _response(
+        provider_statuses=[
+            _provider_status(
+                status=ProviderStatusCode.FAILED,
+                planned_call_count=2,
+                executed_call_count=2,
+                succeeded_call_count=0,
+                failed_call_count=2,
+                warnings=[warning],
+                errors=[error],
+            )
+        ],
+    )
+
+    report = render_search_report(_request(), response)
+
+    assert "warning search_truncated: [redacted] retryable: yes" in report
+    assert "error provider_failed: [redacted] retryable: no" in report
+    assert "| Traveloka | failed | 2/2 | search_truncated | warning | [redacted] | yes |" in report
+    assert "| Traveloka | failed | 2/2 | provider_failed | error | [redacted] | no |" in report
+    for unsafe_text in (
+        "browser",
+        "Browserless",
+        "session",
+        "Playwright",
+        "CloakBrowser",
+    ):
+        assert unsafe_text not in report

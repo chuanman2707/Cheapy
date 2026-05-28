@@ -23,15 +23,20 @@ _JWT_SHAPE_RE = re.compile(
 )
 _SENSITIVE_MESSAGE_TERMS = (
     "auth",
+    "browser",
+    "browserless",
     "challenge",
+    "cloakbrowser",
     "cookie",
     "header",
     "headers",
     "jwt",
     "payload",
+    "playwright",
     "request body",
     "request_body",
     "secret",
+    "session",
     "token",
 )
 
