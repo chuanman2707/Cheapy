@@ -39,6 +39,47 @@ _SENSITIVE_MESSAGE_TERMS = (
     "session",
     "token",
 )
+_SAFE_FAILURE_REASONS = frozenset(
+    {
+        "timeout",
+        "provider_blocked",
+        "blocked",
+        "rate_limited",
+        "parse_failed",
+        "parse_error",
+        "no_usable_results",
+        "missing_cookie",
+        "transport_error",
+        "unsupported_passengers",
+        "http_error",
+        "invalid_argument",
+        "entity_not_found",
+        "entity_ambiguous",
+        "unexpected_error",
+        "no_usable_outbound_data",
+        "unsupported_response",
+        "return_capture_timeout",
+        "final_round_trip_total_unavailable",
+        "outbound_selection_unavailable",
+        "outbound_selection_transition_unavailable",
+        "return_selection_unavailable",
+        "selected_outbound_binding_unavailable",
+        "selected_return_binding_unavailable",
+        "partial_failure",
+    }
+)
+_FAILURE_REASON_ALIASES = {
+    "blocked": "provider_blocked",
+    "parse_error": "parse_failed",
+}
+_TIMEOUT_EXCEPTION_TYPES = frozenset(
+    {
+        "TimeoutError",
+        "ReadTimeout",
+        "ConnectTimeout",
+        "TimeoutException",
+    }
+)
 
 
 def render_search_report(request: SearchRequestV1, response: SearchResponseV1) -> str:
@@ -208,7 +249,7 @@ def _message_row(
         calls,
         message.code.value,
         message.severity.value,
-        _safe_message(message.message_en),
+        _safe_message_with_reason(message),
         "yes" if message.retryable else "no",
     )
 
@@ -241,7 +282,7 @@ def _provider_notes(status: ProviderStatusV1) -> str:
 def _provider_message_note(kind: str, message: WarningV1 | ErrorV1) -> str:
     retryable = "yes" if message.retryable else "no"
     return (
-        f"{kind} {message.code.value}: {_safe_message(message.message_en)} "
+        f"{kind} {message.code.value}: {_safe_message_with_reason(message)} "
         f"retryable: {retryable}"
     )
 
@@ -257,6 +298,57 @@ def _safe_message(message: str) -> str:
     if _message_appears_sensitive(message):
         return "[redacted]"
     return message
+
+
+def _safe_message_with_reason(message: WarningV1 | ErrorV1) -> str:
+    rendered = _safe_message(message.message_en)
+    reason = _safe_reason(message)
+    if reason is None:
+        return rendered
+    return f"{rendered} (reason: {reason})"
+
+
+def _safe_reason(message: WarningV1 | ErrorV1) -> str | None:
+    details = message.details
+
+    failure_type = _safe_detail_token(details.get("failure_type"))
+    if failure_type in _SAFE_FAILURE_REASONS:
+        return _FAILURE_REASON_ALIASES.get(failure_type, failure_type)
+
+    http_status_code = _detail_http_status_code(details.get("http_status_code"))
+    if http_status_code in {401, 403}:
+        return "provider_blocked"
+    if http_status_code == 429:
+        return "rate_limited"
+    if http_status_code is not None and http_status_code >= 500:
+        return "transport_error"
+
+    exception_type = _safe_detail_token(details.get("exception_type"), preserve_case=True)
+    if exception_type in _TIMEOUT_EXCEPTION_TYPES:
+        return "timeout"
+
+    return None
+
+
+def _safe_detail_token(value: object, *, preserve_case: bool = False) -> str | None:
+    if not isinstance(value, str):
+        return None
+    token = value.strip()
+    if not token:
+        return None
+    if preserve_case:
+        return token.rsplit(".", 1)[-1]
+    return token.lower()
+
+
+def _detail_http_status_code(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdecimal():
+        return int(value)
+    return None
 
 
 def _message_appears_sensitive(message: str) -> bool:

@@ -520,3 +520,85 @@ def test_provider_internal_runtime_messages_are_redacted_in_all_sections() -> No
         "CloakBrowser",
     ):
         assert unsafe_text not in report
+
+
+def test_sensitive_provider_message_keeps_safe_failure_reason() -> None:
+    error = ErrorV1(
+        code=ErrorCode.PROVIDER_TIMEOUT,
+        severity=Severity.ERROR,
+        message_en="Skyscanner request included cookie and session data.",
+        details={
+            "provider": "skyscanner",
+            "capability": "exact_round_trip",
+            "failure_type": "timeout",
+            "cookie": "secret-cookie",
+        },
+        retryable=True,
+    )
+    response = _response(
+        errors=[error],
+        provider_statuses=[
+            _provider_status(
+                provider_name="skyscanner",
+                status=ProviderStatusCode.FAILED,
+                succeeded_call_count=0,
+                failed_call_count=1,
+                errors=[error],
+                retryable=True,
+            )
+        ],
+    )
+
+    report = render_search_report(_request(), response)
+
+    assert "[redacted] (reason: timeout)" in report
+    assert "cookie" not in report.lower()
+    assert "secret-cookie" not in report
+    assert "| Skyscanner | failed | 1/1 | failed: 1; retryable: yes; error provider_timeout: [redacted] (reason: timeout) retryable: yes |" in report
+
+
+def test_provider_reason_can_come_from_safe_http_status_code() -> None:
+    error = ErrorV1(
+        code=ErrorCode.PROVIDER_BLOCKED,
+        severity=Severity.ERROR,
+        message_en="Provider blocked the request at a challenge URL.",
+        details={
+            "provider": "skyscanner",
+            "capability": "exact_one_way",
+            "http_status_code": 403,
+        },
+        retryable=False,
+    )
+
+    report = render_search_report(
+        _request(),
+        _response(errors=[error], provider_statuses=[_provider_status(errors=[error])]),
+    )
+
+    assert "[redacted] (reason: provider_blocked)" in report
+    assert "challenge URL" not in report
+    assert "http_status_code" not in report
+    assert "403" not in report
+
+
+def test_unsafe_failure_type_is_not_rendered_as_reason() -> None:
+    error = ErrorV1(
+        code=ErrorCode.PROVIDER_FAILED,
+        severity=Severity.ERROR,
+        message_en="Provider failed at https://example.test/challenge?token=secret",
+        details={
+            "provider": "skyscanner",
+            "capability": "exact_one_way",
+            "failure_type": "token_session_header_dump",
+        },
+        retryable=False,
+    )
+
+    report = render_search_report(
+        _request(),
+        _response(errors=[error], provider_statuses=[_provider_status(errors=[error])]),
+    )
+
+    assert "[redacted]" in report
+    assert "token_session_header_dump" not in report
+    assert "https://example.test" not in report
