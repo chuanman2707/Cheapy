@@ -651,7 +651,10 @@ def test_google_fli_round_trip_missing_adapter_method_returns_controlled_failure
     assert result.errors[0].details["failure_type"] == "unexpected_error"
 
 
-def test_skyscanner_stub_returns_skipped_one_way_result() -> None:
+def test_skyscanner_provider_missing_cookie_returns_failed_one_way_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CHEAPY_SKYSCANNER_COOKIE", raising=False)
     provider = create_skyscanner_provider()
 
     result = asyncio.run(
@@ -666,14 +669,22 @@ def test_skyscanner_stub_returns_skipped_one_way_result() -> None:
 
     assert result.provider_name == "skyscanner"
     assert result.capability == "exact_one_way"
-    assert result.status == ProviderStatusCode.SKIPPED
+    assert result.status == ProviderStatusCode.FAILED
     assert result.offers == []
-    assert result.errors == []
-    assert result.duration_ms == 0
+    assert len(result.errors) == 1
+    assert result.errors[0].code == ErrorCode.PROVIDER_FAILED
+    assert result.errors[0].details == {
+        "provider": "skyscanner",
+        "capability": "exact_one_way",
+        "failure_type": "missing_cookie",
+    }
     assert result.retryable is False
 
 
-def test_skyscanner_stub_returns_skipped_round_trip_result() -> None:
+def test_skyscanner_provider_missing_cookie_returns_failed_round_trip_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CHEAPY_SKYSCANNER_COOKIE", raising=False)
     provider = create_skyscanner_provider()
 
     result = asyncio.run(
@@ -689,10 +700,15 @@ def test_skyscanner_stub_returns_skipped_round_trip_result() -> None:
 
     assert result.provider_name == "skyscanner"
     assert result.capability == "exact_round_trip"
-    assert result.status == ProviderStatusCode.SKIPPED
+    assert result.status == ProviderStatusCode.FAILED
     assert result.offers == []
-    assert result.errors == []
-    assert result.duration_ms == 0
+    assert len(result.errors) == 1
+    assert result.errors[0].code == ErrorCode.PROVIDER_FAILED
+    assert result.errors[0].details == {
+        "provider": "skyscanner",
+        "capability": "exact_round_trip",
+        "failure_type": "missing_cookie",
+    }
     assert result.retryable is False
 
 
