@@ -89,7 +89,7 @@ MCP non-exposure tests remain valid.
 - adult passenger count mapping
 - search body construction
 - radar search POST and polling
-- sanitized probe errors
+- sanitized adapter HTTP errors
 - extraction of candidate itinerary payloads needed by the normalizer
 
 `normalizer.py` owns Contract V1 mapping:
@@ -218,7 +218,7 @@ Add or update tests for:
 - missing cookie returns a sanitized provider failure.
 - children or infants return sanitized `unsupported_passengers` without an
   adapter/network call.
-- adapter/probe errors map to the right `ErrorCode`.
+- adapter HTTP errors map to the right `ErrorCode`.
 - successful fake adapter results normalize into valid `FlightOfferV1`.
 - Skyscanner offers receive safe public search URLs through
   `attach_public_search_urls()`.
