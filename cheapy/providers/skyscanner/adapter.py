@@ -915,12 +915,17 @@ def _candidate_leg_segments(leg: object) -> tuple[SkyscannerLegCandidate, ...] |
         return None
     origin = _as_str(_field(leg, ("origin.displayCode",)))
     destination = _as_str(_field(leg, ("destination.displayCode",)))
+    departure = _as_str(_field(leg, ("departure",)))
+    arrival = _as_str(_field(leg, ("arrival",)))
     duration = _int_value(_field(leg, ("durationInMinutes",)))
     segments = leg.get("segments")
     if (
         origin is None
         or destination is None
+        or departure is None
+        or arrival is None
         or duration is None
+        or duration <= 0
         or not isinstance(segments, list)
         or not segments
     ):
@@ -933,6 +938,11 @@ def _candidate_leg_segments(leg: object) -> tuple[SkyscannerLegCandidate, ...] |
     if len(candidates) != len(segments):
         return None
     if candidates[0].origin != origin or candidates[-1].destination != destination:
+        return None
+    if (
+        candidates[0].departure_time != departure
+        or candidates[-1].arrival_time != arrival
+    ):
         return None
     for current, next_segment in zip(candidates, candidates[1:], strict=False):
         if current.destination != next_segment.origin:
@@ -954,6 +964,7 @@ def _candidate_segment(segment: object) -> SkyscannerLegCandidate | None:
         or departure is None
         or arrival is None
         or duration is None
+        or duration <= 0
     ):
         return None
     flight = _segment_flight_number(segment)

@@ -459,12 +459,14 @@ def test_get_entity_id_accepts_top_level_autosuggest_list() -> None:
     assert result.entity_id == "95673375"
 
 
-def test_multisegment_leg_returns_segment_candidates() -> None:
+def _dus_sgn_multisegment_payload() -> dict[str, object]:
     payload = search_payload()
     itinerary = payload["itineraries"]["results"][0]
     leg = itinerary["legs"][0]
     leg["origin"]["displayCode"] = "DUS"
     leg["destination"]["displayCode"] = "SGN"
+    leg["departure"] = "2026-07-11T15:25:00"
+    leg["arrival"] = "2026-07-12T13:55:00"
     leg["durationInMinutes"] = 990
     leg["stopCount"] = 1
     leg["segments"] = [
@@ -487,6 +489,10 @@ def test_multisegment_leg_returns_segment_candidates() -> None:
             "flightNumber": "970",
         },
     ]
+    return payload
+
+
+def _search_dus_sgn_one_way(payload: object) -> list[adapter.SkyscannerItineraryCandidate]:
     client = FakeClient(
         [
             FakeResponse(payload=entity("DUS", "95565012")),
@@ -494,14 +500,17 @@ def test_multisegment_leg_returns_segment_candidates() -> None:
             FakeResponse(payload=payload),
         ]
     )
-
-    candidates = adapter.SkyscannerAdapter(config=config(), client=client).search_exact_one_way(
+    return adapter.SkyscannerAdapter(config=config(), client=client).search_exact_one_way(
         ProviderExactOneWayRequest(
             origin="DUS",
             destination="SGN",
             departure_date="2026-07-11",
         )
     )
+
+
+def test_multisegment_leg_returns_segment_candidates() -> None:
+    candidates = _search_dus_sgn_one_way(_dus_sgn_multisegment_payload())
 
     assert len(candidates) == 1
     assert [
@@ -517,47 +526,48 @@ def test_multisegment_leg_returns_segment_candidates() -> None:
 
 
 def test_multisegment_broken_chain_is_skipped_as_no_usable_results() -> None:
-    payload = search_payload()
+    payload = _dus_sgn_multisegment_payload()
     leg = payload["itineraries"]["results"][0]["legs"][0]
-    leg["origin"]["displayCode"] = "DUS"
-    leg["destination"]["displayCode"] = "SGN"
-    leg["stopCount"] = 1
-    leg["segments"] = [
-        {
-            "origin": {"displayCode": "DUS"},
-            "destination": {"displayCode": "DOH"},
-            "departure": "2026-07-11T15:25:00",
-            "arrival": "2026-07-11T23:35:00",
-            "durationInMinutes": 370,
-            "marketingCarrier": {"displayCode": "QR"},
-            "flightNumber": "86",
-        },
-        {
-            "origin": {"displayCode": "DXB"},
-            "destination": {"displayCode": "SGN"},
-            "departure": "2026-07-12T02:00:00",
-            "arrival": "2026-07-12T13:55:00",
-            "durationInMinutes": 475,
-            "marketingCarrier": {"displayCode": "QR"},
-            "flightNumber": "970",
-        },
-    ]
-    client = FakeClient(
-        [
-            FakeResponse(payload=entity("DUS", "95565012")),
-            FakeResponse(payload=entity("SGN", "95673379")),
-            FakeResponse(payload=payload),
-        ]
-    )
+    leg["segments"][1]["origin"]["displayCode"] = "DXB"
 
     with pytest.raises(adapter.SkyscannerProviderError) as exc_info:
-        adapter.SkyscannerAdapter(config=config(), client=client).search_exact_one_way(
-            ProviderExactOneWayRequest(
-                origin="DUS",
-                destination="SGN",
-                departure_date="2026-07-11",
-            )
-        )
+        _search_dus_sgn_one_way(payload)
+
+    assert exc_info.value.failure_type == "no_usable_results"
+    assert_error_is_sanitized(exc_info.value)
+
+
+def test_multisegment_missing_flight_number_is_skipped_as_no_usable_results() -> None:
+    payload = _dus_sgn_multisegment_payload()
+    leg = payload["itineraries"]["results"][0]["legs"][0]
+    del leg["segments"][1]["flightNumber"]
+
+    with pytest.raises(adapter.SkyscannerProviderError) as exc_info:
+        _search_dus_sgn_one_way(payload)
+
+    assert exc_info.value.failure_type == "no_usable_results"
+    assert_error_is_sanitized(exc_info.value)
+
+
+def test_multisegment_leg_time_mismatch_is_skipped_as_no_usable_results() -> None:
+    payload = _dus_sgn_multisegment_payload()
+    leg = payload["itineraries"]["results"][0]["legs"][0]
+    leg["arrival"] = "2026-07-12T14:55:00"
+
+    with pytest.raises(adapter.SkyscannerProviderError) as exc_info:
+        _search_dus_sgn_one_way(payload)
+
+    assert exc_info.value.failure_type == "no_usable_results"
+    assert_error_is_sanitized(exc_info.value)
+
+
+def test_multisegment_negative_segment_duration_is_skipped_as_no_usable_results() -> None:
+    payload = _dus_sgn_multisegment_payload()
+    leg = payload["itineraries"]["results"][0]["legs"][0]
+    leg["segments"][1]["durationInMinutes"] = -1
+
+    with pytest.raises(adapter.SkyscannerProviderError) as exc_info:
+        _search_dus_sgn_one_way(payload)
 
     assert exc_info.value.failure_type == "no_usable_results"
     assert_error_is_sanitized(exc_info.value)
