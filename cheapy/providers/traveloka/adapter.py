@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
 from typing import Callable
 
 from cheapy.providers.base import (
@@ -110,6 +112,8 @@ class TravelokaAdapter:
 
 
 def _default_launch_browser(**kwargs: object) -> object:
-    from cloakbrowser import launch
+    captured_output = StringIO()
+    with redirect_stdout(captured_output), redirect_stderr(captured_output):
+        from cloakbrowser import launch
 
-    return launch(**kwargs)
+        return launch(**kwargs)

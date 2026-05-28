@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import sys
+import types
+
 from cheapy.providers.base import (
     ProviderExactOneWayRequest,
     ProviderExactRoundTripRequest,
 )
+from cheapy.providers.traveloka import adapter as traveloka_adapter
 from cheapy.providers.traveloka import workflow as traveloka_workflow
 from cheapy.providers.traveloka.adapter import TravelokaAdapter
 from cheapy.providers.traveloka.results import TravelokaCaptureResult
@@ -113,3 +117,25 @@ def test_adapter_phase_timings_exposes_recorder_without_response_mutation() -> N
         search_completed=True,
     )
     assert not hasattr(result, "phase_timings")
+
+
+def test_default_launch_browser_suppresses_dependency_console_noise(
+    monkeypatch,
+    capsys,
+) -> None:
+    fake_module = types.ModuleType("cloakbrowser")
+
+    def fake_launch(**kwargs: object) -> dict[str, object]:
+        print("Update available: cloakbrowser 0.3.28 -> 0.3.31")
+        print("debug browser setup", file=sys.stderr)
+        return {"kwargs": kwargs}
+
+    fake_module.launch = fake_launch  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "cloakbrowser", fake_module)
+
+    result = traveloka_adapter._default_launch_browser(headless=True, timeout=123)
+
+    assert result == {"kwargs": {"headless": True, "timeout": 123}}
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
