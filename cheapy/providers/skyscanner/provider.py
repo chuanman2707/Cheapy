@@ -30,13 +30,17 @@ ProviderRequest = ProviderExactOneWayRequest | ProviderExactRoundTripRequest
 SENSITIVE_DETAIL_TOKENS = (
     "/transport_deeplink/",
     "transport_deeplink",
-    "__Secure-anon_token",
+    "__secure-anon_token",
     "secret-cookie",
-    "headers",
+    "cookie",
+    "header",
     "request_body",
+    "requestbody",
     "raw_payload",
+    "raw",
     "challenge",
-    "sessionId",
+    "sessionid",
+    "session",
 )
 
 
@@ -276,7 +280,8 @@ def _is_sensitive_value(value: object) -> bool:
 
 
 def _is_sensitive_text(value: str) -> bool:
-    return any(token in value for token in SENSITIVE_DETAIL_TOKENS)
+    text = value.lower()
+    return any(token in text for token in SENSITIVE_DETAIL_TOKENS)
 
 
 def _duration_ms(started: float) -> int:

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import date
+import hashlib
+import re
 
 from cheapy.models import (
     ErrorCode,
@@ -24,6 +26,22 @@ PROVIDER_NAME = "skyscanner"
 EXACT_ONE_WAY_CAPABILITY = "exact_one_way"
 EXACT_ROUND_TRIP_CAPABILITY = "exact_round_trip"
 ProviderRequest = ProviderExactOneWayRequest | ProviderExactRoundTripRequest
+SAFE_ITEM_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+SENSITIVE_ITEM_ID_TOKENS = (
+    "/transport_deeplink/",
+    "transport_deeplink",
+    "__secure-anon_token",
+    "secret-cookie",
+    "cookie",
+    "header",
+    "request_body",
+    "requestbody",
+    "raw_payload",
+    "raw",
+    "challenge",
+    "sessionid",
+    "session",
+)
 
 
 def normalize_candidates(
@@ -130,9 +148,22 @@ def _offer_id(
     request: ProviderRequest,
 ) -> str:
     prefix = f"{PROVIDER_NAME}:{request.origin}-{request.destination}:{request.departure_date}"
+    item_id = _safe_item_id_component(candidate.item_id)
     if isinstance(request, ProviderExactRoundTripRequest):
-        return f"{prefix}:{request.return_date}:{candidate.item_id}"
-    return f"{prefix}:{candidate.item_id}"
+        return f"{prefix}:{request.return_date}:{item_id}"
+    return f"{prefix}:{item_id}"
+
+
+def _safe_item_id_component(item_id: str) -> str:
+    if SAFE_ITEM_ID_RE.fullmatch(item_id) and not _contains_sensitive_token(item_id):
+        return item_id
+    digest = hashlib.sha256(item_id.encode("utf-8")).hexdigest()[:16]
+    return f"opaque-{digest}"
+
+
+def _contains_sensitive_token(value: str) -> bool:
+    text = value.lower()
+    return any(token in text for token in SENSITIVE_ITEM_ID_TOKENS)
 
 
 def _date_offset(actual: str, requested: str | None) -> int:
@@ -180,7 +211,7 @@ def _parse_error(candidate: SkyscannerItineraryCandidate, exc: Exception) -> Err
         details={
             "provider": PROVIDER_NAME,
             "failure_type": "parse_error",
-            "item_id": candidate.item_id,
+            "item_id": _safe_item_id_component(candidate.item_id),
             "exception_type": type(exc).__name__,
         },
         retryable=False,

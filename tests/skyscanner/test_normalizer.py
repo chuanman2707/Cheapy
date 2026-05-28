@@ -1,11 +1,30 @@
 from __future__ import annotations
 
+import json
+
 from cheapy.providers.base import ProviderExactOneWayRequest, ProviderExactRoundTripRequest
 from cheapy.providers.skyscanner.adapter import (
     SkyscannerItineraryCandidate,
     SkyscannerLegCandidate,
 )
 from cheapy.providers.skyscanner.normalizer import normalize_candidates
+
+
+SENSITIVE_TOKENS = (
+    "/transport_deeplink/",
+    "transport_deeplink",
+    "__Secure-anon_token",
+    "secret-cookie",
+    "cookie",
+    "header",
+    "request_body",
+    "requestbody",
+    "raw_payload",
+    "raw",
+    "challenge",
+    "sessionId",
+    "session",
+)
 
 
 def _leg(
@@ -81,6 +100,22 @@ def test_normalize_one_way_candidate_to_contract_offer() -> None:
     assert offer.total_duration_minutes == 90
     assert offer.stops == 0
     assert offer.legs[0].flight_number == "VJ814"
+
+
+def test_normalize_successful_offer_hashes_sensitive_item_id() -> None:
+    offers, errors = normalize_candidates(
+        [
+            _candidate(
+                item_id="/transport_deeplink/secret-cookie?sessionId=challenge"
+            )
+        ],
+        _one_way_request(),
+    )
+
+    assert errors == []
+    assert len(offers) == 1
+    assert "opaque-" in offers[0].offer_id
+    assert_no_sensitive_tokens(offers[0].model_dump(mode="json"))
 
 
 def test_normalize_round_trip_candidate_sets_return_date_and_legs() -> None:
@@ -225,3 +260,9 @@ def test_normalize_candidate_error_details_are_sanitized() -> None:
     assert "header" not in payload.lower()
     assert "raw" not in payload.lower()
     assert "challenge" not in payload.lower()
+
+
+def assert_no_sensitive_tokens(value: object) -> None:
+    text = json.dumps(value, sort_keys=True, default=str).lower()
+    for token in SENSITIVE_TOKENS:
+        assert token.lower() not in text

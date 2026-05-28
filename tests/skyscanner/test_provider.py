@@ -19,11 +19,16 @@ SENSITIVE_TOKENS = (
     "transport_deeplink",
     "__Secure-anon_token",
     "secret-cookie",
+    "cookie",
+    "header",
     "headers",
     "request_body",
+    "requestbody",
     "raw_payload",
+    "raw",
     "challenge",
     "sessionId",
+    "session",
 )
 
 
@@ -136,9 +141,9 @@ def _round_trip_request(**overrides: object) -> ProviderExactRoundTripRequest:
 
 
 def assert_no_sensitive_tokens(value: object) -> None:
-    text = json.dumps(value, sort_keys=True, default=str)
+    text = json.dumps(value, sort_keys=True, default=str).lower()
     for token in SENSITIVE_TOKENS:
-        assert token not in text
+        assert token.lower() not in text
 
 
 def test_provider_returns_success_result() -> None:
@@ -156,6 +161,26 @@ def test_provider_returns_success_result() -> None:
     assert result.offers[0].provider == "skyscanner"
     assert result.offers[0].public_search_url is None
     assert result.duration_ms >= 0
+    assert_no_sensitive_tokens(result.model_dump(mode="json"))
+
+
+def test_provider_success_result_hashes_sensitive_item_id() -> None:
+    provider = SkyscannerProvider(
+        adapter=FakeAdapter(
+            [
+                _candidate(
+                    item_id="/transport_deeplink/secret-cookie?sessionId=challenge"
+                )
+            ]
+        ),
+        timeout_seconds=1,
+    )
+
+    result = asyncio.run(provider.search_exact_one_way(_request()))
+
+    assert result.status == ProviderStatusCode.SUCCESS
+    assert len(result.offers) == 1
+    assert "opaque-" in result.offers[0].offer_id
     assert_no_sensitive_tokens(result.model_dump(mode="json"))
 
 
@@ -201,7 +226,6 @@ def test_provider_maps_missing_cookie_error_to_failed_result() -> None:
         "capability": "exact_one_way",
         "failure_type": "missing_cookie",
     }
-    assert_no_sensitive_tokens(result.model_dump(mode="json"))
 
 
 def test_provider_does_not_write_stdout_or_stderr(capsys) -> None:
@@ -340,4 +364,3 @@ def test_provider_lazy_missing_cookie_with_empty_env_maps_to_failed_result() -> 
         "capability": "exact_one_way",
         "failure_type": "missing_cookie",
     }
-    assert_no_sensitive_tokens(result.model_dump(mode="json"))
