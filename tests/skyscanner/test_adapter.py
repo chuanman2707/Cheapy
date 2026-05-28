@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from cheapy.models import ErrorCode
+from cheapy.models import ErrorCode, PassengersV1
 from cheapy.providers.base import ProviderExactOneWayRequest, ProviderExactRoundTripRequest
 from cheapy.providers.skyscanner import adapter
 
@@ -167,6 +167,25 @@ def test_build_search_body_uses_requested_adult_count() -> None:
     assert len(body["legs"]) == 1
 
 
+def test_build_search_body_preserves_adult_count_exactly() -> None:
+    origin = adapter.SkyscannerEntity(
+        iata="SIN", entity_id="95673375", name="Singapore"
+    )
+    destination = adapter.SkyscannerEntity(
+        iata="SGN", entity_id="95673379", name="Ho Chi Minh City"
+    )
+
+    body = adapter.build_search_body(
+        origin=origin,
+        destination=destination,
+        departure_date="2026-06-11",
+        return_date=None,
+        adults=0,
+    )
+
+    assert body["adults"] == 0
+
+
 def test_fetch_itineraries_returns_minimal_candidates_without_deeplink() -> None:
     client = FakeClient(
         [
@@ -190,6 +209,27 @@ def test_fetch_itineraries_returns_minimal_candidates_without_deeplink() -> None
     assert candidates[0].legs[0].airline_code == "VJ"
     assert candidates[0].legs[0].flight_number == "VJ814"
     assert_no_sensitive_tokens(candidates)
+
+
+def test_search_referer_preserves_adult_count_exactly() -> None:
+    client = FakeClient(
+        [
+            FakeResponse(payload=entity("SIN", "95673375")),
+            FakeResponse(payload=entity("SGN", "95673379")),
+            FakeResponse(payload=search_payload()),
+        ]
+    )
+
+    adapter.SkyscannerAdapter(config=config(), client=client).search_exact_one_way(
+        ProviderExactOneWayRequest(
+            origin="SIN",
+            destination="SGN",
+            departure_date="2026-06-11",
+            passengers=PassengersV1(adults=2),
+        )
+    )
+
+    assert "adultsv2=2" in client.post_calls[0]["headers"]["referer"]
 
 
 def test_http_403_maps_to_blocked_error() -> None:

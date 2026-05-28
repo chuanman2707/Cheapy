@@ -610,7 +610,7 @@ def build_search_body(
     return {
         "cabinClass": "ECONOMY",
         "childAges": [],
-        "adults": max(1, adults),
+        "adults": adults,
         "legs": legs,
     }
 
@@ -638,7 +638,7 @@ def _search_referer(
     rtn = "1" if return_date is not None else "0"
     return (
         f"{config.base_url}{path}"
-        f"?adultsv2={max(1, adults)}&cabinclass=economy&childrenv2=&ref=home&rtn={rtn}"
+        f"?adultsv2={adults}&cabinclass=economy&childrenv2=&ref=home&rtn={rtn}"
         "&preferdirects=false&outboundaltsenabled=false&inboundaltsenabled=false"
     )
 
