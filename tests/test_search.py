@@ -47,6 +47,10 @@ def _offer(
     provider: str,
     currency: str,
     price_amount: float,
+    requested_origin: str = "CXR",
+    requested_destination: str = "SGN",
+    actual_origin: str = "CXR",
+    actual_destination: str = "SGN",
     requested_departure_date: str = "2026-07-10",
     actual_departure_date: str = "2026-07-10",
     departure_offset_days: int = 0,
@@ -64,10 +68,10 @@ def _offer(
         rank_within_currency=1,
         global_rank=1,
         provider=provider,
-        requested_origin="CXR",
-        requested_destination="SGN",
-        actual_origin="CXR",
-        actual_destination="SGN",
+        requested_origin=requested_origin,
+        requested_destination=requested_destination,
+        actual_origin=actual_origin,
+        actual_destination=actual_destination,
         nearby_origin_distance_km=None,
         nearby_destination_distance_km=None,
         requested_departure_date=requested_departure_date,
@@ -78,8 +82,8 @@ def _offer(
         return_offset_days=return_offset_days,
         legs=[
             FlightLegV1(
-                origin="CXR",
-                destination="SGN",
+                origin=actual_origin,
+                destination=actual_destination,
                 departure_time=departure_time,
                 arrival_time=arrival_time,
                 airline_code="VJ",
@@ -366,6 +370,93 @@ def test_search_exact_attaches_validated_public_search_url_for_traveloka(
     assert parsed.path == "/en-en/flight/fulltwosearch"
     assert params["ap"] == ["CXR.SGN"]
     assert params["dt"] == ["10-7-2026"]
+
+
+def test_search_exact_attaches_safe_skyscanner_public_search_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = ProviderResult(
+        provider_name="skyscanner",
+        capability="exact_one_way",
+        status=ProviderStatusCode.SUCCESS,
+        offers=[
+            _offer(
+                offer_id="skyscanner:CXR-SGN:2026-07-10:itinerary-1",
+                provider="skyscanner",
+                currency="SGD",
+                price_amount=220.96,
+                requested_origin="CXR",
+                requested_destination="SGN",
+                actual_origin="CXR",
+                actual_destination="SGN",
+                requested_departure_date="2026-07-10",
+                actual_departure_date="2026-07-10",
+            )
+        ],
+        warnings=[],
+        errors=[],
+        duration_ms=1,
+        retryable=False,
+    )
+    monkeypatch.setattr(
+        "cheapy.search.load_search_providers",
+        lambda: [_ProviderFromResult(result)],
+    )
+
+    response = search_exact(_request(origin="CXR", destination="SGN"))
+
+    assert response.status == SearchStatus.SUCCESS
+    public_search_url = response.offers[0].public_search_url
+    assert public_search_url is not None
+    assert public_search_url.startswith(
+        "https://www.skyscanner.com.sg/transport/flights/cxr/sgn/260710/"
+    )
+    assert "/transport_deeplink/" not in response.model_dump_json()
+
+
+def test_search_exact_skyscanner_response_has_no_internal_url_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = ProviderResult(
+        provider_name="skyscanner",
+        capability="exact_one_way",
+        status=ProviderStatusCode.SUCCESS,
+        offers=[
+            _offer(
+                offer_id="skyscanner:CXR-SGN:2026-07-10:itinerary-1",
+                provider="skyscanner",
+                currency="SGD",
+                price_amount=220.96,
+                requested_origin="CXR",
+                requested_destination="SGN",
+                actual_origin="CXR",
+                actual_destination="SGN",
+                requested_departure_date="2026-07-10",
+                actual_departure_date="2026-07-10",
+            )
+        ],
+        warnings=[],
+        errors=[],
+        duration_ms=1,
+        retryable=False,
+    )
+    monkeypatch.setattr(
+        "cheapy.search.load_search_providers",
+        lambda: [_ProviderFromResult(result)],
+    )
+
+    response = search_exact(_request(origin="CXR", destination="SGN"))
+    text = response.model_dump_json()
+
+    for token in (
+        "/transport_deeplink/",
+        "sessionId",
+        "cookie",
+        "headers",
+        "request_body",
+        "raw_payload",
+    ):
+        assert token not in text
 
 
 def test_search_exact_keeps_public_search_url_none_for_unknown_provider(
