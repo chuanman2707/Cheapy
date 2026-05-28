@@ -508,13 +508,6 @@ def _is_airport(entity: SkyscannerEntity) -> bool:
     return "AIRPORT" in normalized or normalized == "AIRPORT"
 
 
-def _safe_candidate_summary(entities: list[SkyscannerEntity]) -> str:
-    return "; ".join(
-        f"{entity.iata} {entity.entity_id} {entity.name} {entity.place_type or 'unknown'}"
-        for entity in entities
-    )
-
-
 def get_entity_id(
     iata_code: str,
     *,
@@ -574,10 +567,7 @@ def get_entity_id(
     if len(preferred) > 1:
         raise SkyscannerProviderError(
             failure_type="entity_ambiguous",
-            message_en=(
-                f"Multiple Skyscanner entities matched {requested_iata}: "
-                f"{_safe_candidate_summary(preferred)}"
-            ),
+            message_en=f"Multiple Skyscanner entities matched IATA {requested_iata}.",
             error_code=ErrorCode.PROVIDER_FAILED,
             retryable=False,
         )
@@ -910,6 +900,7 @@ def _extract_candidate(
     itinerary: object,
     *,
     config: SkyscannerConfig,
+    expected_routes: tuple[tuple[str, str], ...],
 ) -> SkyscannerItineraryCandidate | None:
     if not isinstance(itinerary, dict):
         return None
@@ -928,8 +919,15 @@ def _extract_candidate(
         for leg in legs_payload
         if (candidate := _candidate_leg(leg)) is not None
     )
-    if not legs or len(legs) != len(legs_payload):
+    if not legs or len(legs) != len(legs_payload) or len(legs) != len(expected_routes):
         return None
+    for leg, (expected_origin, expected_destination) in zip(
+        legs,
+        expected_routes,
+        strict=True,
+    ):
+        if leg.origin != expected_origin or leg.destination != expected_destination:
+            return None
     total_duration = sum(leg.duration_minutes for leg in legs)
     stop_count = 0
     for leg in legs_payload:
@@ -951,6 +949,7 @@ def _extract_candidates(
     payload: object,
     *,
     config: SkyscannerConfig,
+    expected_routes: tuple[tuple[str, str], ...],
 ) -> list[SkyscannerItineraryCandidate]:
     results = _search_results(payload)
     if not isinstance(results, list):
@@ -963,7 +962,14 @@ def _extract_candidates(
     candidates = [
         candidate
         for itinerary in results
-        if (candidate := _extract_candidate(itinerary, config=config)) is not None
+        if (
+            candidate := _extract_candidate(
+                itinerary,
+                config=config,
+                expected_routes=expected_routes,
+            )
+        )
+        is not None
     ]
     if not candidates:
         raise SkyscannerProviderError(
@@ -1056,4 +1062,13 @@ class SkyscannerAdapter:
             config=self._config,
             client=self._client,
         )
-        return _extract_candidates(payload, config=self._config)
+        expected_routes = (
+            ((origin.iata, destination.iata),)
+            if return_date is None
+            else ((origin.iata, destination.iata), (destination.iata, origin.iata))
+        )
+        return _extract_candidates(
+            payload,
+            config=self._config,
+            expected_routes=expected_routes,
+        )

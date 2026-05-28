@@ -139,9 +139,16 @@ def assert_no_sensitive_tokens(value: object) -> None:
         "/transport_deeplink/",
         "__Secure-anon_token=secret",
         "/transport_deeplink/secret",
-        "cookie",
+        "challenge",
+        "sessionId",
+        "raw payload text",
     ):
         assert token not in text
+
+
+def assert_error_is_sanitized(exc: adapter.SkyscannerProviderError) -> None:
+    assert_no_sensitive_tokens(exc.__dict__)
+    assert_no_sensitive_tokens(str(exc))
 
 
 def test_config_repr_redacts_cookie() -> None:
@@ -293,6 +300,111 @@ def test_multisegment_leg_is_skipped_instead_of_misrepresented() -> None:
     assert exc_info.value.failure_type == "no_usable_results"
 
 
+def test_entity_ambiguous_error_does_not_leak_provider_fields() -> None:
+    client = FakeClient(
+        [
+            FakeResponse(
+                payload={
+                    "places": [
+                        {
+                            "iataCode": "SIN",
+                            "entityId": "/transport_deeplink/secret",
+                            "name": "__Secure-anon_token=secret",
+                            "type": "PLACE_TYPE_AIRPORT challenge",
+                        },
+                        {
+                            "iataCode": "SIN",
+                            "entityId": "sessionId",
+                            "name": "raw payload text",
+                            "type": "PLACE_TYPE_AIRPORT",
+                        },
+                    ]
+                }
+            )
+        ]
+    )
+
+    with pytest.raises(adapter.SkyscannerProviderError) as exc_info:
+        adapter.get_entity_id("SIN", config=config(), client=client)
+
+    assert exc_info.value.failure_type == "entity_ambiguous"
+    assert_error_is_sanitized(exc_info.value)
+
+
+def test_round_trip_one_leg_payload_is_skipped_as_no_usable_results() -> None:
+    client = FakeClient(
+        [
+            FakeResponse(payload=entity("SIN", "95673375")),
+            FakeResponse(payload=entity("SGN", "95673379")),
+            FakeResponse(payload=search_payload()),
+        ]
+    )
+
+    with pytest.raises(adapter.SkyscannerProviderError) as exc_info:
+        adapter.SkyscannerAdapter(config=config(), client=client).search_exact_round_trip(
+            ProviderExactRoundTripRequest(
+                origin="SIN",
+                destination="SGN",
+                departure_date="2026-06-11",
+                return_date="2026-06-18",
+            )
+        )
+
+    assert exc_info.value.failure_type == "no_usable_results"
+    assert_error_is_sanitized(exc_info.value)
+
+
+def test_one_way_wrong_route_payload_is_skipped_as_no_usable_results() -> None:
+    payload = search_payload()
+    leg = payload["itineraries"]["results"][0]["legs"][0]
+    leg["origin"]["displayCode"] = "HAN"
+    leg["segments"][0]["origin"]["displayCode"] = "HAN"
+    client = FakeClient(
+        [
+            FakeResponse(payload=entity("SIN", "95673375")),
+            FakeResponse(payload=entity("SGN", "95673379")),
+            FakeResponse(payload=payload),
+        ]
+    )
+
+    with pytest.raises(adapter.SkyscannerProviderError) as exc_info:
+        adapter.SkyscannerAdapter(config=config(), client=client).search_exact_one_way(
+            ProviderExactOneWayRequest(
+                origin="SIN",
+                destination="SGN",
+                departure_date="2026-06-11",
+            )
+        )
+
+    assert exc_info.value.failure_type == "no_usable_results"
+    assert_error_is_sanitized(exc_info.value)
+
+
+def test_itinerary_without_transport_deeplink_is_no_usable_results() -> None:
+    payload = search_payload()
+    pricing_option = payload["itineraries"]["results"][0]["pricingOptions"][0]
+    pricing_option["items"] = [{"url": "https://example.com/not-a-deeplink"}]
+    client = FakeClient(
+        [
+            FakeResponse(payload=entity("SIN", "95673375")),
+            FakeResponse(payload=entity("SGN", "95673379")),
+            FakeResponse(payload=payload),
+        ]
+    )
+
+    with pytest.raises(adapter.SkyscannerProviderError) as exc_info:
+        adapter.SkyscannerAdapter(config=config(), client=client).search_exact_one_way(
+            ProviderExactOneWayRequest(
+                origin="SIN",
+                destination="SGN",
+                departure_date="2026-06-11",
+            )
+        )
+
+    assert exc_info.value.failure_type == "no_usable_results"
+    assert_error_is_sanitized(exc_info.value)
+
+
 def test_http_403_maps_to_blocked_error() -> None:
     client = FakeClient([FakeResponse(status_code=403, payload={"error": "blocked"})])
 
@@ -302,15 +414,63 @@ def test_http_403_maps_to_blocked_error() -> None:
     assert exc_info.value.error_code == ErrorCode.PROVIDER_BLOCKED
     assert exc_info.value.failure_type == "blocked"
     assert exc_info.value.http_status_code == 403
-    assert_no_sensitive_tokens(exc_info.value.__dict__)
+    assert_error_is_sanitized(exc_info.value)
 
 
-def test_round_trip_includes_return_leg_and_uses_passenger_count() -> None:
+def test_search_http_429_maps_to_rate_limited_error() -> None:
     client = FakeClient(
         [
             FakeResponse(payload=entity("SIN", "95673375")),
             FakeResponse(payload=entity("SGN", "95673379")),
-            FakeResponse(payload=search_payload()),
+            FakeResponse(
+                status_code=429,
+                payload={"error": "/transport_deeplink/secret challenge sessionId"},
+            ),
+        ]
+    )
+
+    with pytest.raises(adapter.SkyscannerProviderError) as exc_info:
+        adapter.SkyscannerAdapter(config=config(), client=client).search_exact_one_way(
+            ProviderExactOneWayRequest(
+                origin="SIN",
+                destination="SGN",
+                departure_date="2026-06-11",
+            )
+        )
+
+    assert exc_info.value.error_code == ErrorCode.PROVIDER_RATE_LIMITED
+    assert exc_info.value.failure_type == "rate_limited"
+    assert exc_info.value.retryable is True
+    assert exc_info.value.http_status_code == 429
+    assert_error_is_sanitized(exc_info.value)
+
+
+def test_round_trip_includes_return_leg_and_uses_passenger_count() -> None:
+    payload = search_payload()
+    outbound_leg = payload["itineraries"]["results"][0]["legs"][0]
+    payload["itineraries"]["results"][0]["legs"].append(
+        {
+            **outbound_leg,
+            "origin": {"displayCode": "SGN"},
+            "destination": {"displayCode": "SIN"},
+            "departure": "2026-06-18T09:15:00",
+            "arrival": "2026-06-18T10:45:00",
+            "segments": [
+                {
+                    **outbound_leg["segments"][0],
+                    "origin": {"displayCode": "SGN"},
+                    "destination": {"displayCode": "SIN"},
+                    "departure": "2026-06-18T09:15:00",
+                    "arrival": "2026-06-18T10:45:00",
+                }
+            ],
+        }
+    )
+    client = FakeClient(
+        [
+            FakeResponse(payload=entity("SIN", "95673375")),
+            FakeResponse(payload=entity("SGN", "95673379")),
+            FakeResponse(payload=payload),
         ]
     )
 
@@ -354,4 +514,4 @@ def test_malformed_json_maps_to_parse_error_without_payload() -> None:
     assert exc_info.value.failure_type == "parse_error"
     assert exc_info.value.error_code == ErrorCode.PROVIDER_FAILED
     assert exc_info.value.exception_type == "ValueError"
-    assert_no_sensitive_tokens(exc_info.value.__dict__)
+    assert_error_is_sanitized(exc_info.value)
