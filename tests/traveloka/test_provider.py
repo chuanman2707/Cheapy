@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 from decimal import Decimal
+import os
+import sys
 from time import sleep
 from typing import Any
 
@@ -319,6 +321,48 @@ def test_default_provider_process_timeout_maps_to_retryable_timeout(
         "failure_type": "timeout",
     }
     assert "secret timeout details" not in result.model_dump_json()
+
+
+def test_default_adapter_worker_suppresses_child_stdio(
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    class FakeQueue:
+        def __init__(self) -> None:
+            self.payloads: list[dict[str, object]] = []
+
+        def put(self, payload: dict[str, object]) -> None:
+            self.payloads.append(payload)
+
+    class NoisyAdapter:
+        def __init__(self, *, timeout_seconds: float) -> None:
+            self.timeout_seconds = timeout_seconds
+
+        def search_exact_one_way(
+            self,
+            request: ProviderExactOneWayRequest,
+        ) -> TravelokaCaptureResult:
+            print("child stdout secret")
+            print("child stderr secret", file=sys.stderr)
+            os.write(1, b"child fd stdout secret\n")
+            os.write(2, b"child fd stderr secret\n")
+            return _capture(_payload())
+
+    monkeypatch.setattr(traveloka_provider, "TravelokaAdapter", NoisyAdapter)
+    queue = FakeQueue()
+
+    traveloka_provider._default_adapter_search_worker(
+        queue,
+        _request(),
+        "exact_one_way",
+        "search_exact_one_way",
+        1.0,
+    )
+
+    captured = capfd.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+    assert queue.payloads[0]["kind"] == "result"
 
 
 def test_traveloka_provider_returns_success_result() -> None:

@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 import multiprocessing
+import os
 from multiprocessing.queues import Queue
 from queue import Empty
+import sys
 from time import perf_counter
-from typing import Any
+from typing import Any, Iterator
 
 from cheapy.models import (
     ErrorCode,
@@ -283,10 +286,11 @@ def _default_adapter_search_worker(
 ) -> None:
     started = perf_counter()
     try:
-        adapter = TravelokaAdapter(timeout_seconds=timeout_seconds)
-        search_method = getattr(adapter, search_method_name)
-        capture = search_method(request)
-        result = _provider_result_from_capture(capture, request, capability, started)
+        with _suppress_child_stdio():
+            adapter = TravelokaAdapter(timeout_seconds=timeout_seconds)
+            search_method = getattr(adapter, search_method_name)
+            capture = search_method(request)
+            result = _provider_result_from_capture(capture, request, capability, started)
         result_queue.put({"kind": "result", "result": result.model_dump(mode="json")})
     except TravelokaProviderError as exc:
         result_queue.put(
@@ -311,6 +315,39 @@ def _default_adapter_search_worker(
 
 def _remaining_process_budget(deadline: float) -> float:
     return max(0.0, deadline - perf_counter())
+
+
+@contextmanager
+def _suppress_child_stdio() -> Iterator[None]:
+    stdout_fd = 1
+    stderr_fd = 2
+    saved_stdout_fd: int | None = None
+    saved_stderr_fd: int | None = None
+    try:
+        saved_stdout_fd = os.dup(stdout_fd)
+        saved_stderr_fd = os.dup(stderr_fd)
+        with open(os.devnull, "w", encoding="utf-8") as devnull:
+            _flush_stdio()
+            os.dup2(devnull.fileno(), stdout_fd)
+            os.dup2(devnull.fileno(), stderr_fd)
+            with redirect_stdout(devnull), redirect_stderr(devnull):
+                yield
+    finally:
+        _flush_stdio()
+        if saved_stdout_fd is not None:
+            os.dup2(saved_stdout_fd, stdout_fd)
+            os.close(saved_stdout_fd)
+        if saved_stderr_fd is not None:
+            os.dup2(saved_stderr_fd, stderr_fd)
+            os.close(saved_stderr_fd)
+
+
+def _flush_stdio() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:
+            pass
 
 
 def _provider_result_from_capture(

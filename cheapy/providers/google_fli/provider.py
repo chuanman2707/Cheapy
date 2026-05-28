@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 import multiprocessing
+import os
 from multiprocessing.queues import Queue
 from queue import Empty
+import sys
 from time import perf_counter
-from typing import Any
+from typing import Any, Iterator
 
 from cheapy.models import ErrorCode, ErrorV1, ProviderStatusCode, Severity
 from cheapy.providers.base import (
@@ -271,31 +274,32 @@ def _default_adapter_search_worker(
 ) -> None:
     started = perf_counter()
     try:
-        adapter = GoogleFliAdapter()
-        search_method = getattr(adapter, search_method_name)
-        flights = search_method(request)
-        offers, errors = normalize_flights(
-            flights,
-            request,
-            configured_currency=getattr(adapter, "configured_currency", None),
-        )
-        errors = _errors_with_capability(errors, capability)
-        if errors and offers:
-            status = ProviderStatusCode.PARTIAL
-        elif errors:
-            status = ProviderStatusCode.FAILED
-        else:
-            status = ProviderStatusCode.SUCCESS
-        result = ProviderResult(
-            provider_name=PROVIDER_NAME,
-            capability=capability,
-            status=status,
-            offers=offers,
-            warnings=[],
-            errors=errors,
-            duration_ms=_duration_ms(started),
-            retryable=any(error.retryable for error in errors),
-        )
+        with _suppress_child_stdio():
+            adapter = GoogleFliAdapter()
+            search_method = getattr(adapter, search_method_name)
+            flights = search_method(request)
+            offers, errors = normalize_flights(
+                flights,
+                request,
+                configured_currency=getattr(adapter, "configured_currency", None),
+            )
+            errors = _errors_with_capability(errors, capability)
+            if errors and offers:
+                status = ProviderStatusCode.PARTIAL
+            elif errors:
+                status = ProviderStatusCode.FAILED
+            else:
+                status = ProviderStatusCode.SUCCESS
+            result = ProviderResult(
+                provider_name=PROVIDER_NAME,
+                capability=capability,
+                status=status,
+                offers=offers,
+                warnings=[],
+                errors=errors,
+                duration_ms=_duration_ms(started),
+                retryable=any(error.retryable for error in errors),
+            )
         result_queue.put({"kind": "result", "result": result.model_dump(mode="json")})
     except GoogleFliProviderError as exc:
         result_queue.put(
@@ -315,6 +319,39 @@ def _default_adapter_search_worker(
                 "exception_type": type(exc).__name__,
             }
         )
+
+
+@contextmanager
+def _suppress_child_stdio() -> Iterator[None]:
+    stdout_fd = 1
+    stderr_fd = 2
+    saved_stdout_fd: int | None = None
+    saved_stderr_fd: int | None = None
+    try:
+        saved_stdout_fd = os.dup(stdout_fd)
+        saved_stderr_fd = os.dup(stderr_fd)
+        with open(os.devnull, "w", encoding="utf-8") as devnull:
+            _flush_stdio()
+            os.dup2(devnull.fileno(), stdout_fd)
+            os.dup2(devnull.fileno(), stderr_fd)
+            with redirect_stdout(devnull), redirect_stderr(devnull):
+                yield
+    finally:
+        _flush_stdio()
+        if saved_stdout_fd is not None:
+            os.dup2(saved_stdout_fd, stdout_fd)
+            os.close(saved_stdout_fd)
+        if saved_stderr_fd is not None:
+            os.dup2(saved_stderr_fd, stderr_fd)
+            os.close(saved_stderr_fd)
+
+
+def _flush_stdio() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:
+            pass
 
 
 def _provider_error(
