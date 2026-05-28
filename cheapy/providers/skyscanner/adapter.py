@@ -408,11 +408,11 @@ def _http_error(status_code: int, *, operation: str) -> SkyscannerProviderError:
     )
 
 
-def _read_json_response(response: HttpResponse, *, operation: str) -> dict[str, object]:
+def _read_json_response(response: HttpResponse, *, operation: str) -> object:
     if response.status_code < 200 or response.status_code >= 300:
         raise _http_error(response.status_code, operation=operation)
     try:
-        payload = response.json()
+        return response.json()
     except Exception as exc:
         raise SkyscannerProviderError(
             failure_type="parse_error",
@@ -421,6 +421,14 @@ def _read_json_response(response: HttpResponse, *, operation: str) -> dict[str, 
             retryable=False,
             exception_type=type(exc).__name__,
         ) from None
+
+
+def _read_json_object_response(
+    response: HttpResponse,
+    *,
+    operation: str,
+) -> dict[str, object]:
+    payload = _read_json_response(response, operation=operation)
     if not isinstance(payload, dict):
         raise SkyscannerProviderError(
             failure_type="parse_error",
@@ -699,7 +707,7 @@ def _poll_search_session(
             retryable=True,
             exception_type=type(exc).__name__,
         ) from None
-    return _read_json_response(response, operation="Search poll")
+    return _read_json_object_response(response, operation="Search poll")
 
 
 def _search_payload(
@@ -745,7 +753,7 @@ def _search_payload(
             exception_type=type(exc).__name__,
         ) from None
 
-    payload = _read_json_response(response, operation="Search")
+    payload = _read_json_object_response(response, operation="Search")
     initial_payload = payload
     status = _field(payload.get("context"), ("status",))
     if status == "incomplete":
@@ -878,7 +886,7 @@ def _candidate_leg(leg: object) -> SkyscannerLegCandidate | None:
         or arrival is None
         or duration is None
         or not isinstance(segments, list)
-        or not segments
+        or len(segments) != 1
     ):
         return None
     flight = _segment_flight_number(segments[0])

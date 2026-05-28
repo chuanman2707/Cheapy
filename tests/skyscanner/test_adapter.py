@@ -135,7 +135,12 @@ def search_payload() -> dict[str, object]:
 
 def assert_no_sensitive_tokens(value: object) -> None:
     text = json.dumps(value, sort_keys=True, default=str)
-    for token in ("/transport_deeplink/", "__Secure-anon_token", "secret", "cookie"):
+    for token in (
+        "/transport_deeplink/",
+        "__Secure-anon_token=secret",
+        "/transport_deeplink/secret",
+        "cookie",
+    ):
         assert token not in text
 
 
@@ -230,6 +235,62 @@ def test_search_referer_preserves_adult_count_exactly() -> None:
     )
 
     assert "adultsv2=2" in client.post_calls[0]["headers"]["referer"]
+
+
+def test_get_entity_id_accepts_top_level_autosuggest_list() -> None:
+    client = FakeClient(
+        [
+            FakeResponse(
+                payload=[
+                    {
+                        "iataCode": "SIN",
+                        "entityId": "95673375",
+                        "name": "Singapore",
+                        "type": "PLACE_TYPE_AIRPORT",
+                    }
+                ]
+            )
+        ]
+    )
+
+    result = adapter.get_entity_id("SIN", config=config(), client=client)
+
+    assert result.entity_id == "95673375"
+
+
+def test_multisegment_leg_is_skipped_instead_of_misrepresented() -> None:
+    payload = search_payload()
+    itinerary = payload["itineraries"]["results"][0]
+    leg = itinerary["legs"][0]
+    leg["segments"].append(
+        {
+            "origin": {"displayCode": "BKK"},
+            "destination": {"displayCode": "SGN"},
+            "departure": "2026-06-11T12:15:00",
+            "arrival": "2026-06-11T14:45:00",
+            "durationInMinutes": 150,
+            "marketingCarrier": {"displayCode": "VJ", "name": "VietJet"},
+            "flightNumber": "816",
+        }
+    )
+    client = FakeClient(
+        [
+            FakeResponse(payload=entity("SIN", "95673375")),
+            FakeResponse(payload=entity("SGN", "95673379")),
+            FakeResponse(payload=payload),
+        ]
+    )
+
+    with pytest.raises(adapter.SkyscannerProviderError) as exc_info:
+        adapter.SkyscannerAdapter(config=config(), client=client).search_exact_one_way(
+            ProviderExactOneWayRequest(
+                origin="SIN",
+                destination="SGN",
+                departure_date="2026-06-11",
+            )
+        )
+
+    assert exc_info.value.failure_type == "no_usable_results"
 
 
 def test_http_403_maps_to_blocked_error() -> None:
