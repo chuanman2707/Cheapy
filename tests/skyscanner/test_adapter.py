@@ -573,6 +573,30 @@ def test_multisegment_negative_segment_duration_is_skipped_as_no_usable_results(
     assert_error_is_sanitized(exc_info.value)
 
 
+def test_multisegment_malformed_segment_datetime_is_skipped_as_no_usable_results() -> None:
+    payload = _dus_sgn_multisegment_payload()
+    leg = payload["itineraries"]["results"][0]["legs"][0]
+    leg["segments"][1]["departure"] = "not-a-date-time"
+
+    with pytest.raises(adapter.SkyscannerProviderError) as exc_info:
+        _search_dus_sgn_one_way(payload)
+
+    assert exc_info.value.failure_type == "no_usable_results"
+    assert_error_is_sanitized(exc_info.value)
+
+
+def test_multisegment_too_short_leg_duration_is_skipped_as_no_usable_results() -> None:
+    payload = _dus_sgn_multisegment_payload()
+    leg = payload["itineraries"]["results"][0]["legs"][0]
+    leg["durationInMinutes"] = 1
+
+    with pytest.raises(adapter.SkyscannerProviderError) as exc_info:
+        _search_dus_sgn_one_way(payload)
+
+    assert exc_info.value.failure_type == "no_usable_results"
+    assert_error_is_sanitized(exc_info.value)
+
+
 def test_entity_ambiguous_error_does_not_leak_provider_fields() -> None:
     client = FakeClient(
         [

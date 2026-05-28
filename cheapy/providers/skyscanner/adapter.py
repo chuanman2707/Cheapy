@@ -860,6 +860,25 @@ def _int_value(value: object) -> int | None:
         return None
 
 
+def _parse_datetime(value: str) -> datetime | None:
+    text = value.strip()
+    if "T" not in text:
+        return None
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def _datetime_before(left: datetime, right: datetime) -> bool | None:
+    try:
+        return left < right
+    except TypeError:
+        return None
+
+
 def _safe_transport_deeplink(raw_url: str, *, config: SkyscannerConfig) -> bool:
     parsed = urlsplit(raw_url)
     if parsed.scheme == "" and parsed.netloc == "":
@@ -930,6 +949,13 @@ def _candidate_leg_segments(leg: object) -> tuple[SkyscannerLegCandidate, ...] |
         or not segments
     ):
         return None
+    departure_at = _parse_datetime(departure)
+    arrival_at = _parse_datetime(arrival)
+    if departure_at is None or arrival_at is None:
+        return None
+    leg_arrives_before_departure = _datetime_before(arrival_at, departure_at)
+    if leg_arrives_before_departure is None or leg_arrives_before_departure:
+        return None
     candidates = tuple(
         candidate
         for segment in segments
@@ -944,8 +970,23 @@ def _candidate_leg_segments(leg: object) -> tuple[SkyscannerLegCandidate, ...] |
         or candidates[-1].arrival_time != arrival
     ):
         return None
+    if duration < sum(candidate.duration_minutes for candidate in candidates):
+        return None
     for current, next_segment in zip(candidates, candidates[1:], strict=False):
         if current.destination != next_segment.origin:
+            return None
+        current_arrival = _parse_datetime(current.arrival_time)
+        next_departure = _parse_datetime(next_segment.departure_time)
+        if current_arrival is None or next_departure is None:
+            return None
+        next_departs_before_current_arrival = _datetime_before(
+            next_departure,
+            current_arrival,
+        )
+        if (
+            next_departs_before_current_arrival is None
+            or next_departs_before_current_arrival
+        ):
             return None
     return candidates
 
@@ -966,6 +1007,13 @@ def _candidate_segment(segment: object) -> SkyscannerLegCandidate | None:
         or duration is None
         or duration <= 0
     ):
+        return None
+    departure_at = _parse_datetime(departure)
+    arrival_at = _parse_datetime(arrival)
+    if departure_at is None or arrival_at is None:
+        return None
+    segment_arrives_before_departure = _datetime_before(arrival_at, departure_at)
+    if segment_arrives_before_departure is None or segment_arrives_before_departure:
         return None
     flight = _segment_flight_number(segment)
     if flight is None:
