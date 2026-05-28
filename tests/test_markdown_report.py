@@ -221,6 +221,49 @@ def test_report_renders_header_summary_and_best_offers_without_raw_url_field() -
     assert "public_search_url" not in report
 
 
+def test_report_best_offers_include_flight_numbers_column() -> None:
+    offer = _offer(
+        legs=[
+            FlightLegV1(
+                origin="CXR",
+                destination="HAN",
+                departure_time="2026-07-10T08:15:00",
+                arrival_time="2026-07-10T10:10:00",
+                airline_code="VJ",
+                flight_number="VJ601",
+                duration_minutes=115,
+            ),
+            FlightLegV1(
+                origin="HAN",
+                destination="SGN",
+                departure_time="2026-07-10T11:25:00",
+                arrival_time="2026-07-10T13:20:00",
+                airline_code="VN",
+                flight_number="VN134",
+                duration_minutes=115,
+            ),
+        ],
+        stops=1,
+        total_duration_minutes=305,
+    )
+
+    report = render_search_report(_request(), _response(offers=[offer]))
+
+    assert "| Rank | Fare | Flights | Route | Dates | Stops | Duration |" in report
+    assert "| 1 | [4,920,000 VND on Traveloka]" in report
+    assert " | VJ601, VN134 | CXR -> SGN | 2026-07-10 | 1 stop | 5h 5m |" in report
+
+
+def test_report_best_offers_flight_numbers_fallback_when_no_legs() -> None:
+    report = render_search_report(
+        _request(),
+        _response(offers=[_offer(legs=[])]),
+    )
+
+    assert "| Rank | Fare | Flights | Route | Dates | Stops | Duration |" in report
+    assert " | - | CXR -> SGN | 2026-07-10 | nonstop | 1h 10m |" in report
+
+
 def test_report_round_trip_header_uses_clear_date_arrow() -> None:
     report = render_search_report(
         _request(return_date="2026-07-17"),

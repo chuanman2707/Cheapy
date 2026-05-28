@@ -101,12 +101,13 @@ def _render_best_offers(offers: list[FlightOfferV1]) -> str:
         lines.append("No offers returned.")
         return "\n".join(lines)
 
-    rows: list[tuple[str, str, str, str, str, str]] = []
+    rows: list[tuple[str, str, str, str, str, str, str]] = []
     for index, offer in enumerate(offers, start=1):
         rows.append(
             (
                 str(offer.global_rank or offer.rank_within_currency or index),
                 render_offer_price(offer),
+                _offer_flight_numbers(offer),
                 f"{offer.actual_origin} -> {offer.actual_destination}",
                 _offer_dates(offer),
                 _format_stops(offer.stops),
@@ -115,7 +116,8 @@ def _render_best_offers(offers: list[FlightOfferV1]) -> str:
         )
     lines.append(
         _markdown_table(
-            ["Rank", "Fare", "Route", "Dates", "Stops", "Duration"], rows
+            ["Rank", "Fare", "Flights", "Route", "Dates", "Stops", "Duration"],
+            rows,
         )
     )
     return "\n".join(lines)
@@ -242,6 +244,13 @@ def _provider_message_note(kind: str, message: WarningV1 | ErrorV1) -> str:
         f"{kind} {message.code.value}: {_safe_message(message.message_en)} "
         f"retryable: {retryable}"
     )
+
+
+def _offer_flight_numbers(offer: FlightOfferV1) -> str:
+    flight_numbers = [
+        leg.flight_number.strip() for leg in offer.legs if leg.flight_number.strip()
+    ]
+    return ", ".join(flight_numbers) if flight_numbers else "-"
 
 
 def _safe_message(message: str) -> str:
