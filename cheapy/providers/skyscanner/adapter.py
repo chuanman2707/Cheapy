@@ -190,9 +190,13 @@ class CurlClient:
         final_url = f"{url}?{query}" if query else url
         with tempfile.TemporaryDirectory(prefix="skyscanner-curl-") as tmpdir:
             config_path = os.path.join(tmpdir, "curl.conf")
+            config_lines = [
+                *self._config_lines(headers),
+                f"url = {_curl_config_quote(final_url)}",
+            ]
             self._write_private_text(
                 config_path,
-                "\n".join(self._config_lines(headers)) + "\n",
+                "\n".join(config_lines) + "\n",
             )
 
             args = [
@@ -215,8 +219,6 @@ class CurlClient:
                 body = jsonlib.dumps(json_body, separators=(",", ":"))
                 self._write_private_text(body_path, body)
                 args.extend(["--data-binary", f"@{body_path}"])
-            args.append(final_url)
-
             try:
                 completed = self._runner(
                     args,

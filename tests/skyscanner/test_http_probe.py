@@ -245,7 +245,9 @@ def test_curl_client_post_uses_temp_config_without_cookie_in_argv() -> None:
     assert isinstance(args, list)
     assert all("secret-cookie" not in arg for arg in args)
     assert all("body-token" not in arg for arg in args)
+    assert all("https://example.test/search" not in arg for arg in args)
     assert "--data-binary" in args
+    assert 'url = "https://example.test/search"' in call["config"]
     assert '"session=secret-cookie"' in call["config"]
     assert '"accept: application/json"' in call["config"]
     assert '"x-test: value"' in call["config"]
@@ -256,7 +258,7 @@ def test_curl_client_post_uses_temp_config_without_cookie_in_argv() -> None:
 
 
 def test_curl_client_get_encodes_params_and_omits_body() -> None:
-    calls: list[list[str]] = []
+    calls: list[dict[str, object]] = []
 
     def fake_run(
         args: list[str],
@@ -266,7 +268,8 @@ def test_curl_client_get_encodes_params_and_omits_body() -> None:
         timeout: float,
         check: bool,
     ) -> subprocess.CompletedProcess[str]:
-        calls.append(args)
+        config_path = Path(args[args.index("--config") + 1])
+        calls.append({"args": args, "config": config_path.read_text()})
         return subprocess.CompletedProcess(args, 0, stdout='[]\n200', stderr="")
 
     client = probe.CurlClient(runner=fake_run)
@@ -280,10 +283,17 @@ def test_curl_client_get_encodes_params_and_omits_body() -> None:
 
     assert response.status_code == 200
     assert response.json() == []
-    args = calls[0]
+    call = calls[0]
+    args = call["args"]
+    assert isinstance(args, list)
     assert "--data-binary" not in args
-    assert args[-1] == "https://example.test/autosuggest?q=SIN%2FSGN&enabled=true"
     assert all("secret-cookie" not in arg for arg in args)
+    assert all("SIN%2FSGN" not in arg for arg in args)
+    assert all("autosuggest" not in arg for arg in args)
+    assert (
+        'url = "https://example.test/autosuggest?q=SIN%2FSGN&enabled=true"'
+        in call["config"]
+    )
 
 
 def test_curl_client_transport_error_is_sanitized() -> None:

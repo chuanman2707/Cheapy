@@ -15,8 +15,6 @@ import sys
 from typing import Mapping
 from urllib.parse import urljoin, urlsplit
 
-import httpx
-
 from cheapy.providers.skyscanner.adapter import (
     DEFAULT_BASE_URL,
     DEFAULT_TIMEOUT_SECONDS,
@@ -334,6 +332,8 @@ def main(argv: list[str] | None = None) -> int:
                 config=config,
                 client=CurlClient(),
             )
+        import httpx
+
         with httpx.Client() as client:
             return run_probe(
                 origin_iata=origin_iata,

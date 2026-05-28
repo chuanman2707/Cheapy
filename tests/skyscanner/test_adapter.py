@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -87,6 +89,46 @@ def entity(iata: str, entity_id: str) -> dict[str, object]:
             }
         ]
     }
+
+
+def test_curl_client_keeps_session_url_out_of_argv() -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_run(
+        args: list[str],
+        *,
+        capture_output: bool,
+        text: bool,
+        timeout: float,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        config_path = Path(args[args.index("--config") + 1])
+        calls.append({"args": args, "config": config_path.read_text()})
+        return subprocess.CompletedProcess(args, 0, stdout='{"ok": true}\n200', stderr="")
+
+    client = adapter.CurlClient(runner=fake_run)
+
+    session_url = (
+        "https://www.skyscanner.com.sg/g/radar/api/v2/web-unified-search/"
+        "session%2Fid%3Dsecret"
+    )
+
+    response = client.get(
+        session_url,
+        params={},
+        headers={"cookie": "session=secret-cookie"},
+        timeout=5.0,
+    )
+
+    assert response.status_code == 200
+    call = calls[0]
+    args = call["args"]
+    assert isinstance(args, list)
+    argv_text = " ".join(args)
+    assert "session%2Fid%3Dsecret" not in argv_text
+    assert "session/id=secret" not in argv_text
+    assert "secret-cookie" not in argv_text
+    assert f'url = "{session_url}"' in call["config"]
 
 
 def search_payload() -> dict[str, object]:
