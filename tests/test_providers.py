@@ -198,6 +198,7 @@ def test_provider_manifests_include_provider_kind() -> None:
     assert kinds_by_name["manual_fixture"] == "fixture"
     assert kinds_by_name["google_fli"] == "live"
     assert kinds_by_name["traveloka"] == "live"
+    assert kinds_by_name["skyscanner"] == "live"
 
 
 def test_google_fli_manifest_is_discovered_from_package_resources() -> None:
@@ -228,13 +229,28 @@ def test_traveloka_manifest_is_discovered_from_package_resources() -> None:
     )
 
 
-def test_skyscanner_experimental_scanner_is_not_discovered_as_provider() -> None:
-    manifests = discover_provider_manifests()
+def test_skyscanner_manifest_is_discovered_from_package_resources() -> None:
+    manifest = _manifest_by_name("skyscanner")
 
-    assert "skyscanner" not in [manifest.name for manifest in manifests]
-    assert "skyscanner" not in [
-        provider.name for provider in registry.load_search_providers()
-    ]
+    assert manifest == ProviderManifest(
+        manifest_schema_version="1",
+        name="skyscanner",
+        display_name="Skyscanner live provider",
+        default_enabled=True,
+        provider_kind="live",
+        module="cheapy.providers.skyscanner.provider",
+        capabilities=["exact_one_way", "exact_round_trip"],
+    )
+
+
+def test_search_providers_include_skyscanner_live_provider() -> None:
+    providers = {provider.name: provider for provider in registry.load_search_providers()}
+
+    assert set(providers) >= {"google_fli", "traveloka", "skyscanner"}
+    assert providers["skyscanner"].capabilities == (
+        "exact_one_way",
+        "exact_round_trip",
+    )
 
 
 def test_registry_exposes_exact_one_way_as_stable_capability() -> None:
@@ -640,11 +656,13 @@ def test_load_enabled_providers_loads_all_default_enabled_providers() -> None:
     assert [provider.name for provider in providers] == [
         "google_fli",
         "manual_fixture",
+        "skyscanner",
         "traveloka",
     ]
     assert [provider.capabilities for provider in providers] == [
         ("exact_one_way", "exact_round_trip"),
         ("exact_one_way",),
+        ("exact_one_way", "exact_round_trip"),
         ("exact_one_way", "exact_round_trip"),
     ]
 
@@ -652,8 +670,13 @@ def test_load_enabled_providers_loads_all_default_enabled_providers() -> None:
 def test_load_search_providers_excludes_fixture_providers() -> None:
     providers = registry.load_search_providers()
 
-    assert [provider.name for provider in providers] == ["google_fli", "traveloka"]
+    assert [provider.name for provider in providers] == [
+        "google_fli",
+        "skyscanner",
+        "traveloka",
+    ]
     assert [provider.capabilities for provider in providers] == [
+        ("exact_one_way", "exact_round_trip"),
         ("exact_one_way", "exact_round_trip"),
         ("exact_one_way", "exact_round_trip"),
     ]

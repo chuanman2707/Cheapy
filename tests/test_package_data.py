@@ -46,7 +46,10 @@ def test_built_wheel_can_load_packaged_airport_and_provider_data(tmp_path: Path)
     assert "cheapy/providers/traveloka/manifest.toml" in names
     assert "cheapy/providers/skyscanner/__init__.py" in names
     assert "cheapy/providers/skyscanner/scan_graphql_bundles.py" in names
-    assert "cheapy/providers/skyscanner/manifest.toml" not in names
+    assert "cheapy/providers/skyscanner/manifest.toml" in names
+    assert "cheapy/providers/skyscanner/adapter.py" in names
+    assert "cheapy/providers/skyscanner/normalizer.py" in names
+    assert "cheapy/providers/skyscanner/provider.py" in names
     assert "Requires-Dist: cloakbrowser>=0.3.26" in metadata
     assert "Requires-Dist: flights>=0.8.4" in metadata
     assert (
@@ -122,7 +125,7 @@ traveloka_manifest = files("cheapy.providers").joinpath("traveloka", "manifest.t
 skyscanner_root = files("cheapy.providers").joinpath("skyscanner")
 assert skyscanner_root.joinpath("__init__.py").is_file()
 assert skyscanner_root.joinpath("scan_graphql_bundles.py").is_file()
-assert not skyscanner_root.joinpath("manifest.toml").is_file()
+skyscanner_manifest = skyscanner_root.joinpath("manifest.toml").read_text(encoding="utf-8")
 
 assert airports["version"] == 1
 assert hubs["version"] == 1
@@ -135,6 +138,9 @@ assert "default_enabled = true" in google_manifest
 assert 'name = "traveloka"' in traveloka_manifest
 assert 'provider_kind = "live"' in traveloka_manifest
 assert "default_enabled = true" in traveloka_manifest
+assert 'name = "skyscanner"' in skyscanner_manifest
+assert 'provider_kind = "live"' in skyscanner_manifest
+assert "default_enabled = true" in skyscanner_manifest
 """
     subprocess.run([str(python), "-c", resource_script], check=True, cwd=tmp_path)
 
@@ -166,7 +172,12 @@ assert not installed_package.is_relative_to(repo_package), installed_package
     assert providers["google_fli"]["default_enabled"] is True
     assert providers["traveloka"]["provider_kind"] == "live"
     assert providers["traveloka"]["default_enabled"] is True
-    assert "skyscanner" not in providers
+    assert providers["skyscanner"]["provider_kind"] == "live"
+    assert providers["skyscanner"]["default_enabled"] is True
+    assert providers["skyscanner"]["capabilities"] == [
+        "exact_one_way",
+        "exact_round_trip",
+    ]
 
     test_result = subprocess.run(
         [str(python), "-m", "cheapy", "providers", "test"],
@@ -182,4 +193,5 @@ assert not installed_package.is_relative_to(repo_package), installed_package
     assert providers["manual_fixture"]["status"] == "success"
     assert providers["google_fli"]["live_smoke"] == "not_run"
     assert providers["traveloka"]["live_smoke"] == "not_run"
-    assert "skyscanner" not in providers
+    assert providers["skyscanner"]["status"] == "skipped"
+    assert providers["skyscanner"]["live_smoke"] == "not_run"
