@@ -143,6 +143,35 @@ def test_curl_client_keeps_session_url_out_of_argv() -> None:
     assert f'url = "{session_url}"' in call["config"]
 
 
+def test_curl_client_bounds_subprocess_timeout_to_request_timeout() -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_run(
+        args: list[str],
+        *,
+        capture_output: bool,
+        text: bool,
+        timeout: float,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append({"args": args, "timeout": timeout})
+        return subprocess.CompletedProcess(args, 0, stdout='{"ok": true}\n200', stderr="")
+
+    response = adapter.CurlClient(runner=fake_run).get(
+        "https://www.skyscanner.com.sg/test",
+        params={},
+        headers={},
+        timeout=0.2,
+    )
+
+    assert response.status_code == 200
+    args = calls[0]["args"]
+    assert isinstance(args, list)
+    max_time = float(args[args.index("--max-time") + 1])
+    assert 0 < max_time <= 0.2
+    assert calls[0]["timeout"] == 0.2
+
+
 def search_payload() -> dict[str, object]:
     return {
         "context": {"status": "complete"},
@@ -323,6 +352,69 @@ def test_expired_attempt_deadline_fails_before_client_call(
     assert exc_info.value.retryable is True
     assert client.get_calls == []
     assert client.post_calls == []
+
+
+def test_attempt_deadline_bounds_poll_get_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    times = iter([100.0, 101.0, 102.0, 103.0])
+    monkeypatch.setattr(adapter.time, "monotonic", lambda: next(times))
+    client = FakeClient(
+        [
+            FakeResponse(payload=entity("SIN", "95673375")),
+            FakeResponse(payload=entity("SGN", "95673379")),
+            FakeResponse(payload={"context": {"status": "incomplete", "sessionId": "s1"}}),
+            FakeResponse(payload=search_payload()),
+        ]
+    )
+
+    adapter.SkyscannerAdapter(
+        config=config_with_deadline(105.0),
+        client=client,
+    ).search_exact_one_way(
+        ProviderExactOneWayRequest(
+            origin="SIN",
+            destination="SGN",
+            departure_date="2026-06-11",
+        )
+    )
+
+    assert [call["timeout"] for call in client.get_calls] == [5.0, 4.0, 2.0]
+    assert [call["timeout"] for call in client.post_calls] == [3.0]
+
+
+def test_attempt_deadline_bounds_poll_sleep(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    times = iter([100.0, 100.0, 100.0, 100.0, 100.3, 100.6])
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(adapter.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(adapter.time, "sleep", sleep_calls.append)
+    client = FakeClient(
+        [
+            FakeResponse(payload=entity("SIN", "95673375")),
+            FakeResponse(payload=entity("SGN", "95673379")),
+            FakeResponse(payload={"context": {"status": "incomplete", "sessionId": "s1"}}),
+            FakeResponse(payload={"context": {"status": "incomplete", "sessionId": "s1"}}),
+        ]
+    )
+
+    with pytest.raises(adapter.SkyscannerProviderError) as exc_info:
+        adapter.SkyscannerAdapter(
+            config=config_with_deadline(100.5),
+            client=client,
+        ).search_exact_one_way(
+            ProviderExactOneWayRequest(
+                origin="SIN",
+                destination="SGN",
+                departure_date="2026-06-11",
+            )
+        )
+
+    assert exc_info.value.error_code == ErrorCode.PROVIDER_TIMEOUT
+    assert exc_info.value.failure_type == "timeout"
+    assert sleep_calls == pytest.approx([0.2])
+    assert len(client.get_calls) == 3
 
 
 def test_search_referer_preserves_adult_count_exactly() -> None:

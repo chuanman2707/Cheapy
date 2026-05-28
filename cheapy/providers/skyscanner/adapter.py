@@ -21,6 +21,7 @@ from cheapy.providers.base import ProviderExactOneWayRequest, ProviderExactRound
 
 DEFAULT_BASE_URL = "https://www.skyscanner.com.sg"
 DEFAULT_TIMEOUT_SECONDS = 20.0
+_CURL_SUBPROCESS_GRACE_SECONDS = 0.05
 SEARCH_POLL_ATTEMPTS = 8
 SEARCH_POLL_INTERVAL_SECONDS = 1.0
 DEFAULT_USER_AGENT = (
@@ -187,6 +188,13 @@ class CurlClient:
         timeout: float,
         json_body: dict[str, object] | None = None,
     ) -> CurlResponse:
+        if timeout <= 0:
+            raise RuntimeError("curl request timeout expired before start")
+        subprocess_timeout = timeout
+        curl_grace = min(_CURL_SUBPROCESS_GRACE_SECONDS, subprocess_timeout * 0.25)
+        curl_timeout = subprocess_timeout - curl_grace
+        if curl_timeout <= 0:
+            curl_timeout = subprocess_timeout
         query = urlencode({key: str(value) for key, value in params.items()})
         final_url = f"{url}?{query}" if query else url
         with tempfile.TemporaryDirectory(prefix="skyscanner-curl-") as tmpdir:
@@ -207,7 +215,7 @@ class CurlClient:
                 "--compressed",
                 "--http2",
                 "--max-time",
-                str(timeout),
+                str(curl_timeout),
                 "--config",
                 config_path,
                 "--request",
@@ -225,7 +233,7 @@ class CurlClient:
                     args,
                     capture_output=True,
                     text=True,
-                    timeout=timeout + 5.0,
+                    timeout=subprocess_timeout,
                     check=False,
                 )
             except Exception as exc:

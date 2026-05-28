@@ -27,6 +27,7 @@ from cheapy.providers.google_fli.normalizer import (
 
 
 EXACT_ROUND_TRIP_CAPABILITY = "exact_round_trip"
+_DEFAULT_ADAPTER_CLEANUP_GRACE_SECONDS = 0.05
 
 
 class GoogleFliProvider:
@@ -185,7 +186,12 @@ def _run_default_adapter_search(
     search_method_name: str,
     timeout_seconds: float,
 ) -> ProviderResult:
-    timeout = max(0.001, timeout_seconds)
+    if timeout_seconds <= 0:
+        raise TimeoutError
+    timeout = timeout_seconds
+    deadline = perf_counter() + timeout
+    cleanup_budget = min(_DEFAULT_ADAPTER_CLEANUP_GRACE_SECONDS, timeout * 0.25)
+    run_budget = max(0.0, timeout - cleanup_budget)
     context = multiprocessing.get_context()
     result_queue: Queue[Any] = context.Queue(maxsize=1)
     process = context.Process(
@@ -193,16 +199,21 @@ def _run_default_adapter_search(
         args=(result_queue, request, capability, search_method_name),
     )
     process.start()
-    process.join(timeout)
+    process.join(min(run_budget, _remaining_process_budget(deadline)))
     if process.is_alive():
         process.terminate()
-        process.join(0.25)
+        terminate_grace = cleanup_budget / 2
+        process.join(min(terminate_grace, _remaining_process_budget(deadline)))
         if process.is_alive():
             process.kill()
-            process.join(0.25)
+            kill_grace = cleanup_budget - terminate_grace
+            process.join(min(kill_grace, _remaining_process_budget(deadline)))
         raise TimeoutError
     try:
-        payload = result_queue.get(timeout=0.001)
+        remaining = _remaining_process_budget(deadline)
+        if remaining <= 0:
+            raise TimeoutError
+        payload = result_queue.get(timeout=remaining)
     except Empty as exc:
         raise GoogleFliProviderError(
             failure_type="transport_error",
@@ -246,6 +257,10 @@ def _run_default_adapter_search(
         retryable=True,
         exception_type="InvalidChildResult",
     )
+
+
+def _remaining_process_budget(deadline: float) -> float:
+    return max(0.0, deadline - perf_counter())
 
 
 def _default_adapter_search_worker(

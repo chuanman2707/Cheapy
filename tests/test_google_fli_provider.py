@@ -269,20 +269,63 @@ def test_google_fli_default_provider_delegates_to_process_helper(
     assert result.status == ProviderStatusCode.SUCCESS
 
 
-def test_google_fli_default_provider_timeout_uses_sanitized_process_boundary() -> None:
-    provider = GoogleFliProvider(timeout_seconds=0.001)
+def test_default_adapter_process_cleanup_stays_inside_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeQueue:
+        pass
 
-    result = asyncio.run(provider.search_exact_one_way(_request()))
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.join_timeouts: list[float | None] = []
+            self.terminated = False
+            self.killed = False
 
-    assert result.status == ProviderStatusCode.FAILED
-    assert result.retryable is True
-    assert result.errors[0].code == ErrorCode.PROVIDER_TIMEOUT
-    assert result.errors[0].retryable is True
-    assert result.errors[0].details == {
-        "provider": "google_fli",
-        "capability": "exact_one_way",
-        "failure_type": "timeout",
-    }
+        def start(self) -> None:
+            pass
+
+        def join(self, timeout: float | None = None) -> None:
+            self.join_timeouts.append(timeout)
+
+        def is_alive(self) -> bool:
+            return True
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def kill(self) -> None:
+            self.killed = True
+
+    class FakeContext:
+        def __init__(self, process: FakeProcess) -> None:
+            self.process = process
+
+        def Queue(self, maxsize: int) -> FakeQueue:
+            assert maxsize == 1
+            return FakeQueue()
+
+        def Process(self, **kwargs: object) -> FakeProcess:
+            assert kwargs["target"] is google_provider._default_adapter_search_worker
+            return self.process
+
+    process = FakeProcess()
+    monkeypatch.setattr(
+        google_provider.multiprocessing,
+        "get_context",
+        lambda: FakeContext(process),
+    )
+
+    with pytest.raises(TimeoutError):
+        google_provider._run_default_adapter_search(
+            _request(),
+            capability="exact_one_way",
+            search_method_name="search_exact_one_way",
+            timeout_seconds=0.1,
+        )
+
+    assert process.terminated is True
+    assert process.killed is True
+    assert sum(timeout or 0 for timeout in process.join_timeouts) <= 0.1
 
 
 def test_google_fli_provider_returns_round_trip_success_result() -> None:
