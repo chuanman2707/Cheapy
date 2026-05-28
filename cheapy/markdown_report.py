@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+import re
 
 from cheapy.models import (
     ErrorV1,
@@ -13,6 +14,26 @@ from cheapy.models import (
     WarningV1,
 )
 from cheapy.public_url_safety import validate_public_search_url
+
+
+_URL_RE = re.compile(r"https?://", re.IGNORECASE)
+_JWT_SHAPE_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"
+    r"\.[A-Za-z0-9_-]+(?![A-Za-z0-9_-])"
+)
+_SENSITIVE_MESSAGE_TERMS = (
+    "auth",
+    "challenge",
+    "cookie",
+    "header",
+    "headers",
+    "jwt",
+    "payload",
+    "request body",
+    "request_body",
+    "secret",
+    "token",
+)
 
 
 def render_search_report(request: SearchRequestV1, response: SearchResponseV1) -> str:
@@ -180,7 +201,7 @@ def _message_row(
         calls,
         message.code.value,
         message.severity.value,
-        message.message_en,
+        _safe_message(message.message_en),
         "yes" if message.retryable else "no",
     )
 
@@ -213,9 +234,26 @@ def _provider_notes(status: ProviderStatusV1) -> str:
 def _provider_message_note(kind: str, message: WarningV1 | ErrorV1) -> str:
     retryable = "yes" if message.retryable else "no"
     return (
-        f"{kind} {message.code.value}: {message.message_en} "
+        f"{kind} {message.code.value}: {_safe_message(message.message_en)} "
         f"retryable: {retryable}"
     )
+
+
+def _safe_message(message: str) -> str:
+    if _message_appears_sensitive(message):
+        return "[redacted]"
+    return message
+
+
+def _message_appears_sensitive(message: str) -> bool:
+    if _URL_RE.search(message):
+        return True
+    if _JWT_SHAPE_RE.search(message):
+        return True
+    if any(ord(char) < 0x20 or ord(char) == 0x7F for char in message):
+        return True
+    lowered = message.lower()
+    return any(term in lowered for term in _SENSITIVE_MESSAGE_TERMS)
 
 
 def _provider_summary(response: SearchResponseV1) -> str:

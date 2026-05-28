@@ -316,3 +316,87 @@ def test_provider_summary_includes_multiple_provider_status_details() -> None:
         "| Providers | Traveloka partial 2/2, failed: 1, warnings: 1, retryable; "
         "Google Fli failed 1/1, failed: 1, errors: 1 |"
     ) in report
+
+
+def test_top_level_sensitive_messages_are_redacted() -> None:
+    warning = WarningV1(
+        code=WarningCode.SEARCH_TRUNCATED,
+        severity=Severity.WARNING,
+        message_en="Provider failed at https://example.test/challenge?token=top-secret",
+        details={},
+        retryable=True,
+    )
+    error = ErrorV1(
+        code=ErrorCode.PROVIDER_FAILED,
+        severity=Severity.ERROR,
+        message_en="Request body included header auth material.",
+        details={},
+        retryable=False,
+    )
+
+    report = render_search_report(
+        _request(),
+        _response(
+            warnings=[warning],
+            errors=[error],
+            search_plan=_search_plan(
+                planned_provider_call_count=4,
+                executed_provider_call_count=3,
+            ),
+        ),
+    )
+
+    assert "| Report | success | 3/4 | search_truncated | warning | [redacted] | yes |" in report
+    assert "| Report | success | 3/4 | provider_failed | error | [redacted] | no |" in report
+    for unsafe_text in (
+        "https://example.test/challenge",
+        "token",
+        "top-secret",
+        "Request body",
+        "header",
+        "auth",
+    ):
+        assert unsafe_text not in report
+
+
+def test_nested_sensitive_messages_are_redacted_in_all_sections() -> None:
+    warning = WarningV1(
+        code=WarningCode.SEARCH_TRUNCATED,
+        severity=Severity.WARNING,
+        message_en="Provider returned jwt abc.def.ghi from challenge.",
+        details={},
+        retryable=True,
+    )
+    error = ErrorV1(
+        code=ErrorCode.PROVIDER_TIMEOUT,
+        severity=Severity.ERROR,
+        message_en="Provider response included payload\x1fmetadata.",
+        details={},
+        retryable=False,
+    )
+    response = _response(
+        provider_statuses=[
+            _provider_status(
+                status=ProviderStatusCode.PARTIAL,
+                planned_call_count=2,
+                executed_call_count=2,
+                warnings=[warning],
+                errors=[error],
+                retryable=True,
+            )
+        ],
+    )
+
+    report = render_search_report(_request(), response)
+
+    assert "warning search_truncated: [redacted] retryable: yes" in report
+    assert "error provider_timeout: [redacted] retryable: no" in report
+    assert "| Traveloka | partial | 2/2 | search_truncated | warning | [redacted] | yes |" in report
+    assert "| Traveloka | partial | 2/2 | provider_timeout | error | [redacted] | no |" in report
+    for unsafe_text in (
+        "abc.def.ghi",
+        "challenge",
+        "payload",
+        "metadata",
+    ):
+        assert unsafe_text not in report
