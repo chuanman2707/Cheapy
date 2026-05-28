@@ -4,6 +4,8 @@ import asyncio
 import json
 import time
 
+import pytest
+
 from cheapy.models import ErrorCode, PassengersV1, ProviderStatusCode
 from cheapy.providers.base import ProviderExactOneWayRequest, ProviderExactRoundTripRequest
 from cheapy.providers.skyscanner.adapter import (
@@ -12,6 +14,7 @@ from cheapy.providers.skyscanner.adapter import (
     SkyscannerProviderError,
 )
 from cheapy.providers.skyscanner.provider import SkyscannerProvider, create_provider
+from cheapy.providers.skyscanner import provider as skyscanner_provider
 
 
 SENSITIVE_TOKENS = (
@@ -245,6 +248,33 @@ def test_create_provider_does_not_require_cookie(monkeypatch) -> None:
 
     assert provider.name == "skyscanner"
     assert provider.capabilities == ("exact_one_way", "exact_round_trip")
+
+
+def test_default_provider_builds_adapter_with_attempt_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_from_env(env: object, **kwargs: object) -> FakeAdapter:
+        captured["env"] = env
+        captured.update(kwargs)
+        return FakeAdapter([_candidate()])
+
+    monkeypatch.setattr(skyscanner_provider, "monotonic", lambda: 50.0)
+    monkeypatch.setattr(
+        "cheapy.providers.skyscanner.provider.SkyscannerAdapter.from_env",
+        fake_from_env,
+    )
+    provider = SkyscannerProvider(
+        env={"CHEAPY_SKYSCANNER_COOKIE": "secret-cookie"},
+        timeout_seconds=2.5,
+    )
+
+    result = asyncio.run(provider.search_exact_one_way(_request()))
+
+    assert result.status == ProviderStatusCode.SUCCESS
+    assert captured["timeout_seconds"] == 2.5
+    assert captured["deadline_monotonic"] == 52.5
 
 
 def test_provider_round_trip_uses_round_trip_adapter_and_capability() -> None:

@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import multiprocessing
+from multiprocessing.queues import Queue
+from queue import Empty
 from time import perf_counter
+from typing import Any
 
 from cheapy.models import ErrorCode, ErrorV1, ProviderStatusCode, Severity
 from cheapy.providers.base import (
@@ -37,7 +41,7 @@ class GoogleFliProvider:
         adapter: object | None = None,
         timeout_seconds: float = 30.0,
     ) -> None:
-        self._adapter = adapter if adapter is not None else GoogleFliAdapter()
+        self._adapter = adapter
         self._timeout_seconds = timeout_seconds
 
     def with_timeout_seconds(self, timeout_seconds: float) -> "GoogleFliProvider":
@@ -75,6 +79,15 @@ class GoogleFliProvider:
     ) -> ProviderResult:
         started = perf_counter()
         try:
+            if self._adapter is None:
+                result = await asyncio.to_thread(
+                    _run_default_adapter_search,
+                    request,
+                    capability=capability,
+                    search_method_name=search_method_name,
+                    timeout_seconds=self._timeout_seconds,
+                )
+                return result.model_copy(update={"duration_ms": _duration_ms(started)})
             search_method = getattr(self._adapter, search_method_name)
             flights = await asyncio.wait_for(
                 asyncio.to_thread(search_method, request),
@@ -163,6 +176,130 @@ class GoogleFliProvider:
 
 def create_provider() -> GoogleFliProvider:
     return GoogleFliProvider()
+
+
+def _run_default_adapter_search(
+    request: ProviderExactOneWayRequest | ProviderExactRoundTripRequest,
+    *,
+    capability: str,
+    search_method_name: str,
+    timeout_seconds: float,
+) -> ProviderResult:
+    timeout = max(0.001, timeout_seconds)
+    context = multiprocessing.get_context()
+    result_queue: Queue[Any] = context.Queue(maxsize=1)
+    process = context.Process(
+        target=_default_adapter_search_worker,
+        args=(result_queue, request, capability, search_method_name),
+    )
+    process.start()
+    process.join(timeout)
+    if process.is_alive():
+        process.terminate()
+        process.join(0.25)
+        if process.is_alive():
+            process.kill()
+            process.join(0.25)
+        raise TimeoutError
+    try:
+        payload = result_queue.get(timeout=0.001)
+    except Empty as exc:
+        raise GoogleFliProviderError(
+            failure_type="transport_error",
+            message_en="Google Fli child process did not return a result.",
+            error_code=ErrorCode.PROVIDER_FAILED,
+            retryable=True,
+            exception_type=type(exc).__name__,
+        ) from None
+    kind = payload.get("kind") if isinstance(payload, dict) else None
+    if kind == "result":
+        return ProviderResult.model_validate(payload.get("result"))
+    if kind == "provider_error":
+        error_code_value = payload.get("error_code") or ErrorCode.PROVIDER_FAILED.value
+        raise GoogleFliProviderError(
+            failure_type=str(payload.get("failure_type", "transport_error")),
+            message_en=str(payload.get("message_en", "Google Fli provider failed.")),
+            error_code=ErrorCode(str(error_code_value)),
+            retryable=bool(payload.get("retryable", False)),
+            exception_type=(
+                str(payload["exception_type"])
+                if payload.get("exception_type") is not None
+                else None
+            ),
+        )
+    if kind == "unexpected_error":
+        raise GoogleFliProviderError(
+            failure_type="unexpected_error",
+            message_en="Google Fli provider raised an unexpected exception.",
+            error_code=ErrorCode.PROVIDER_FAILED,
+            retryable=False,
+            exception_type=(
+                str(payload["exception_type"])
+                if payload.get("exception_type") is not None
+                else None
+            ),
+        )
+    raise GoogleFliProviderError(
+        failure_type="transport_error",
+        message_en="Google Fli child process returned an invalid result.",
+        error_code=ErrorCode.PROVIDER_FAILED,
+        retryable=True,
+        exception_type="InvalidChildResult",
+    )
+
+
+def _default_adapter_search_worker(
+    result_queue: Queue[Any],
+    request: ProviderExactOneWayRequest | ProviderExactRoundTripRequest,
+    capability: str,
+    search_method_name: str,
+) -> None:
+    started = perf_counter()
+    try:
+        adapter = GoogleFliAdapter()
+        search_method = getattr(adapter, search_method_name)
+        flights = search_method(request)
+        offers, errors = normalize_flights(
+            flights,
+            request,
+            configured_currency=getattr(adapter, "configured_currency", None),
+        )
+        errors = _errors_with_capability(errors, capability)
+        if errors and offers:
+            status = ProviderStatusCode.PARTIAL
+        elif errors:
+            status = ProviderStatusCode.FAILED
+        else:
+            status = ProviderStatusCode.SUCCESS
+        result = ProviderResult(
+            provider_name=PROVIDER_NAME,
+            capability=capability,
+            status=status,
+            offers=offers,
+            warnings=[],
+            errors=errors,
+            duration_ms=_duration_ms(started),
+            retryable=any(error.retryable for error in errors),
+        )
+        result_queue.put({"kind": "result", "result": result.model_dump(mode="json")})
+    except GoogleFliProviderError as exc:
+        result_queue.put(
+            {
+                "kind": "provider_error",
+                "failure_type": exc.failure_type,
+                "message_en": exc.message_en,
+                "error_code": exc.error_code.value,
+                "retryable": exc.retryable,
+                "exception_type": exc.exception_type,
+            }
+        )
+    except Exception as exc:
+        result_queue.put(
+            {
+                "kind": "unexpected_error",
+                "exception_type": type(exc).__name__,
+            }
+        )
 
 
 def _provider_error(

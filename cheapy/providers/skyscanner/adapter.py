@@ -69,6 +69,7 @@ class SkyscannerConfig:
     cookie: str = field(repr=False)
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
     user_agent: str = DEFAULT_USER_AGENT
+    deadline_monotonic: float | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -344,6 +345,7 @@ def config_from_env(
     currency: str = "SGD",
     base_url: str = DEFAULT_BASE_URL,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    deadline_monotonic: float | None = None,
 ) -> SkyscannerConfig:
     cookie = env.get("CHEAPY_SKYSCANNER_COOKIE", "").strip()
     if not cookie:
@@ -364,6 +366,7 @@ def config_from_env(
             env.get("CHEAPY_SKYSCANNER_USER_AGENT", DEFAULT_USER_AGENT).strip()
             or DEFAULT_USER_AGENT
         ),
+        deadline_monotonic=deadline_monotonic,
     )
 
 
@@ -408,6 +411,36 @@ def _http_error(status_code: int, *, operation: str) -> SkyscannerProviderError:
         retryable=False,
         http_status_code=status_code,
     )
+
+
+def _timeout_error(message_en: str) -> SkyscannerProviderError:
+    return SkyscannerProviderError(
+        failure_type="timeout",
+        message_en=message_en,
+        error_code=ErrorCode.PROVIDER_TIMEOUT,
+        retryable=True,
+    )
+
+
+def _remaining_timeout_seconds(config: SkyscannerConfig) -> float:
+    if config.deadline_monotonic is None:
+        return config.timeout_seconds
+    remaining = min(config.timeout_seconds, config.deadline_monotonic - time.monotonic())
+    if remaining <= 0:
+        raise _timeout_error("Skyscanner attempt deadline expired.")
+    return remaining
+
+
+def _sleep_with_deadline(config: SkyscannerConfig, seconds: float) -> None:
+    if seconds <= 0:
+        return
+    if config.deadline_monotonic is None:
+        time.sleep(seconds)
+        return
+    remaining = config.deadline_monotonic - time.monotonic()
+    if remaining <= 0:
+        raise _timeout_error("Skyscanner attempt deadline expired.")
+    time.sleep(min(seconds, remaining))
 
 
 def _read_json_response(response: HttpResponse, *, operation: str) -> object:
@@ -531,8 +564,10 @@ def get_entity_id(
                 "enable_general_search_v2": "false",
             },
             headers=request_headers(config),
-            timeout=config.timeout_seconds,
+            timeout=_remaining_timeout_seconds(config),
         )
+    except SkyscannerProviderError:
+        raise
     except Exception as exc:
         raise SkyscannerProviderError(
             failure_type="transport_error",
@@ -689,8 +724,10 @@ def _poll_search_session(
                 referer=referer,
                 include_content_type=False,
             ),
-            timeout=config.timeout_seconds,
+            timeout=_remaining_timeout_seconds(config),
         )
+    except SkyscannerProviderError:
+        raise
     except Exception as exc:
         raise SkyscannerProviderError(
             failure_type="transport_error",
@@ -734,8 +771,10 @@ def _search_payload(
             url,
             json=body,
             headers=search_headers(config, view_id=view_id, referer=referer),
-            timeout=config.timeout_seconds,
+            timeout=_remaining_timeout_seconds(config),
         )
+    except SkyscannerProviderError:
+        raise
     except Exception as exc:
         raise SkyscannerProviderError(
             failure_type="transport_error",
@@ -769,7 +808,7 @@ def _search_payload(
             if status != "incomplete":
                 break
             if poll_index < SEARCH_POLL_ATTEMPTS - 1:
-                time.sleep(SEARCH_POLL_INTERVAL_SECONDS)
+                _sleep_with_deadline(config, SEARCH_POLL_INTERVAL_SECONDS)
         if (
             status == "complete"
             and _search_results(payload) == []
@@ -1011,6 +1050,7 @@ class SkyscannerAdapter:
         currency: str = "SGD",
         base_url: str = DEFAULT_BASE_URL,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+        deadline_monotonic: float | None = None,
     ) -> "SkyscannerAdapter":
         config = config_from_env(
             env,
@@ -1019,6 +1059,7 @@ class SkyscannerAdapter:
             currency=currency,
             base_url=base_url,
             timeout_seconds=timeout_seconds,
+            deadline_monotonic=deadline_monotonic,
         )
         return cls(config=config, client=client or CurlClient())
 

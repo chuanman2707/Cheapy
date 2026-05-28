@@ -11,6 +11,7 @@ from cheapy.models import ErrorCode, ProviderStatusCode
 from cheapy.providers.base import (
     ProviderExactOneWayRequest,
     ProviderExactRoundTripRequest,
+    ProviderResult,
 )
 from cheapy.providers.google_fli.adapter import (
     GoogleFliAdapter,
@@ -18,6 +19,7 @@ from cheapy.providers.google_fli.adapter import (
     build_search_filters,
 )
 from cheapy.providers.google_fli.provider import GoogleFliProvider
+from cheapy.providers.google_fli import provider as google_provider
 
 
 def _request() -> ProviderExactOneWayRequest:
@@ -206,6 +208,81 @@ def test_google_fli_provider_returns_success_result() -> None:
     assert result.errors == []
     assert [offer.provider for offer in result.offers] == ["google_fli"]
     assert result.duration_ms >= 0
+
+
+def test_google_fli_default_provider_delegates_to_process_helper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_if_constructed() -> object:
+        raise AssertionError("default live adapter must be isolated in child process")
+
+    calls: list[dict[str, object]] = []
+
+    def fake_process_helper(
+        request: ProviderExactOneWayRequest,
+        *,
+        capability: str,
+        search_method_name: str,
+        timeout_seconds: float,
+    ) -> ProviderResult:
+        calls.append(
+            {
+                "request": request,
+                "capability": capability,
+                "search_method_name": search_method_name,
+                "timeout_seconds": timeout_seconds,
+            }
+        )
+        return ProviderResult(
+            provider_name="google_fli",
+            capability=capability,
+            status=ProviderStatusCode.SUCCESS,
+            offers=[],
+            warnings=[],
+            errors=[],
+            duration_ms=1,
+            retryable=False,
+        )
+
+    monkeypatch.setattr(
+        "cheapy.providers.google_fli.provider.GoogleFliAdapter",
+        fail_if_constructed,
+    )
+    monkeypatch.setattr(
+        google_provider,
+        "_run_default_adapter_search",
+        fake_process_helper,
+        raising=False,
+    )
+    provider = GoogleFliProvider(timeout_seconds=0.25)
+
+    result = asyncio.run(provider.search_exact_one_way(_request()))
+
+    assert calls == [
+        {
+            "request": _request(),
+            "capability": "exact_one_way",
+            "search_method_name": "search_exact_one_way",
+            "timeout_seconds": 0.25,
+        }
+    ]
+    assert result.status == ProviderStatusCode.SUCCESS
+
+
+def test_google_fli_default_provider_timeout_uses_sanitized_process_boundary() -> None:
+    provider = GoogleFliProvider(timeout_seconds=0.001)
+
+    result = asyncio.run(provider.search_exact_one_way(_request()))
+
+    assert result.status == ProviderStatusCode.FAILED
+    assert result.retryable is True
+    assert result.errors[0].code == ErrorCode.PROVIDER_TIMEOUT
+    assert result.errors[0].retryable is True
+    assert result.errors[0].details == {
+        "provider": "google_fli",
+        "capability": "exact_one_way",
+        "failure_type": "timeout",
+    }
 
 
 def test_google_fli_provider_returns_round_trip_success_result() -> None:

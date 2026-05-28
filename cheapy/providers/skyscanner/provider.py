@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping
 import os
-from time import perf_counter
+from time import monotonic, perf_counter
 
 from cheapy.models import ErrorCode, ErrorV1, ProviderStatusCode, Severity
 from cheapy.providers.base import (
@@ -175,6 +175,7 @@ class SkyscannerProvider:
         return SkyscannerAdapter.from_env(
             self._env,
             timeout_seconds=self._timeout_seconds,
+            deadline_monotonic=monotonic() + self._timeout_seconds,
         )
 
     def _search_sync(

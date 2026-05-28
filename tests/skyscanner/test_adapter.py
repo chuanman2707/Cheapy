@@ -77,6 +77,18 @@ def config() -> adapter.SkyscannerConfig:
     )
 
 
+def config_with_deadline(deadline_monotonic: float) -> adapter.SkyscannerConfig:
+    return adapter.SkyscannerConfig(
+        base_url="https://www.skyscanner.com.sg",
+        market="SG",
+        locale="en-GB",
+        currency="SGD",
+        cookie="traveller_context=abc; __Secure-anon_token=secret",
+        timeout_seconds=7.0,
+        deadline_monotonic=deadline_monotonic,
+    )
+
+
 def entity(iata: str, entity_id: str) -> dict[str, object]:
     return {
         "places": [
@@ -263,6 +275,54 @@ def test_fetch_itineraries_returns_minimal_candidates_without_deeplink() -> None
     assert candidates[0].legs[0].airline_code == "VJ"
     assert candidates[0].legs[0].flight_number == "VJ814"
     assert_no_sensitive_tokens(candidates)
+
+
+def test_attempt_deadline_bounds_repeated_http_timeouts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    times = iter([100.0, 102.0, 105.0])
+    monkeypatch.setattr(adapter.time, "monotonic", lambda: next(times))
+    client = FakeClient(
+        [
+            FakeResponse(payload=entity("SIN", "95673375")),
+            FakeResponse(payload=entity("SGN", "95673379")),
+            FakeResponse(payload=search_payload()),
+        ]
+    )
+
+    adapter.SkyscannerAdapter(
+        config=config_with_deadline(106.0),
+        client=client,
+    ).search_exact_one_way(
+        ProviderExactOneWayRequest(
+            origin="SIN",
+            destination="SGN",
+            departure_date="2026-06-11",
+        )
+    )
+
+    assert [call["timeout"] for call in client.get_calls] == [6.0, 4.0]
+    assert [call["timeout"] for call in client.post_calls] == [1.0]
+
+
+def test_expired_attempt_deadline_fails_before_client_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(adapter.time, "monotonic", lambda: 100.1)
+    client = FakeClient([])
+
+    with pytest.raises(adapter.SkyscannerProviderError) as exc_info:
+        adapter.get_entity_id(
+            "SIN",
+            config=config_with_deadline(100.0),
+            client=client,
+        )
+
+    assert exc_info.value.error_code == ErrorCode.PROVIDER_TIMEOUT
+    assert exc_info.value.failure_type == "timeout"
+    assert exc_info.value.retryable is True
+    assert client.get_calls == []
+    assert client.post_calls == []
 
 
 def test_search_referer_preserves_adult_count_exactly() -> None:
