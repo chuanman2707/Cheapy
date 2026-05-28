@@ -879,7 +879,19 @@ def _candidate_leg(leg: object) -> SkyscannerLegCandidate | None:
         or len(segments) != 1
     ):
         return None
-    flight = _segment_flight_number(segments[0])
+    segment = segments[0]
+    segment_origin = _as_str(_field(segment, ("origin.displayCode",)))
+    segment_destination = _as_str(_field(segment, ("destination.displayCode",)))
+    segment_departure = _as_str(_field(segment, ("departure",)))
+    segment_arrival = _as_str(_field(segment, ("arrival",)))
+    if (
+        segment_origin != origin
+        or segment_destination != destination
+        or segment_departure != departure
+        or segment_arrival != arrival
+    ):
+        return None
+    flight = _segment_flight_number(segment)
     if flight is None:
         return None
     airline_code, flight_number = flight

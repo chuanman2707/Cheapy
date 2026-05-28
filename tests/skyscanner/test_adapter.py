@@ -380,6 +380,32 @@ def test_one_way_wrong_route_payload_is_skipped_as_no_usable_results() -> None:
     assert_error_is_sanitized(exc_info.value)
 
 
+def test_segment_route_mismatch_is_skipped_as_no_usable_results() -> None:
+    payload = search_payload()
+    segment = payload["itineraries"]["results"][0]["legs"][0]["segments"][0]
+    segment["origin"]["displayCode"] = "HAN"
+    segment["departure"] = "2026-06-11T08:00:00"
+    client = FakeClient(
+        [
+            FakeResponse(payload=entity("SIN", "95673375")),
+            FakeResponse(payload=entity("SGN", "95673379")),
+            FakeResponse(payload=payload),
+        ]
+    )
+
+    with pytest.raises(adapter.SkyscannerProviderError) as exc_info:
+        adapter.SkyscannerAdapter(config=config(), client=client).search_exact_one_way(
+            ProviderExactOneWayRequest(
+                origin="SIN",
+                destination="SGN",
+                departure_date="2026-06-11",
+            )
+        )
+
+    assert exc_info.value.failure_type == "no_usable_results"
+    assert_error_is_sanitized(exc_info.value)
+
+
 def test_itinerary_without_transport_deeplink_is_no_usable_results() -> None:
     payload = search_payload()
     pricing_option = payload["itineraries"]["results"][0]["pricingOptions"][0]
