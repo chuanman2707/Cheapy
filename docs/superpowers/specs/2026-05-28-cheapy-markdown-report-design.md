@@ -119,10 +119,23 @@ Add opt-in Markdown output:
 - `cheapy history show RUN_ID --markdown`
 - `cheapy watchlist check WATCHLIST_ID --markdown`
 
-For `history show --markdown`, reconstruct `SearchRequestV1` from the stored
-`search_run` fields and render the stored `response` as `SearchResponseV1`.
-If reconstruction or response validation fails, emit the existing safe JSON
-storage error on stderr and exit non-zero.
+For `history show --markdown`, reconstruct `SearchRequestV1` explicitly from
+the stored `search_run` fields. Parse `search_run["passengers_json"]` with
+`json.loads`, then validate only these request fields:
+
+- `schema_version`
+- `origin`
+- `destination`
+- `departure_date`
+- `return_date`
+- `search_mode`
+- `passengers`
+- `max_results`
+
+Ignore storage-only fields such as `id`, `created_at_utc`, `request_id`,
+`status`, `trip_type`, and `mixed_currency`. Render the stored `response` as
+`SearchResponseV1`. If request reconstruction or response validation fails,
+emit the existing safe JSON storage error on stderr and exit non-zero.
 
 For `watchlist check --markdown`, render the fresh search response after the
 watchlist decision is recorded. The Markdown report focuses on the search
@@ -156,6 +169,10 @@ Recommended structure:
 | --- | --- | ---: | --- |
 | traveloka | partial | 1/1 | Traveloka search timed out after returning partial fares. |
 ```
+
+In Provider Status, render Calls as `executed/planned`. Include succeeded,
+failed, and retryable values in Notes when they clarify status, for example:
+`succeeded: 1, failed: 0, retryable: false`.
 
 When there are no offers, the Best Offers section should say `No offers
 returned.` instead of rendering an empty table.
@@ -191,6 +208,11 @@ safe URL, render:
 
 Otherwise render the plain text fare. The formatter never reads raw provider
 URLs and never invents links.
+
+Because `FlightOfferV1` validation rejects unsafe URLs, invalid-link formatter
+tests should bypass validation intentionally with
+`valid_offer.model_copy(update={"public_search_url": unsafe_url})`, then assert
+`render_offer_price()` revalidates and renders plain text.
 
 Markdown special characters in visible text must be escaped. URLs are used only
 after validation. Since the validator already rejects control characters,
@@ -238,6 +260,11 @@ Add focused tests for:
 - An invalid link is not rendered as a hyperlink.
 - The report does not show a raw URL separately when the price is linked.
 - Provider warnings and statuses render cleanly with code/message/status.
+- Top-level `warnings`/`errors` and nested
+  `provider_statuses[*].warnings`/`errors` render only code, message, status,
+  call counts, and retryable fields.
+- Warning/error `details` keys and values are not rendered, including strings
+  containing `url`, `token`, `payload`, or `headers`.
 - Empty offers render a clear no-offers line.
 - MCP structured content still validates as `SearchResponseV1`.
 - MCP text content includes the Markdown report.
