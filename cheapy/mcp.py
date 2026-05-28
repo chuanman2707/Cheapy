@@ -5,12 +5,19 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from mcp import types
 from mcp.server.fastmcp import FastMCP
 from pydantic import ConfigDict, Field
 
+from cheapy.markdown_report import render_search_report
 from cheapy.models import PassengersV1, SearchMode, SearchRequestV1, SearchResponseV1
 from cheapy.search_service import search_with_storage
 
+
+_RENDERER_FALLBACK_TEXT = (
+    "## Cheapy flight search results\n\n"
+    "Structured results are available in the MCP response.\n"
+)
 
 _TOOL_ANNOTATIONS: dict[str, object] = {
     "title": "Search Cheapest Flights",
@@ -53,7 +60,12 @@ def create_mcp_server() -> FastMCP:
             )
         )
         result = await asyncio.to_thread(search_with_storage, request)
-        return result.response
+        markdown = _render_search_report_for_mcp(request, result.response)
+        return types.CallToolResult(
+            content=[types.TextContent(type="text", text=markdown)],
+            structuredContent=result.response.model_dump(mode="json"),
+            isError=False,
+        )
 
     # FastMCP otherwise coerces scalar inputs and drops extra args before the
     # strict SearchRequestV1 boundary, so the SDK minor is capped and this
@@ -69,6 +81,15 @@ def create_mcp_server() -> FastMCP:
     tool.parameters = SearchRequestV1.model_json_schema()
 
     return server
+
+
+def _render_search_report_for_mcp(
+    request: SearchRequestV1, response: SearchResponseV1
+) -> str:
+    try:
+        return render_search_report(request, response)
+    except Exception:
+        return _RENDERER_FALLBACK_TEXT
 
 
 def run_stdio_server() -> None:

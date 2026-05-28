@@ -20,6 +20,10 @@ from cheapy.search_service import SearchWithStorageResult
 
 
 T = TypeVar("T")
+TRAVELOKA_PUBLIC_SEARCH_URL = (
+    "https://www.traveloka.com/en-en/flight/fulltwosearch?"
+    "ap=CXR.SGN&dt=10-7-2026.15-7-2026&ps=1.0.0&sc=ECONOMY"
+)
 
 
 async def _with_mcp_session(action: Callable[[ClientSession], Awaitable[T]]) -> T:
@@ -46,6 +50,95 @@ def _mcp_tool() -> Any:
     tool = server._tool_manager.get_tool("search_cheapest_flights")
     assert tool is not None
     return tool
+
+
+def _successful_search_response() -> SearchResponseV1:
+    return SearchResponseV1.model_validate(
+        {
+            "schema_version": "1",
+            "status": "success",
+            "request_id": (
+                "search:round_trip:CXR:SGN:2026-07-10:2026-07-15:"
+                "expanded:1:0:0:0:5"
+            ),
+            "offers": [
+                {
+                    "offer_id": "traveloka:CXR-SGN:2026-07-10:1",
+                    "price_amount": 1_280_000.0,
+                    "currency": "VND",
+                    "comparable": True,
+                    "rank_within_currency": 1,
+                    "global_rank": 1,
+                    "provider": "traveloka",
+                    "requested_origin": "CXR",
+                    "requested_destination": "SGN",
+                    "actual_origin": "CXR",
+                    "actual_destination": "SGN",
+                    "nearby_origin_distance_km": None,
+                    "nearby_destination_distance_km": None,
+                    "requested_departure_date": "2026-07-10",
+                    "actual_departure_date": "2026-07-10",
+                    "departure_offset_days": 0,
+                    "requested_return_date": "2026-07-15",
+                    "actual_return_date": "2026-07-15",
+                    "return_offset_days": 0,
+                    "legs": [
+                        FlightLegV1(
+                            origin="CXR",
+                            destination="SGN",
+                            departure_time="2026-07-10T08:15:00",
+                            arrival_time="2026-07-10T09:25:00",
+                            airline_code="VJ",
+                            flight_number="VJ601",
+                            duration_minutes=70,
+                        )
+                    ],
+                    "total_duration_minutes": 70,
+                    "stops": 0,
+                    "flags": OfferFlagsV1(),
+                    "fare_details_status": "not_collected",
+                    "public_search_url": TRAVELOKA_PUBLIC_SEARCH_URL,
+                }
+            ],
+            "warnings": [],
+            "errors": [],
+            "provider_statuses": [],
+            "search_plan": {
+                "search_mode": "expanded",
+                "planned_candidate_count": 1,
+                "executed_candidate_count": 1,
+                "planned_provider_call_count": 1,
+                "executed_provider_call_count": 1,
+                "candidate_count_by_family": {"exact": 1},
+                "provider_call_count_by_family": {"exact": 1},
+                "truncated": False,
+                "truncated_families": [],
+                "candidate_families": ["exact"],
+            },
+            "mixed_currency": False,
+            "currency_groups": [],
+            "currency_notes": [],
+            "candidates": None,
+        }
+    )
+
+
+def _successful_search_arguments() -> dict[str, Any]:
+    return {
+        "schema_version": "1",
+        "origin": "CXR",
+        "destination": "SGN",
+        "departure_date": "2026-07-10",
+        "return_date": "2026-07-15",
+        "search_mode": "expanded",
+        "passengers": {
+            "adults": 1,
+            "children": 0,
+            "infants_on_lap": 0,
+            "infants_in_seat": 0,
+        },
+        "max_results": 5,
+    }
 
 
 def _structured_content(result: Any) -> dict[str, Any]:
@@ -149,87 +242,14 @@ def test_mcp_search_tool_annotations_reflect_local_history_write() -> None:
 def test_mcp_search_tool_returns_structured_contract_response(
     monkeypatch: Any,
 ) -> None:
-    public_search_url = (
-        "https://www.traveloka.com/en-en/flight/fulltwosearch?"
-        "ap=CXR.SGN&dt=10-7-2026.15-7-2026&ps=1.0.0&sc=ECONOMY"
-    )
-
     def fake_search_with_storage(request: Any) -> SearchWithStorageResult:
         assert request.origin == "CXR"
         assert request.destination == "SGN"
         assert request.departure_date == "2026-07-10"
         assert request.return_date == "2026-07-15"
         assert request.search_mode == SearchMode.EXPANDED
-        response = SearchResponseV1.model_validate(
-            {
-                "schema_version": "1",
-                "status": "success",
-                "request_id": (
-                    "search:round_trip:CXR:SGN:2026-07-10:2026-07-15:"
-                    "expanded:1:0:0:0:5"
-                ),
-                "offers": [
-                    {
-                        "offer_id": "traveloka:CXR-SGN:2026-07-10:1",
-                        "price_amount": 1_280_000.0,
-                        "currency": "VND",
-                        "comparable": True,
-                        "rank_within_currency": 1,
-                        "global_rank": 1,
-                        "provider": "traveloka",
-                        "requested_origin": "CXR",
-                        "requested_destination": "SGN",
-                        "actual_origin": "CXR",
-                        "actual_destination": "SGN",
-                        "nearby_origin_distance_km": None,
-                        "nearby_destination_distance_km": None,
-                        "requested_departure_date": "2026-07-10",
-                        "actual_departure_date": "2026-07-10",
-                        "departure_offset_days": 0,
-                        "requested_return_date": "2026-07-15",
-                        "actual_return_date": "2026-07-15",
-                        "return_offset_days": 0,
-                        "legs": [
-                            FlightLegV1(
-                                origin="CXR",
-                                destination="SGN",
-                                departure_time="2026-07-10T08:15:00",
-                                arrival_time="2026-07-10T09:25:00",
-                                airline_code="VJ",
-                                flight_number="VJ601",
-                                duration_minutes=70,
-                            )
-                        ],
-                        "total_duration_minutes": 70,
-                        "stops": 0,
-                        "flags": OfferFlagsV1(),
-                        "fare_details_status": "not_collected",
-                        "public_search_url": public_search_url,
-                    }
-                ],
-                "warnings": [],
-                "errors": [],
-                "provider_statuses": [],
-                "search_plan": {
-                    "search_mode": "expanded",
-                    "planned_candidate_count": 1,
-                    "executed_candidate_count": 1,
-                    "planned_provider_call_count": 1,
-                    "executed_provider_call_count": 1,
-                    "candidate_count_by_family": {"exact": 1},
-                    "provider_call_count_by_family": {"exact": 1},
-                    "truncated": False,
-                    "truncated_families": [],
-                    "candidate_families": ["exact"],
-                },
-                "mixed_currency": False,
-                "currency_groups": [],
-                "currency_notes": [],
-                "candidates": None,
-            }
-        )
         return SearchWithStorageResult(
-            response=response,
+            response=_successful_search_response(),
             search_run_id=1,
             storage_enabled=True,
             storage_warning=None,
@@ -237,21 +257,7 @@ def test_mcp_search_tool_returns_structured_contract_response(
 
     monkeypatch.setattr("cheapy.mcp.search_with_storage", fake_search_with_storage)
     tool = _mcp_tool()
-    arguments = {
-        "schema_version": "1",
-        "origin": "CXR",
-        "destination": "SGN",
-        "departure_date": "2026-07-10",
-        "return_date": "2026-07-15",
-        "search_mode": "expanded",
-        "passengers": {
-            "adults": 1,
-            "children": 0,
-            "infants_on_lap": 0,
-            "infants_in_seat": 0,
-        },
-        "max_results": 5,
-    }
+    arguments = _successful_search_arguments()
 
     result = asyncio.run(tool.run(arguments, convert_result=True))
 
@@ -263,9 +269,43 @@ def test_mcp_search_tool_returns_structured_contract_response(
         "search:round_trip:CXR:SGN:2026-07-10:2026-07-15:"
         "expanded:1:0:0:0:5"
     ) in response.request_id
-    assert payload["offers"][0]["public_search_url"] == public_search_url
-    assert response.offers[0].public_search_url == public_search_url
+    assert payload["offers"][0]["public_search_url"] == TRAVELOKA_PUBLIC_SEARCH_URL
+    assert response.offers[0].public_search_url == TRAVELOKA_PUBLIC_SEARCH_URL
     assert response.errors == []
+
+    text = _text_content(result)
+    assert "## CXR -> SGN | 2026-07-10 -> 2026-07-15 | 1 adult | Economy" in text
+    assert f"[1,280,000 VND on Traveloka]({TRAVELOKA_PUBLIC_SEARCH_URL})" in text
+    assert text.count(TRAVELOKA_PUBLIC_SEARCH_URL) == 1
+
+
+def test_mcp_search_tool_keeps_structured_response_when_markdown_renderer_fails(
+    monkeypatch: Any,
+) -> None:
+    def fake_search_with_storage(request: Any) -> SearchWithStorageResult:
+        return SearchWithStorageResult(
+            response=_successful_search_response(),
+            search_run_id=1,
+            storage_enabled=True,
+            storage_warning=None,
+        )
+
+    def fail_render_search_report(*_args: Any, **_kwargs: Any) -> str:
+        raise RuntimeError("secret renderer path")
+
+    monkeypatch.setattr("cheapy.mcp.search_with_storage", fake_search_with_storage)
+    monkeypatch.setattr("cheapy.mcp.render_search_report", fail_render_search_report)
+    tool = _mcp_tool()
+
+    result = asyncio.run(tool.run(_successful_search_arguments(), convert_result=True))
+
+    response = SearchResponseV1.model_validate(_structured_content(result))
+    assert response.status == SearchStatus.SUCCESS
+    assert response.offers[0].public_search_url == TRAVELOKA_PUBLIC_SEARCH_URL
+    text = _text_content(result)
+    assert "## Cheapy flight search results" in text
+    assert "Structured results are available in the MCP response." in text
+    assert "secret renderer path" not in text
 
 
 def test_mcp_search_tool_rejects_invalid_contract_input() -> None:
