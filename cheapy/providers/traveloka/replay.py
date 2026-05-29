@@ -168,8 +168,11 @@ def _safe_replay_headers(headers: object) -> dict[str, str]:
         if name not in ALLOWED_REPLAY_HEADERS:
             continue
 
-        text = str(value).strip()
-        if not text or "\r" in text or "\n" in text:
+        raw_value = str(value)
+        if "\r" in raw_value or "\n" in raw_value:
+            continue
+        text = raw_value.strip()
+        if not text:
             continue
         if name == "referer" and not _is_safe_referer(text):
             continue

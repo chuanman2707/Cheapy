@@ -166,18 +166,16 @@ def test_select_replay_request_drops_unsafe_referer_and_crlf_values() -> None:
                 sequence=1,
                 headers={
                     "accept": "application/json\nbad",
+                    "accept-language": "en-US\r\n",
                     "content-type": "application/json",
+                    "origin": "\nhttps://www.traveloka.com",
                     "referer": "https://evil.example/fullsearch",
-                    "origin": "https://www.traveloka.com",
                 },
             )
         )
     )
 
-    assert selected.headers == {
-        "content-type": "application/json",
-        "origin": "https://www.traveloka.com",
-    }
+    assert selected.headers == {"content-type": "application/json"}
 
 
 def test_select_replay_request_drops_unsafe_raw_header_names() -> None:
