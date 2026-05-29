@@ -62,6 +62,34 @@ def test_env_cookie_override_returns_env_source_and_does_not_bootstrap() -> None
     assert_no_sensitive_tokens(repr(config))
 
 
+def test_empty_env_cookie_uses_bootstrap_path() -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_bootstrap(**kwargs: object) -> BrowserBootstrapSession:
+        calls.append(kwargs)
+        return BrowserBootstrapSession(
+            cookie_header="boot-cookie=secret-cookie",
+            user_agent="BootUA",
+            created_monotonic=100.0,
+        )
+
+    manager = SkyscannerSessionManager(
+        bootstrap_cookies=fake_bootstrap,
+        monotonic=lambda: 100.0,
+    )
+
+    config, source = manager.config_for_call(
+        {"CHEAPY_SKYSCANNER_COOKIE": "   "},
+        timeout_seconds=3.0,
+        deadline_monotonic=120.0,
+    )
+
+    assert source == "bootstrap"
+    assert config.cookie == "boot-cookie=secret-cookie"
+    assert config.user_agent == "BootUA"
+    assert len(calls) == 1
+
+
 def test_bootstrap_then_cache_reuse_passes_deadline_and_user_agent() -> None:
     now = 10.0
     calls: list[dict[str, object]] = []
@@ -110,6 +138,47 @@ def test_bootstrap_then_cache_reuse_passes_deadline_and_user_agent() -> None:
             "user_agent": "EnvUA",
         }
     ]
+
+
+def test_force_refresh_bypasses_valid_cache_and_bootstraps() -> None:
+    now = 10.0
+    bootstrap_count = 0
+
+    def fake_monotonic() -> float:
+        return now
+
+    def fake_bootstrap(**kwargs: object) -> BrowserBootstrapSession:
+        nonlocal bootstrap_count
+        bootstrap_count += 1
+        return BrowserBootstrapSession(
+            cookie_header=f"cookie-{bootstrap_count}=secret-cookie",
+            user_agent=f"BootUA/{bootstrap_count}",
+            created_monotonic=now,
+        )
+
+    manager = SkyscannerSessionManager(
+        bootstrap_cookies=fake_bootstrap,
+        monotonic=fake_monotonic,
+        ttl_seconds=300.0,
+    )
+
+    first_config, first_source = manager.config_for_call(
+        {},
+        timeout_seconds=1.0,
+        deadline_monotonic=20.0,
+    )
+    second_config, second_source = manager.config_for_call(
+        {},
+        timeout_seconds=1.0,
+        deadline_monotonic=21.0,
+        force_refresh=True,
+    )
+
+    assert first_source == "bootstrap"
+    assert second_source == "bootstrap"
+    assert first_config.cookie == "cookie-1=secret-cookie"
+    assert second_config.cookie == "cookie-2=secret-cookie"
+    assert bootstrap_count == 2
 
 
 def test_ttl_expiry_refreshes_bootstrap_session() -> None:

@@ -383,8 +383,19 @@ def test_with_timeout_seconds_preserves_same_session_manager() -> None:
     assert clone._timeout_seconds == 2.0
 
 
-def test_cached_no_usable_results_force_refreshes_once_and_retries(
+@pytest.mark.parametrize(
+    ("failure_type", "error_code", "retryable"),
+    [
+        ("blocked", ErrorCode.PROVIDER_BLOCKED, False),
+        ("rate_limited", ErrorCode.PROVIDER_RATE_LIMITED, True),
+        ("no_usable_results", ErrorCode.PROVIDER_FAILED, False),
+    ],
+)
+def test_cached_failure_force_refreshes_once_and_retries(
     monkeypatch: pytest.MonkeyPatch,
+    failure_type: str,
+    error_code: ErrorCode,
+    retryable: bool,
 ) -> None:
     first_config = _config(cookie="cached-cookie=secret-cookie")
     second_config = _config(cookie="fresh-cookie=secret-cookie")
@@ -393,10 +404,10 @@ def test_cached_no_usable_results_force_refreshes_once_and_retries(
     )
     first_adapter = FakeAdapter(
         SkyscannerProviderError(
-            failure_type="no_usable_results",
-            message_en="Search completed but no usable itinerary was found.",
-            error_code=ErrorCode.PROVIDER_FAILED,
-            retryable=False,
+            failure_type=failure_type,
+            message_en="Skyscanner cached session failed.",
+            error_code=error_code,
+            retryable=retryable,
         )
     )
     second_adapter = FakeAdapter([_candidate()])
@@ -421,6 +432,7 @@ def test_cached_no_usable_results_force_refreshes_once_and_retries(
 
     assert result.status == ProviderStatusCode.SUCCESS
     assert [call["force_refresh"] for call in session_manager.calls] == [False, True]
+    assert len(session_manager.calls) == 2
     assert from_config_calls == [first_config, second_config]
     assert first_adapter.one_way_calls == 1
     assert second_adapter.one_way_calls == 1

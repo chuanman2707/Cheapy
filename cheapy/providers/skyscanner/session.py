@@ -56,7 +56,7 @@ class SkyscannerSessionManager:
         deadline_monotonic: float,
         force_refresh: bool = False,
     ) -> tuple[SkyscannerConfig, str]:
-        if "CHEAPY_SKYSCANNER_COOKIE" in env:
+        if env.get("CHEAPY_SKYSCANNER_COOKIE", "").strip():
             return (
                 config_from_env(
                     env,
