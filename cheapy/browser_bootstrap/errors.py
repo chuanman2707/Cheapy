@@ -56,7 +56,7 @@ def unavailable_error(
     return BrowserBootstrapUnavailable(
         message_en="Browser bootstrap runtime is unavailable.",
         context=BrowserBootstrapErrorContext(
-            failure_type="unavailable",
+            failure_type="browser_bootstrap_failed",
             phase=phase,
             http_status_code=http_status_code,
             exception_type=exception_type,
@@ -85,10 +85,11 @@ def blocked_error(
     http_status_code: int | None = None,
     exception_type: str | None = None,
 ) -> BrowserBootstrapBlocked:
+    failure_type = "rate_limited" if http_status_code == 429 else "blocked"
     return BrowserBootstrapBlocked(
         message_en="Browser bootstrap navigation was blocked.",
         context=BrowserBootstrapErrorContext(
-            failure_type="blocked",
+            failure_type=failure_type,
             phase=phase,
             http_status_code=http_status_code,
             exception_type=exception_type,
@@ -98,14 +99,13 @@ def blocked_error(
 
 def cookie_unavailable_error(
     *,
-    phase: str,
     exception_type: str | None = None,
 ) -> BrowserBootstrapCookieUnavailable:
     return BrowserBootstrapCookieUnavailable(
         message_en="Browser bootstrap did not produce usable cookies.",
         context=BrowserBootstrapErrorContext(
-            failure_type="cookie_unavailable",
-            phase=phase,
+            failure_type="browser_cookie_unavailable",
+            phase="cookie_read",
             exception_type=exception_type,
         ),
     )
@@ -119,7 +119,7 @@ def capture_unavailable_error(
     return BrowserNetworkCaptureUnavailable(
         message_en="Browser network capture did not find a matching request.",
         context=BrowserBootstrapErrorContext(
-            failure_type="capture_unavailable",
+            failure_type="network_capture_unavailable",
             phase=phase,
             exception_type=exception_type,
         ),

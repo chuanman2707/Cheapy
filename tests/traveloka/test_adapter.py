@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import sys
-import types
+import subprocess
+from pathlib import Path
 
 from cheapy.providers.base import (
     ProviderExactOneWayRequest,
@@ -119,23 +119,23 @@ def test_adapter_phase_timings_exposes_recorder_without_response_mutation() -> N
     assert not hasattr(result, "phase_timings")
 
 
-def test_default_launch_browser_suppresses_dependency_console_noise(
-    monkeypatch,
-    capsys,
-) -> None:
-    fake_module = types.ModuleType("cloakbrowser")
+def test_default_launch_browser_uses_shared_browser_bootstrap_launcher() -> None:
+    assert TravelokaAdapter()._launch_browser is traveloka_adapter.default_launch_browser
 
-    def fake_launch(**kwargs: object) -> dict[str, object]:
-        print("Update available: cloakbrowser 0.3.28 -> 0.3.31")
-        print("debug browser setup", file=sys.stderr)
-        return {"kwargs": kwargs}
 
-    fake_module.launch = fake_launch  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "cloakbrowser", fake_module)
+def test_cloakbrowser_runtime_import_is_limited_to_shared_bootstrap() -> None:
+    repo_root = Path(__file__).parents[2]
 
-    result = traveloka_adapter._default_launch_browser(headless=True, timeout=123)
+    result = subprocess.run(
+        ["rg", "-n", "from cloakbrowser|import cloakbrowser", "cheapy"],
+        check=True,
+        cwd=repo_root,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
 
-    assert result == {"kwargs": {"headless": True, "timeout": 123}}
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    assert captured.err == ""
+    assert result.stderr == ""
+    lines = result.stdout.splitlines()
+    assert len(lines) == 1
+    assert lines[0].startswith("cheapy/browser_bootstrap/cloak.py:")

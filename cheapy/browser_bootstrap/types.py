@@ -2,28 +2,28 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class BrowserBootstrapSession:
     cookie_header: str = field(repr=False)
     user_agent: str = field(repr=False)
     created_monotonic: float
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class CapturedRequest:
     url: str = field(repr=False)
     method: str
     sequence: int
-    headers: dict[str, object] = field(default_factory=dict, repr=False)
-    post_data: object | None = field(default=None, repr=False)
+    headers: Mapping[str, str] = field(default_factory=dict, repr=False)
+    post_data: str | None = field(default=None, repr=False)
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class CapturedResponse:
     url: str = field(repr=False)
     status_code: int
@@ -31,7 +31,7 @@ class CapturedResponse:
     sequence: int
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class CapturedExchange:
     sequence: int
     captured_monotonic: float
@@ -39,11 +39,11 @@ class CapturedExchange:
     response: CapturedResponse | None = field(default=None, repr=False)
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class BrowserNetworkCapture:
     cookie_header: str = field(repr=False)
     user_agent: str = field(repr=False)
-    exchanges: list[CapturedExchange] = field(repr=False)
+    exchanges: tuple[CapturedExchange, ...] = field(repr=False)
     created_monotonic: float
 
 

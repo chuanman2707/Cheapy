@@ -45,6 +45,7 @@ def test_cookie_header_raises_safe_error_when_no_cookies_are_usable() -> None:
         )
 
     error = exc_info.value
-    assert error.context.failure_type == "cookie_unavailable"
+    assert error.context.failure_type == "browser_cookie_unavailable"
+    assert error.context.phase == "cookie_read"
     assert "secret-cookie" not in str(error)
     assert "example.com" not in str(error)

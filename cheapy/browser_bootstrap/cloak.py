@@ -105,7 +105,7 @@ def capture_first_party_requests(
 
         sequence = 0
         exchanges: list[CapturedExchange] = []
-        pending_by_url: dict[str, list[CapturedExchange]] = {}
+        pending_by_url: dict[str, list[int]] = {}
 
         def next_sequence() -> int:
             nonlocal sequence
@@ -129,33 +129,47 @@ def capture_first_party_requests(
                 request=captured,
             )
             exchanges.append(exchange)
-            pending_by_url.setdefault(captured.url, []).append(exchange)
+            pending_by_url.setdefault(captured.url, []).append(len(exchanges) - 1)
 
         def handle_response(response: object) -> None:
             _remaining_timeout_ms(deadline_monotonic, phase="capture")
-            captured = CapturedResponse(
-                url=_object_url(response),
-                status_code=_response_status_code(response),
-                payload=_response_payload(response),
-                sequence=next_sequence(),
-            )
-            if response_predicate is not None and not response_predicate(captured):
-                return
-            pending = pending_by_url.get(captured.url)
+            response_url = _object_url(response)
+            pending = pending_by_url.get(response_url)
             if not pending:
                 return
-            for index, exchange in enumerate(pending):
+            for pending_index, exchange_index in enumerate(pending):
+                exchange = exchanges[exchange_index]
                 if exchange.response is None:
-                    exchange.response = captured
-                    del pending[index]
+                    captured = CapturedResponse(
+                        url=response_url,
+                        status_code=_response_status_code(response),
+                        payload=_response_payload(response),
+                        sequence=exchange.sequence,
+                    )
+                    if (
+                        response_predicate is not None
+                        and not response_predicate(captured)
+                    ):
+                        return
+                    exchanges[exchange_index] = CapturedExchange(
+                        sequence=exchange.sequence,
+                        captured_monotonic=exchange.captured_monotonic,
+                        request=exchange.request,
+                        response=captured,
+                    )
+                    del pending[pending_index]
                     break
             if not pending:
-                pending_by_url.pop(captured.url, None)
+                pending_by_url.pop(response_url, None)
 
         _remaining_timeout_ms(deadline_monotonic, phase="capture_setup")
         _register_capture_handlers(page, handle_request, handle_response)
         _goto(page, page_url, deadline_monotonic, wait_until=wait_until)
         if not exchanges:
+            raise capture_unavailable_error(phase="capture")
+        if response_predicate is not None and any(
+            exchange.response is None for exchange in exchanges
+        ):
             raise capture_unavailable_error(phase="capture")
 
         cookie_header = _read_cookie_header(context, deadline_monotonic)
@@ -163,7 +177,7 @@ def capture_first_party_requests(
         return BrowserNetworkCapture(
             cookie_header=cookie_header,
             user_agent=observed_user_agent,
-            exchanges=exchanges,
+            exchanges=tuple(exchanges),
             created_monotonic=monotonic(),
         )
     finally:
@@ -253,7 +267,7 @@ def _goto(
 
 def _read_cookie_header(context: object, deadline_monotonic: float) -> str:
     try:
-        _remaining_timeout_ms(deadline_monotonic, phase="cookies")
+        _remaining_timeout_ms(deadline_monotonic, phase="cookie_read")
         cookies = context.cookies()  # type: ignore[attr-defined]
         return cookie_header_from_browser_cookies(cookies)
     except BrowserBootstrapCookieUnavailable:
@@ -261,7 +275,7 @@ def _read_cookie_header(context: object, deadline_monotonic: float) -> str:
     except BrowserBootstrapError:
         raise
     except Exception as exc:
-        _raise_mapped_exception(exc, phase="cookies")
+        _raise_mapped_exception(exc, phase="cookie_read")
 
 
 def _read_user_agent(page: object, deadline_monotonic: float) -> str:
@@ -356,15 +370,18 @@ def _request_method(request: object) -> str:
     return value if isinstance(value, str) else str(value)
 
 
-def _request_headers(request: object) -> dict[str, object]:
+def _request_headers(request: object) -> dict[str, str]:
     value = _attribute_value(request, "headers", default={})
     if not isinstance(value, Mapping):
         return {}
-    return {str(key): item for key, item in value.items()}
+    return {str(key): str(item) for key, item in value.items()}
 
 
-def _request_post_data(request: object) -> object | None:
-    return _attribute_value(request, "post_data", default=None)
+def _request_post_data(request: object) -> str | None:
+    value = _attribute_value(request, "post_data", default=None)
+    if value is None:
+        return None
+    return value if isinstance(value, str) else str(value)
 
 
 def _response_status_code(response: object) -> int:

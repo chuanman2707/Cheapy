@@ -28,7 +28,7 @@ def cookie_header_from_browser_cookies(
         serialized.append(f"{name}={value}")
 
     if not serialized:
-        raise cookie_unavailable_error(phase="cookie_serialization")
+        raise cookie_unavailable_error()
     return "; ".join(serialized)
 
 

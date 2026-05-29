@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from contextlib import redirect_stderr, redirect_stdout
-from io import StringIO
 from typing import Callable
 
+from cheapy.browser_bootstrap import launch_browser as default_launch_browser
 from cheapy.providers.base import (
     ProviderExactOneWayRequest,
     ProviderExactRoundTripRequest,
@@ -49,7 +48,7 @@ class TravelokaAdapter:
         self._timeout_seconds = timeout_seconds
         self._poll_interval_seconds = poll_interval_seconds
         self._launch_browser = (
-            launch_browser if launch_browser is not None else _default_launch_browser
+            launch_browser if launch_browser is not None else default_launch_browser
         )
         self._phase_recorder = TravelokaPhaseRecorder()
 
@@ -109,11 +108,3 @@ class TravelokaAdapter:
             raise traveloka_errors.navigation_failed_error(
                 type(exc).__name__
             ) from None
-
-
-def _default_launch_browser(**kwargs: object) -> object:
-    captured_output = StringIO()
-    with redirect_stdout(captured_output), redirect_stderr(captured_output):
-        from cloakbrowser import launch
-
-        return launch(**kwargs)

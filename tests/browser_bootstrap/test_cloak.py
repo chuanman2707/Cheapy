@@ -1,14 +1,24 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import FrozenInstanceError
 import sys
 import types
 from time import monotonic
+from typing import get_type_hints
 
 import pytest
 
 from cheapy.browser_bootstrap import (
+    BrowserBootstrapBlocked,
+    BrowserBootstrapSession,
     BrowserBootstrapTimeout,
+    BrowserBootstrapUnavailable,
+    BrowserNetworkCapture,
     BrowserNetworkCaptureUnavailable,
+    CapturedExchange,
+    CapturedRequest,
+    CapturedResponse,
 )
 from cheapy.browser_bootstrap import cloak
 from tests.browser_bootstrap.fakes import (
@@ -19,6 +29,63 @@ from tests.browser_bootstrap.fakes import (
     FakeResponse,
     launcher_for,
 )
+
+
+def test_browser_bootstrap_types_are_frozen_redacted_and_tuple_typed() -> None:
+    request = CapturedRequest(
+        url="https://example.com/api/search",
+        method="POST",
+        sequence=7,
+        headers={"cookie": "secret-cookie"},
+        post_data="raw-body-secret",
+    )
+    response = CapturedResponse(
+        url="https://example.com/api/search",
+        status_code=200,
+        payload={"token": "secret-payload"},
+        sequence=7,
+    )
+    exchange = CapturedExchange(
+        sequence=7,
+        captured_monotonic=1.0,
+        request=request,
+        response=response,
+    )
+    capture = BrowserNetworkCapture(
+        cookie_header="session=secret-cookie",
+        user_agent="Secret-UA/1.0",
+        exchanges=(exchange,),
+        created_monotonic=2.0,
+    )
+    session = BrowserBootstrapSession(
+        cookie_header="session=secret-cookie",
+        user_agent="Secret-UA/1.0",
+        created_monotonic=3.0,
+    )
+
+    request_hints = get_type_hints(CapturedRequest)
+    capture_hints = get_type_hints(BrowserNetworkCapture)
+    assert request_hints["headers"] == Mapping[str, str]
+    assert request_hints["post_data"] == str | None
+    assert capture_hints["exchanges"] == tuple[CapturedExchange, ...]
+    assert isinstance(capture.exchanges, tuple)
+
+    with pytest.raises(FrozenInstanceError):
+        session.user_agent = "Other-UA"  # type: ignore[misc]
+    with pytest.raises(FrozenInstanceError):
+        request.post_data = "other-body"  # type: ignore[misc]
+    for rendered in (
+        repr(request),
+        repr(response),
+        repr(exchange),
+        repr(capture),
+        repr(session),
+    ):
+        assert "secret-cookie" not in rendered
+        assert "raw-body-secret" not in rendered
+        assert "secret-payload" not in rendered
+        assert "https://example.com" not in rendered
+        assert "Secret-UA" not in rendered
 
 
 def test_bootstrap_cookies_returns_redacted_session_and_closes_browser() -> None:
@@ -83,7 +150,8 @@ def test_capture_first_party_requests_pairs_request_response_and_redacts_repr() 
     assert exchange.response is not None
     assert exchange.response.status_code == 200
     assert exchange.response.payload == {"token": "secret-payload"}
-    assert exchange.request.sequence < exchange.response.sequence
+    assert exchange.request.sequence == exchange.response.sequence
+    assert isinstance(capture.exchanges, tuple)
 
     for rendered in (
         repr(capture),
@@ -124,12 +192,87 @@ def test_capture_without_matching_request_raises_safe_unavailable_error() -> Non
         )
 
     error = exc_info.value
-    assert error.context.failure_type == "capture_unavailable"
+    assert error.context.failure_type == "network_capture_unavailable"
     assert "secret-cookie" not in str(error)
     assert "secret-payload" not in str(error)
     assert "https://example.com" not in str(error)
     assert context.closed is True
     assert browser.closed is True
+
+
+def test_capture_with_response_predicate_requires_matching_response() -> None:
+    page = FakePage(
+        events=[
+            FakeRequest(
+                url="https://example.com/api/search",
+                method="POST",
+                headers={"cookie": "secret-cookie"},
+                post_data="raw-body-secret",
+            )
+        ],
+        user_agent="Secret-UA/3.5",
+    )
+    context = FakeContext(
+        page,
+        cookies=[{"name": "session", "value": "secret-cookie"}],
+    )
+    browser = FakeBrowser(context)
+
+    with pytest.raises(BrowserNetworkCaptureUnavailable) as exc_info:
+        cloak.capture_first_party_requests(
+            "https://example.com/search",
+            monotonic() + 5,
+            request_predicate=lambda captured: captured.method == "POST",
+            response_predicate=lambda captured: captured.status_code == 200,
+            launch_browser=launcher_for(browser),
+        )
+
+    error = exc_info.value
+    assert error.context.failure_type == "network_capture_unavailable"
+    assert "secret-cookie" not in str(error)
+    assert "raw-body-secret" not in str(error)
+    assert "https://example.com" not in str(error)
+    assert context.closed is True
+    assert browser.closed is True
+
+
+def test_navigation_429_maps_to_rate_limited_failure_type() -> None:
+    page = FakePage(user_agent="Secret-UA/3.75", navigation_status=429)
+    context = FakeContext(
+        page,
+        cookies=[{"name": "session", "value": "secret-cookie"}],
+    )
+    browser = FakeBrowser(context)
+
+    with pytest.raises(BrowserBootstrapBlocked) as exc_info:
+        cloak.bootstrap_cookies(
+            "https://example.com/search",
+            monotonic() + 5,
+            launch_browser=launcher_for(browser),
+        )
+
+    assert exc_info.value.context.failure_type == "rate_limited"
+    assert exc_info.value.context.http_status_code == 429
+
+
+def test_launch_error_maps_to_browser_bootstrap_failed_without_raw_message() -> None:
+    def launch_browser(**kwargs: object) -> object:
+        raise RuntimeError("raw launch failure https://example.com secret-cookie")
+
+    with pytest.raises(BrowserBootstrapUnavailable) as exc_info:
+        cloak.bootstrap_cookies(
+            "https://example.com/search",
+            monotonic() + 5,
+            launch_browser=launch_browser,
+        )
+
+    error = exc_info.value
+    assert error.context.failure_type == "browser_bootstrap_failed"
+    assert error.context.phase == "launch"
+    assert error.context.exception_type == "RuntimeError"
+    assert "raw launch failure" not in str(error)
+    assert "https://example.com" not in str(error)
+    assert "secret-cookie" not in str(error)
 
 
 def test_navigation_timeout_maps_to_safe_bootstrap_timeout() -> None:
