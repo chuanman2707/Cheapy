@@ -48,6 +48,10 @@ class SkyscannerSessionManager:
         self._cached_session: BrowserBootstrapSession | None = None
         self._cache_expires_monotonic = 0.0
 
+    def clear_cache(self) -> None:
+        self._cached_session = None
+        self._cache_expires_monotonic = 0.0
+
     def config_for_call(
         self,
         env: Mapping[str, str],
@@ -98,11 +102,12 @@ class SkyscannerSessionManager:
         *,
         deadline_monotonic: float,
     ) -> BrowserBootstrapSession:
+        user_agent = env.get("CHEAPY_SKYSCANNER_USER_AGENT", "").strip()
         try:
             return self._bootstrap_cookies(
                 page_url=f"{self._base_url}/transport/flights/",
                 deadline_monotonic=deadline_monotonic,
-                user_agent=env.get("CHEAPY_SKYSCANNER_USER_AGENT") or None,
+                user_agent=user_agent or None,
             )
         except BrowserBootstrapError as exc:
             raise _session_error_from_bootstrap_error(exc) from None

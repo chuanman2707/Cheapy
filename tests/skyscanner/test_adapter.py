@@ -357,6 +357,44 @@ def test_fetch_itineraries_returns_minimal_candidates_without_deeplink() -> None
     assert_no_sensitive_tokens(candidates)
 
 
+def test_autosuggest_and_search_requests_use_configured_user_agent() -> None:
+    configured = adapter.SkyscannerConfig(
+        base_url="https://www.skyscanner.com.sg",
+        market="SG",
+        locale="en-GB",
+        currency="SGD",
+        cookie="traveller_context=abc; __Secure-anon_token=secret",
+        timeout_seconds=7.0,
+        user_agent="Mozilla/5.0 custom",
+    )
+    client = FakeClient(
+        [
+            FakeResponse(payload=entity("SIN", "95673375")),
+            FakeResponse(payload=entity("SGN", "95673379")),
+            FakeResponse(payload=search_payload()),
+        ]
+    )
+
+    adapter.SkyscannerAdapter(
+        config=configured,
+        client=client,
+    ).search_exact_one_way(
+        ProviderExactOneWayRequest(
+            origin="SIN",
+            destination="SGN",
+            departure_date="2026-06-11",
+        )
+    )
+
+    assert [call["headers"]["user-agent"] for call in client.get_calls] == [
+        "Mozilla/5.0 custom",
+        "Mozilla/5.0 custom",
+    ]
+    assert [call["headers"]["user-agent"] for call in client.post_calls] == [
+        "Mozilla/5.0 custom",
+    ]
+
+
 def test_attempt_deadline_bounds_repeated_http_timeouts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

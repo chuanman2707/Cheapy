@@ -206,6 +206,7 @@ class SkyscannerProvider:
                 "rate_limited",
                 "no_usable_results",
             }:
+                self._session_manager.clear_cache()
                 adapter, _source = self._adapter_for_call(
                     deadline_monotonic=attempt_deadline,
                     force_refresh=True,

@@ -417,6 +417,7 @@ def request_headers(config: SkyscannerConfig, *, accept_json: bool = True) -> di
         "x-skyscanner-currency": config.currency,
         "x-skyscanner-locale": config.locale,
         "x-skyscanner-market": config.market,
+        "user-agent": config.user_agent,
     }
     gateway_served_by = _cookie_value(config.cookie, "X-Gateway-Servedby")
     if gateway_served_by is not None:

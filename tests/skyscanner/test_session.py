@@ -181,6 +181,41 @@ def test_force_refresh_bypasses_valid_cache_and_bootstraps() -> None:
     assert bootstrap_count == 2
 
 
+@pytest.mark.parametrize(
+    ("env_user_agent", "expected_user_agent"),
+    [
+        ("   ", None),
+        ("  Mozilla/5.0 custom  ", "Mozilla/5.0 custom"),
+    ],
+)
+def test_bootstrap_user_agent_override_is_normalized(
+    env_user_agent: str,
+    expected_user_agent: str | None,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_bootstrap(**kwargs: object) -> BrowserBootstrapSession:
+        calls.append(kwargs)
+        return BrowserBootstrapSession(
+            cookie_header="boot-cookie=secret-cookie",
+            user_agent="BootUA",
+            created_monotonic=100.0,
+        )
+
+    manager = SkyscannerSessionManager(
+        bootstrap_cookies=fake_bootstrap,
+        monotonic=lambda: 100.0,
+    )
+
+    manager.config_for_call(
+        {"CHEAPY_SKYSCANNER_USER_AGENT": env_user_agent},
+        timeout_seconds=3.0,
+        deadline_monotonic=120.0,
+    )
+
+    assert calls[0]["user_agent"] == expected_user_agent
+
+
 def test_ttl_expiry_refreshes_bootstrap_session() -> None:
     now = 0.0
     bootstrap_count = 0

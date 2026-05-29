@@ -10,6 +10,7 @@ from cheapy.browser_bootstrap import (
     BrowserBootstrapErrorContext,
     BrowserBootstrapSession,
     BrowserBootstrapUnavailable,
+    unavailable_error,
 )
 from cheapy.models import ErrorCode, PassengersV1, ProviderStatusCode
 from cheapy.providers.base import ProviderExactOneWayRequest, ProviderExactRoundTripRequest
@@ -114,6 +115,9 @@ class FakeSessionManager:
         if isinstance(response, Exception):
             raise response
         return response
+
+    def clear_cache(self) -> None:
+        pass
 
 
 def _leg(
@@ -442,6 +446,97 @@ def test_cached_failure_force_refreshes_once_and_retries(
     assert from_config_calls == [first_config, second_config]
     assert first_adapter.one_way_calls == 1
     assert second_adapter.one_way_calls == 1
+
+
+def test_cached_failure_refresh_failure_invalidates_stale_cache_for_next_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bootstrap_results: list[BrowserBootstrapSession | Exception] = [
+        BrowserBootstrapSession(
+            cookie_header="cached-cookie=secret-cookie",
+            user_agent="CachedUA",
+            created_monotonic=0.0,
+        ),
+        unavailable_error(phase="launch", exception_type="RuntimeError"),
+        BrowserBootstrapSession(
+            cookie_header="fresh-cookie=secret-cookie",
+            user_agent="FreshUA",
+            created_monotonic=2.0,
+        ),
+    ]
+    bootstrap_calls: list[dict[str, object]] = []
+
+    def fake_bootstrap(**kwargs: object) -> BrowserBootstrapSession:
+        bootstrap_calls.append(kwargs)
+        result = bootstrap_results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    session_manager = SkyscannerSessionManager(
+        bootstrap_cookies=fake_bootstrap,
+        monotonic=lambda: 1.0,
+    )
+    session_manager.config_for_call(
+        {},
+        timeout_seconds=1.0,
+        deadline_monotonic=10.0,
+    )
+
+    stale_adapter = FakeAdapter(
+        SkyscannerProviderError(
+            failure_type="blocked",
+            message_en="Skyscanner cached session failed.",
+            error_code=ErrorCode.PROVIDER_BLOCKED,
+            retryable=False,
+        )
+    )
+    fresh_adapter = FakeAdapter([_candidate()])
+    adapters = [stale_adapter, fresh_adapter]
+    from_config_cookies: list[str] = []
+
+    def fake_from_config(config: SkyscannerConfig, **kwargs: object) -> FakeAdapter:
+        from_config_cookies.append(config.cookie)
+        return adapters.pop(0)
+
+    monkeypatch.setattr(
+        "cheapy.providers.skyscanner.provider.SkyscannerAdapter.from_config",
+        fake_from_config,
+    )
+    monkeypatch.setattr(skyscanner_provider, "monotonic", lambda: 1.0)
+    provider = SkyscannerProvider(
+        env={},
+        timeout_seconds=1.0,
+        session_manager=session_manager,
+    )
+
+    first_result = asyncio.run(provider.search_exact_one_way(_request()))
+    second_result = asyncio.run(provider.search_exact_one_way(_request()))
+
+    assert first_result.status == ProviderStatusCode.FAILED
+    assert first_result.errors[0].details["failure_type"] == "browser_bootstrap_failed"
+    assert second_result.status == ProviderStatusCode.SUCCESS
+    assert bootstrap_calls == [
+        {
+            "page_url": "https://www.skyscanner.com.sg/transport/flights/",
+            "deadline_monotonic": 10.0,
+            "user_agent": None,
+        },
+        {
+            "page_url": "https://www.skyscanner.com.sg/transport/flights/",
+            "deadline_monotonic": pytest.approx(2.0),
+            "user_agent": None,
+        },
+        {
+            "page_url": "https://www.skyscanner.com.sg/transport/flights/",
+            "deadline_monotonic": pytest.approx(2.0),
+            "user_agent": None,
+        },
+    ]
+    assert from_config_cookies == [
+        "cached-cookie=secret-cookie",
+        "fresh-cookie=secret-cookie",
+    ]
 
 
 def test_provider_round_trip_uses_round_trip_adapter_and_capability() -> None:
