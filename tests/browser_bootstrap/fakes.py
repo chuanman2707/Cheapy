@@ -41,17 +41,20 @@ class FakePage:
         self,
         *,
         events: Iterable[FakeRequest | FakeResponse] = (),
+        wait_events: Iterable[Iterable[FakeRequest | FakeResponse]] = (),
         user_agent: str = "FakeBrowser/1.0",
         goto_exc: Exception | None = None,
         navigation_status: int | None = None,
     ) -> None:
         self.events = list(events)
+        self.wait_events = [list(batch) for batch in wait_events]
         self.user_agent = user_agent
         self.goto_exc = goto_exc
         self.navigation_status = navigation_status
         self.handlers: dict[str, object] = {}
         self.goto_calls: list[dict[str, object]] = []
         self.evaluate_calls: list[str] = []
+        self.wait_calls: list[int] = []
 
     def on(self, event_name: str, handler: object) -> None:
         self.handlers[event_name] = handler
@@ -62,7 +65,22 @@ class FakePage:
         )
         if self.goto_exc is not None:
             raise self.goto_exc
-        for event in self.events:
+        self._emit_events(self.events)
+        if self.navigation_status is None:
+            return None
+        return FakeResponse(url=url, status=self.navigation_status)
+
+    def evaluate(self, script: str) -> str:
+        self.evaluate_calls.append(script)
+        return self.user_agent
+
+    def wait_for_timeout(self, milliseconds: int) -> None:
+        self.wait_calls.append(milliseconds)
+        if self.wait_events:
+            self._emit_events(self.wait_events.pop(0))
+
+    def _emit_events(self, events: Iterable[FakeRequest | FakeResponse]) -> None:
+        for event in events:
             if isinstance(event, FakeRequest):
                 handler = self.handlers.get("request")
                 if callable(handler):
@@ -71,13 +89,6 @@ class FakePage:
                 handler = self.handlers.get("response")
                 if callable(handler):
                     handler(event)
-        if self.navigation_status is None:
-            return None
-        return FakeResponse(url=url, status=self.navigation_status)
-
-    def evaluate(self, script: str) -> str:
-        self.evaluate_calls.append(script)
-        return self.user_agent
 
 
 class FakeContext:

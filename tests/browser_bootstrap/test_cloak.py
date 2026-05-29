@@ -236,6 +236,91 @@ def test_capture_pairs_duplicate_url_responses_by_underlying_request_identity() 
         assert exchange.response.sequence == exchange.request.sequence
 
 
+def test_capture_waits_for_late_request_response_before_reading_cookies() -> None:
+    request = FakeRequest(
+        url="https://example.com/api/search",
+        method="POST",
+        post_data="late-body",
+    )
+    response = FakeResponse(
+        url="https://example.com/api/search",
+        status=200,
+        payload={"id": "late"},
+        request=request,
+    )
+    page = FakePage(
+        events=[],
+        wait_events=[[request, response]],
+        user_agent="Secret-UA/2.75",
+    )
+    context = FakeContext(
+        page,
+        cookies=[{"name": "session", "value": "secret-cookie"}],
+    )
+    browser = FakeBrowser(context)
+
+    capture = cloak.capture_first_party_requests(
+        "https://example.com/search",
+        monotonic() + 5,
+        request_predicate=lambda captured: captured.method == "POST",
+        response_predicate=lambda captured: captured.status_code == 200,
+        launch_browser=launcher_for(browser),
+    )
+
+    assert page.wait_calls
+    assert len(capture.exchanges) == 1
+    assert capture.exchanges[0].request.post_data == "late-body"
+    assert capture.exchanges[0].response is not None
+    assert capture.exchanges[0].response.payload == {"id": "late"}
+
+
+def test_capture_with_response_predicate_keeps_unpaired_exchange_when_one_response_matches() -> None:
+    unpaired_request = FakeRequest(
+        url="https://example.com/api/search",
+        method="POST",
+        post_data="unpaired-body",
+    )
+    paired_request = FakeRequest(
+        url="https://example.com/api/search",
+        method="POST",
+        post_data="paired-body",
+    )
+    page = FakePage(
+        events=[
+            unpaired_request,
+            paired_request,
+            FakeResponse(
+                url="https://example.com/api/search",
+                status=200,
+                payload={"id": "paired"},
+                request=paired_request,
+            ),
+        ],
+        user_agent="Secret-UA/2.8",
+    )
+    context = FakeContext(
+        page,
+        cookies=[{"name": "session", "value": "secret-cookie"}],
+    )
+    browser = FakeBrowser(context)
+
+    capture = cloak.capture_first_party_requests(
+        "https://example.com/search",
+        monotonic() + 5,
+        request_predicate=lambda captured: captured.method == "POST",
+        response_predicate=lambda captured: captured.status_code == 200,
+        launch_browser=launcher_for(browser),
+    )
+
+    assert [exchange.request.post_data for exchange in capture.exchanges] == [
+        "unpaired-body",
+        "paired-body",
+    ]
+    assert capture.exchanges[0].response is None
+    assert capture.exchanges[1].response is not None
+    assert capture.exchanges[1].response.payload == {"id": "paired"}
+
+
 def test_capture_without_matching_request_raises_safe_unavailable_error() -> None:
     page = FakePage(
         events=[

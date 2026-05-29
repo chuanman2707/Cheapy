@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import redirect_stderr, redirect_stdout
 from inspect import Parameter, signature
 from io import StringIO
@@ -32,6 +32,7 @@ from cheapy.browser_bootstrap.types import (
 
 _BLOCKED_HTTP_STATUS_CODES = {401, 403, 429}
 _NAVIGATOR_USER_AGENT_SCRIPT = "() => navigator.userAgent"
+_CAPTURE_WAIT_SLICE_MS = 100
 
 
 def launch_browser(**kwargs: object) -> object:
@@ -215,11 +216,18 @@ def capture_first_party_requests(
         _remaining_timeout_ms(deadline_monotonic, phase="context_page_setup")
         _register_capture_handlers(page, handle_request, handle_response)
         _goto(page, page_url, deadline_monotonic, wait_until=wait_until)
+        response_required = response_predicate is not None
+        _wait_for_capture(
+            page,
+            deadline_monotonic,
+            ready=lambda: _capture_ready(
+                exchanges,
+                response_required=response_required,
+            ),
+        )
         if not exchanges:
             raise capture_unavailable_error(phase="capture_wait")
-        if response_predicate is not None and any(
-            exchange.response is None for exchange in exchanges
-        ):
+        if response_required and not _has_captured_response(exchanges):
             raise capture_unavailable_error(phase="capture_wait")
 
         cookie_header = _read_cookie_header(context, deadline_monotonic)
@@ -346,6 +354,49 @@ def _read_user_agent(page: object, deadline_monotonic: float) -> str:
     except Exception as exc:
         _raise_mapped_exception(exc, phase="user_agent_read")
     return user_agent if isinstance(user_agent, str) else str(user_agent)
+
+
+def _wait_for_capture(
+    page: object,
+    deadline_monotonic: float,
+    *,
+    ready: Callable[[], bool],
+) -> None:
+    if ready():
+        return
+    wait_for_timeout = getattr(page, "wait_for_timeout", None)
+    if not callable(wait_for_timeout):
+        return
+
+    wait_budget_ms = _remaining_timeout_ms(deadline_monotonic, phase="capture_wait")
+    waited_ms = 0
+    while not ready() and waited_ms < wait_budget_ms:
+        remaining_seconds = deadline_monotonic - monotonic()
+        if remaining_seconds <= 0:
+            break
+        remaining_ms = max(1, round(remaining_seconds * 1000))
+        wait_ms = min(_CAPTURE_WAIT_SLICE_MS, remaining_ms, wait_budget_ms - waited_ms)
+        try:
+            wait_for_timeout(wait_ms)
+        except BrowserBootstrapError:
+            raise
+        except Exception as exc:
+            _raise_mapped_exception(exc, phase="capture_wait")
+        waited_ms += wait_ms
+
+
+def _capture_ready(
+    exchanges: list[CapturedExchange],
+    *,
+    response_required: bool,
+) -> bool:
+    if not response_required:
+        return bool(exchanges)
+    return _has_captured_response(exchanges)
+
+
+def _has_captured_response(exchanges: list[CapturedExchange]) -> bool:
+    return any(exchange.response is not None for exchange in exchanges)
 
 
 def _remaining_timeout_ms(deadline_monotonic: float, *, phase: str) -> int:
