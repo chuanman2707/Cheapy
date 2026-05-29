@@ -357,7 +357,7 @@ def test_fetch_itineraries_returns_minimal_candidates_without_deeplink() -> None
     assert_no_sensitive_tokens(candidates)
 
 
-def test_autosuggest_and_search_requests_use_configured_user_agent() -> None:
+def test_autosuggest_search_and_poll_requests_use_configured_user_agent() -> None:
     configured = adapter.SkyscannerConfig(
         base_url="https://www.skyscanner.com.sg",
         market="SG",
@@ -371,6 +371,9 @@ def test_autosuggest_and_search_requests_use_configured_user_agent() -> None:
         [
             FakeResponse(payload=entity("SIN", "95673375")),
             FakeResponse(payload=entity("SGN", "95673379")),
+            FakeResponse(
+                payload={"context": {"status": "incomplete", "sessionId": "s1"}}
+            ),
             FakeResponse(payload=search_payload()),
         ]
     )
@@ -387,6 +390,7 @@ def test_autosuggest_and_search_requests_use_configured_user_agent() -> None:
     )
 
     assert [call["headers"]["user-agent"] for call in client.get_calls] == [
+        "Mozilla/5.0 custom",
         "Mozilla/5.0 custom",
         "Mozilla/5.0 custom",
     ]
