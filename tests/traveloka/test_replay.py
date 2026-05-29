@@ -232,6 +232,27 @@ def test_replay_safe_failure_falls_back_to_same_exchange_payload() -> None:
     assert result.source == "browser_capture"
 
 
+def test_replay_missing_body_falls_back_to_same_exchange_payload_without_client_call() -> None:
+    capture_payload = _payload("bodyless-capture")
+    client = FakeReplayClient(_payload("unused"))
+
+    result = replay.replay_or_fallback(
+        _capture(
+            _exchange(
+                sequence=1,
+                post_data=None,
+                response_payload=capture_payload,
+            )
+        ),
+        client=client,
+        timeout_seconds=3.0,
+    )
+
+    assert result.payload == capture_payload
+    assert result.source == "browser_capture"
+    assert client.calls == []
+
+
 def test_replay_and_capture_failure_raises_safe_error() -> None:
     client = FakeReplayClient({"error": "blocked"}, status_code=403)
     capture = _capture(

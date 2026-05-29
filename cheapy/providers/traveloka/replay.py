@@ -71,10 +71,10 @@ def replay_or_fallback(
     """Replay a harvested request, falling back to its same captured response."""
 
     exchange = _select_exchange(capture)
-    request = _request_from_exchange(capture, exchange)
     replay_error: traveloka_errors.TravelokaProviderError | None = None
 
     try:
+        request = _request_from_exchange(capture, exchange)
         response = client.post(request, timeout=timeout_seconds)
         replay_payload = _payload_from_replay_response(response)
         return TravelokaReplayResult(payload=replay_payload, source="replay")
