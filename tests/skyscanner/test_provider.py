@@ -397,6 +397,7 @@ def test_cached_failure_force_refreshes_once_and_retries(
     error_code: ErrorCode,
     retryable: bool,
 ) -> None:
+    times = iter([50.0, 51.0])
     first_config = _config(cookie="cached-cookie=secret-cookie")
     second_config = _config(cookie="fresh-cookie=secret-cookie")
     session_manager = FakeSessionManager(
@@ -422,9 +423,10 @@ def test_cached_failure_force_refreshes_once_and_retries(
         "cheapy.providers.skyscanner.provider.SkyscannerAdapter.from_config",
         fake_from_config,
     )
+    monkeypatch.setattr(skyscanner_provider, "monotonic", lambda: next(times))
     provider = SkyscannerProvider(
         env={},
-        timeout_seconds=1.0,
+        timeout_seconds=2.0,
         session_manager=session_manager,
     )
 
@@ -432,6 +434,10 @@ def test_cached_failure_force_refreshes_once_and_retries(
 
     assert result.status == ProviderStatusCode.SUCCESS
     assert [call["force_refresh"] for call in session_manager.calls] == [False, True]
+    assert [call["deadline_monotonic"] for call in session_manager.calls] == [
+        52.0,
+        52.0,
+    ]
     assert len(session_manager.calls) == 2
     assert from_config_calls == [first_config, second_config]
     assert first_adapter.one_way_calls == 1

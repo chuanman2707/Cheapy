@@ -173,13 +173,18 @@ class SkyscannerProvider:
             retryable=any(error.retryable for error in errors),
         )
 
-    def _adapter_for_call(self, *, force_refresh: bool = False) -> tuple[object, str]:
+    def _adapter_for_call(
+        self,
+        *,
+        deadline_monotonic: float,
+        force_refresh: bool = False,
+    ) -> tuple[object, str]:
         if self._adapter is not None:
             return self._adapter, "injected"
         config, source = self._session_manager.config_for_call(
             self._env,
             timeout_seconds=self._timeout_seconds,
-            deadline_monotonic=monotonic() + self._timeout_seconds,
+            deadline_monotonic=deadline_monotonic,
             force_refresh=force_refresh,
         )
         return SkyscannerAdapter.from_config(config), source
@@ -190,7 +195,8 @@ class SkyscannerProvider:
         *,
         search_method_name: str,
     ) -> list[object]:
-        adapter, source = self._adapter_for_call()
+        attempt_deadline = monotonic() + self._timeout_seconds
+        adapter, source = self._adapter_for_call(deadline_monotonic=attempt_deadline)
         search_method = getattr(adapter, search_method_name)
         try:
             return search_method(request)
@@ -200,7 +206,10 @@ class SkyscannerProvider:
                 "rate_limited",
                 "no_usable_results",
             }:
-                adapter, _source = self._adapter_for_call(force_refresh=True)
+                adapter, _source = self._adapter_for_call(
+                    deadline_monotonic=attempt_deadline,
+                    force_refresh=True,
+                )
                 refreshed_search_method = getattr(adapter, search_method_name)
                 return refreshed_search_method(request)
             raise
