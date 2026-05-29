@@ -180,6 +180,23 @@ def test_select_replay_request_drops_unsafe_referer_and_crlf_values() -> None:
     }
 
 
+def test_select_replay_request_drops_unsafe_raw_header_names() -> None:
+    selected = replay.select_replay_request(
+        _capture(
+            _exchange(
+                sequence=1,
+                headers={
+                    "accept\n": "application/json",
+                    "bad header": "x",
+                    "content-type": "application/json",
+                },
+            )
+        )
+    )
+
+    assert selected.headers == {"content-type": "application/json"}
+
+
 def test_replay_success_returns_replay_payload() -> None:
     payload = _payload("replay")
     client = FakeReplayClient(payload)

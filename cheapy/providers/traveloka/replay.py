@@ -20,6 +20,9 @@ SEARCH_PATHS = frozenset(
     {traveloka_capture.INITIAL_SEARCH_PATH, traveloka_capture.POLL_SEARCH_PATH}
 )
 TRAVELOKA_REPLAY_HOST = "www.traveloka.com"
+HEADER_NAME_CHARS = frozenset(
+    "!#$%&'*+-.^_`|~0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,7 +161,10 @@ def _safe_replay_headers(headers: object) -> dict[str, str]:
 
     safe: dict[str, str] = {}
     for key, value in headers.items():
-        name = str(key).strip().lower()
+        raw_name = str(key)
+        if not raw_name or any(char not in HEADER_NAME_CHARS for char in raw_name):
+            continue
+        name = raw_name.lower()
         if name not in ALLOWED_REPLAY_HEADERS:
             continue
 
