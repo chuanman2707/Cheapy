@@ -16,6 +16,7 @@ from cheapy.providers.base import (
     ProviderResult,
 )
 from cheapy.providers.traveloka import provider as traveloka_provider
+from cheapy.providers.traveloka.adapter import TravelokaAdapter
 from cheapy.providers.traveloka.errors import TravelokaProviderError
 from cheapy.providers.traveloka.provider import TravelokaProvider
 from cheapy.providers.traveloka.results import (
@@ -507,6 +508,68 @@ def test_traveloka_provider_maps_unsupported_response_failure() -> None:
         "capability": "exact_round_trip",
         "failure_type": "unsupported_response",
     }
+
+
+def test_with_timeout_seconds_preserves_traveloka_adapter_replay_dependencies() -> None:
+    def capture_network(**kwargs: object) -> object:
+        raise AssertionError("not called")
+
+    replay_client = object()
+    launch_browser = lambda **kwargs: object()
+    adapter = TravelokaAdapter(
+        timeout_seconds=20,
+        poll_interval_seconds=0.75,
+        launch_browser=launch_browser,
+        capture_network=capture_network,
+        replay_client=replay_client,
+    )
+    provider = TravelokaProvider(adapter=adapter, timeout_seconds=20)
+
+    cloned = provider.with_timeout_seconds(3.5)
+
+    cloned_adapter = cloned._adapter
+    assert isinstance(cloned_adapter, TravelokaAdapter)
+    assert cloned_adapter is not adapter
+    assert cloned_adapter._timeout_seconds == 3.5
+    assert cloned_adapter._poll_interval_seconds == 0.75
+    assert cloned_adapter._launch_browser is launch_browser
+    assert cloned_adapter._capture_network is capture_network
+    assert cloned_adapter._replay_client is replay_client
+
+
+def test_traveloka_provider_maps_replay_failure_without_secret_leaks() -> None:
+    class SecretAdapter:
+        configured_currency = "USD"
+
+        def search_exact_one_way(
+            self, request: ProviderExactOneWayRequest
+        ) -> TravelokaCaptureResult:
+            raise TravelokaProviderError(
+                failure_type="blocked",
+                message_en=(
+                    "Traveloka replay failed with datadome secret-cookie, "
+                    "https://www.traveloka.com/api/v2/flight/search/poll?secret=1"
+                ),
+                error_code=ErrorCode.PROVIDER_BLOCKED,
+                retryable=False,
+                http_status_code=403,
+            )
+
+    provider = TravelokaProvider(adapter=SecretAdapter(), timeout_seconds=1)
+
+    result = asyncio.run(provider.search_exact_one_way(_request()))
+
+    assert result.status == ProviderStatusCode.FAILED
+    assert result.errors[0].details == {
+        "provider": "traveloka",
+        "capability": "exact_one_way",
+        "failure_type": "blocked",
+        "http_status_code": 403,
+    }
+    rendered = result.model_dump_json().lower()
+    assert "secret-cookie" not in rendered
+    assert "datadome" not in rendered
+    assert "traveloka.com/api" not in rendered
 
 
 def test_traveloka_provider_does_not_wrap_adapter_with_equal_duration_timeout() -> None:

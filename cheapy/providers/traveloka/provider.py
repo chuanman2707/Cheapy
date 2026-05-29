@@ -83,6 +83,8 @@ class TravelokaProvider:
                 timeout_seconds=bounded_timeout,
                 poll_interval_seconds=adapter._poll_interval_seconds,
                 launch_browser=adapter._launch_browser,
+                capture_network=adapter._capture_network,
+                replay_client=adapter._replay_client,
             )
         return TravelokaProvider(
             adapter=adapter,
@@ -148,7 +150,10 @@ class TravelokaProvider:
                 capability,
                 _provider_error(
                     code=exc.error_code,
-                    message_en=exc.message_en,
+                    message_en=_safe_provider_error_message(
+                        exc.failure_type,
+                        exc.message_en,
+                    ),
                     failure_type=exc.failure_type,
                     retryable=exc.retryable,
                     capability=capability,
@@ -530,6 +535,35 @@ def _provider_error(
         message_en=message_en,
         details=details,
         retryable=retryable,
+    )
+
+
+def _safe_provider_error_message(failure_type: str, fallback: str) -> str:
+    messages = {
+        "blocked": "Traveloka returned an access challenge.",
+        "browser_bootstrap_failed": "Traveloka browser bootstrap failed.",
+        "browser_cookie_unavailable": (
+            "Traveloka browser bootstrap did not produce usable cookies."
+        ),
+        "browser_unavailable": "Traveloka browser runtime is unavailable.",
+        "invalid_json": "Traveloka returned invalid JSON.",
+        "navigation_failed": "Traveloka browser navigation failed.",
+        "network_capture_unavailable": (
+            "Traveloka browser capture did not include a replayable request."
+        ),
+        "rate_limited": "Traveloka rate limited the request.",
+        "timeout": "Traveloka provider timed out.",
+        "transport_error": "Traveloka transport failed.",
+        "unsupported_response": "Traveloka returned an unsupported response.",
+        "unexpected_error": "Traveloka provider raised an unexpected exception.",
+    }
+    safe_fallbacks = {
+        "Traveloka provider failed.",
+        "Traveloka provider raised an unexpected exception.",
+    }
+    return messages.get(
+        failure_type,
+        fallback if fallback in safe_fallbacks else "Traveloka provider failed.",
     )
 
 
