@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
 from cheapy.providers.base import (
@@ -125,17 +124,11 @@ def test_default_launch_browser_uses_shared_browser_bootstrap_launcher() -> None
 
 def test_cloakbrowser_runtime_import_is_limited_to_shared_bootstrap() -> None:
     repo_root = Path(__file__).parents[2]
+    matches: list[str] = []
 
-    result = subprocess.run(
-        ["rg", "-n", "from cloakbrowser|import cloakbrowser", "cheapy"],
-        check=True,
-        cwd=repo_root,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+    for path in (repo_root / "cheapy").rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        if "from cloakbrowser" in text or "import cloakbrowser" in text:
+            matches.append(path.relative_to(repo_root).as_posix())
 
-    assert result.stderr == ""
-    lines = result.stdout.splitlines()
-    assert len(lines) == 1
-    assert lines[0].startswith("cheapy/browser_bootstrap/cloak.py:")
+    assert matches == ["cheapy/browser_bootstrap/cloak.py"]

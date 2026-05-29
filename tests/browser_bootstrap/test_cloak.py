@@ -69,6 +69,17 @@ def test_browser_bootstrap_types_are_frozen_redacted_and_tuple_typed() -> None:
     assert request_hints["post_data"] == str | None
     assert capture_hints["exchanges"] == tuple[CapturedExchange, ...]
     assert isinstance(capture.exchanges, tuple)
+    headers = {"cookie": "secret-cookie"}
+    frozen_request = CapturedRequest(
+        url="https://example.com/api/search",
+        method="POST",
+        sequence=8,
+        headers=headers,
+    )
+    headers["cookie"] = "mutated-cookie"
+    assert frozen_request.headers["cookie"] == "secret-cookie"
+    with pytest.raises(TypeError):
+        frozen_request.headers["cookie"] = "other-cookie"  # type: ignore[index]
 
     with pytest.raises(FrozenInstanceError):
         session.user_agent = "Other-UA"  # type: ignore[misc]
@@ -166,6 +177,65 @@ def test_capture_first_party_requests_pairs_request_response_and_redacts_repr() 
         assert "Secret-UA" not in rendered
 
 
+def test_capture_pairs_duplicate_url_responses_by_underlying_request_identity() -> None:
+    first_request = FakeRequest(
+        url="https://example.com/api/search",
+        method="POST",
+        post_data="first-body",
+    )
+    second_request = FakeRequest(
+        url="https://example.com/api/search",
+        method="POST",
+        post_data="second-body",
+    )
+    page = FakePage(
+        events=[
+            first_request,
+            second_request,
+            FakeResponse(
+                url="https://example.com/api/search",
+                status=200,
+                payload={"id": "second"},
+                request=second_request,
+            ),
+            FakeResponse(
+                url="https://example.com/api/search",
+                status=200,
+                payload={"id": "first"},
+                request=first_request,
+            ),
+        ],
+        user_agent="Secret-UA/2.5",
+    )
+    context = FakeContext(
+        page,
+        cookies=[{"name": "session", "value": "secret-cookie"}],
+    )
+    browser = FakeBrowser(context)
+
+    capture = cloak.capture_first_party_requests(
+        "https://example.com/search",
+        monotonic() + 5,
+        request_predicate=lambda captured: captured.method == "POST",
+        response_predicate=lambda captured: captured.status_code == 200,
+        launch_browser=launcher_for(browser),
+    )
+
+    assert [exchange.request.post_data for exchange in capture.exchanges] == [
+        "first-body",
+        "second-body",
+    ]
+    response_payloads = [
+        exchange.response.payload
+        for exchange in capture.exchanges
+        if exchange.response is not None
+    ]
+    assert response_payloads == [{"id": "first"}, {"id": "second"}]
+    for exchange in capture.exchanges:
+        assert exchange.response is not None
+        assert exchange.response.sequence == exchange.request.sequence
+
+
 def test_capture_without_matching_request_raises_safe_unavailable_error() -> None:
     page = FakePage(
         events=[
@@ -193,6 +263,7 @@ def test_capture_without_matching_request_raises_safe_unavailable_error() -> Non
 
     error = exc_info.value
     assert error.context.failure_type == "network_capture_unavailable"
+    assert error.context.phase == "capture_wait"
     assert "secret-cookie" not in str(error)
     assert "secret-payload" not in str(error)
     assert "https://example.com" not in str(error)
@@ -229,6 +300,7 @@ def test_capture_with_response_predicate_requires_matching_response() -> None:
 
     error = exc_info.value
     assert error.context.failure_type == "network_capture_unavailable"
+    assert error.context.phase == "capture_wait"
     assert "secret-cookie" not in str(error)
     assert "raw-body-secret" not in str(error)
     assert "https://example.com" not in str(error)
@@ -275,6 +347,35 @@ def test_launch_error_maps_to_browser_bootstrap_failed_without_raw_message() -> 
     assert "secret-cookie" not in str(error)
 
 
+def test_cleanup_only_failure_raises_safe_unavailable_and_uses_timeout() -> None:
+    page = FakePage(user_agent="Secret-UA/3.9")
+    context = FakeContext(
+        page,
+        cookies=[{"name": "session", "value": "secret-cookie"}],
+        close_exc=RuntimeError("raw close failure https://example.com secret-cookie"),
+    )
+    browser = FakeBrowser(context)
+
+    with pytest.raises(BrowserBootstrapUnavailable) as exc_info:
+        cloak.bootstrap_cookies(
+            "https://example.com/search",
+            monotonic() + 5,
+            launch_browser=launcher_for(browser),
+        )
+
+    error = exc_info.value
+    assert error.context.failure_type == "browser_bootstrap_failed"
+    assert error.context.phase == "cleanup"
+    assert error.context.exception_type == "RuntimeError"
+    assert "raw close failure" not in str(error)
+    assert "https://example.com" not in str(error)
+    assert "secret-cookie" not in str(error)
+    assert context.closed is True
+    assert browser.closed is True
+    assert context.close_timeout is not None
+    assert browser.close_timeout is not None
+
+
 def test_navigation_timeout_maps_to_safe_bootstrap_timeout() -> None:
     page = FakePage(
         user_agent="Secret-UA/4.0",
@@ -283,8 +384,12 @@ def test_navigation_timeout_maps_to_safe_bootstrap_timeout() -> None:
     context = FakeContext(
         page,
         cookies=[{"name": "session", "value": "secret-cookie"}],
+        close_exc=RuntimeError("raw close failure https://example.com secret-cookie"),
     )
-    browser = FakeBrowser(context)
+    browser = FakeBrowser(
+        context,
+        close_exc=RuntimeError("raw browser close failure secret-cookie"),
+    )
 
     with pytest.raises(BrowserBootstrapTimeout) as exc_info:
         cloak.bootstrap_cookies(
@@ -302,6 +407,33 @@ def test_navigation_timeout_maps_to_safe_bootstrap_timeout() -> None:
     assert "secret-cookie" not in str(error)
     assert context.closed is True
     assert browser.closed is True
+
+
+def test_user_agent_read_error_uses_canonical_phase_without_raw_message() -> None:
+    class FailingUserAgentPage(FakePage):
+        def evaluate(self, script: str) -> str:
+            raise RuntimeError("raw user agent failure secret-cookie")
+
+    page = FailingUserAgentPage(user_agent="Secret-UA/4.5")
+    context = FakeContext(
+        page,
+        cookies=[{"name": "session", "value": "secret-cookie"}],
+    )
+    browser = FakeBrowser(context)
+
+    with pytest.raises(BrowserBootstrapUnavailable) as exc_info:
+        cloak.bootstrap_cookies(
+            "https://example.com/search",
+            monotonic() + 5,
+            launch_browser=launcher_for(browser),
+        )
+
+    error = exc_info.value
+    assert error.context.failure_type == "browser_bootstrap_failed"
+    assert error.context.phase == "user_agent_read"
+    assert error.context.exception_type == "RuntimeError"
+    assert "raw user agent failure" not in str(error)
+    assert "secret-cookie" not in str(error)
 
 
 def test_launch_browser_suppresses_dependency_console_noise(monkeypatch, capsys) -> None:

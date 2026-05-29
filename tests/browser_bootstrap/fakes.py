@@ -25,10 +25,12 @@ class FakeResponse:
         url: str,
         status: int = 200,
         payload: object | None = None,
+        request: FakeRequest | None = None,
     ) -> None:
         self.url = url
         self.status = status
         self._payload = payload
+        self.request = request
 
     def json(self) -> object | None:
         return self._payload
@@ -84,11 +86,14 @@ class FakeContext:
         page: FakePage,
         *,
         cookies: list[dict[str, object]] | None = None,
+        close_exc: Exception | None = None,
     ) -> None:
         self.page = page
         self._cookies = cookies or []
+        self.close_exc = close_exc
         self.context_kwargs: dict[str, object] | None = None
         self.closed = False
+        self.close_timeout: int | None = None
 
     def new_page(self) -> FakePage:
         return self.page
@@ -96,23 +101,36 @@ class FakeContext:
     def cookies(self) -> list[dict[str, object]]:
         return list(self._cookies)
 
-    def close(self) -> None:
+    def close(self, *, timeout: int | None = None) -> None:
+        self.close_timeout = timeout
         self.closed = True
+        if self.close_exc is not None:
+            raise self.close_exc
 
 
 class FakeBrowser:
-    def __init__(self, context: FakeContext) -> None:
+    def __init__(
+        self,
+        context: FakeContext,
+        *,
+        close_exc: Exception | None = None,
+    ) -> None:
         self.context = context
+        self.close_exc = close_exc
         self.closed = False
         self.new_context_calls: list[dict[str, object]] = []
+        self.close_timeout: int | None = None
 
     def new_context(self, **kwargs: object) -> FakeContext:
         self.new_context_calls.append(kwargs)
         self.context.context_kwargs = kwargs
         return self.context
 
-    def close(self) -> None:
+    def close(self, *, timeout: int | None = None) -> None:
+        self.close_timeout = timeout
         self.closed = True
+        if self.close_exc is not None:
+            raise self.close_exc
 
 
 def launcher_for(browser: FakeBrowser) -> object:

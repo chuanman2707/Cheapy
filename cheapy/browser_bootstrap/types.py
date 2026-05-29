@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,6 +21,9 @@ class CapturedRequest:
     sequence: int
     headers: Mapping[str, str] = field(default_factory=dict, repr=False)
     post_data: str | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "headers", MappingProxyType(dict(self.headers)))
 
 
 @dataclass(frozen=True, slots=True)

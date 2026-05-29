@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from contextlib import redirect_stderr, redirect_stdout
+from inspect import Parameter, signature
 from io import StringIO
 from time import monotonic
 
@@ -55,6 +56,8 @@ def bootstrap_cookies(
 ) -> BrowserBootstrapSession:
     browser: object | None = None
     context: object | None = None
+    operation_failed = False
+    result: BrowserBootstrapSession | None = None
     try:
         browser = _open_browser(
             launch_browser or _DEFAULT_LAUNCH_BROWSER,
@@ -69,14 +72,23 @@ def bootstrap_cookies(
         _goto(page, page_url, deadline_monotonic, wait_until=wait_until)
         cookie_header = _read_cookie_header(context, deadline_monotonic)
         observed_user_agent = _read_user_agent(page, deadline_monotonic)
-        return BrowserBootstrapSession(
+        result = BrowserBootstrapSession(
             cookie_header=cookie_header,
             user_agent=observed_user_agent,
             created_monotonic=monotonic(),
         )
+    except Exception:
+        operation_failed = True
+        raise
     finally:
-        _close_quietly(context)
-        _close_quietly(browser)
+        _cleanup_browser_resources(
+            context,
+            browser,
+            deadline_monotonic,
+            suppress_errors=operation_failed,
+        )
+    assert result is not None
+    return result
 
 
 def capture_first_party_requests(
@@ -91,6 +103,8 @@ def capture_first_party_requests(
 ) -> BrowserNetworkCapture:
     browser: object | None = None
     context: object | None = None
+    operation_failed = False
+    result: BrowserNetworkCapture | None = None
     try:
         browser = _open_browser(
             launch_browser or _DEFAULT_LAUNCH_BROWSER,
@@ -105,6 +119,8 @@ def capture_first_party_requests(
 
         sequence = 0
         exchanges: list[CapturedExchange] = []
+        pending_by_request_id: dict[int, int] = {}
+        request_id_by_exchange_index: dict[int, int] = {}
         pending_by_url: dict[str, list[int]] = {}
 
         def next_sequence() -> int:
@@ -113,7 +129,7 @@ def capture_first_party_requests(
             return sequence
 
         def handle_request(request: object) -> None:
-            _remaining_timeout_ms(deadline_monotonic, phase="capture")
+            _remaining_timeout_ms(deadline_monotonic, phase="capture_wait")
             captured = CapturedRequest(
                 url=_object_url(request),
                 method=_request_method(request),
@@ -129,60 +145,103 @@ def capture_first_party_requests(
                 request=captured,
             )
             exchanges.append(exchange)
-            pending_by_url.setdefault(captured.url, []).append(len(exchanges) - 1)
+            exchange_index = len(exchanges) - 1
+            pending_by_request_id[id(request)] = exchange_index
+            request_id_by_exchange_index[exchange_index] = id(request)
+            pending_by_url.setdefault(captured.url, []).append(exchange_index)
 
         def handle_response(response: object) -> None:
-            _remaining_timeout_ms(deadline_monotonic, phase="capture")
+            _remaining_timeout_ms(deadline_monotonic, phase="capture_wait")
             response_url = _object_url(response)
+            response_request = _response_request(response)
+            if response_request is not None:
+                exchange_index = pending_by_request_id.get(id(response_request))
+                if exchange_index is None:
+                    return
+                if pair_response(exchange_index, response, response_url):
+                    pending_by_request_id.pop(id(response_request), None)
+                    remove_pending_url_index(response_url, exchange_index)
+                return
+
             pending = pending_by_url.get(response_url)
             if not pending:
                 return
             for pending_index, exchange_index in enumerate(pending):
-                exchange = exchanges[exchange_index]
-                if exchange.response is None:
-                    captured = CapturedResponse(
-                        url=response_url,
-                        status_code=_response_status_code(response),
-                        payload=_response_payload(response),
-                        sequence=exchange.sequence,
-                    )
-                    if (
-                        response_predicate is not None
-                        and not response_predicate(captured)
-                    ):
-                        return
-                    exchanges[exchange_index] = CapturedExchange(
-                        sequence=exchange.sequence,
-                        captured_monotonic=exchange.captured_monotonic,
-                        request=exchange.request,
-                        response=captured,
+                if pair_response(exchange_index, response, response_url):
+                    pending_by_request_id.pop(
+                        request_id_by_exchange_index.get(exchange_index),
+                        None,
                     )
                     del pending[pending_index]
                     break
             if not pending:
                 pending_by_url.pop(response_url, None)
 
-        _remaining_timeout_ms(deadline_monotonic, phase="capture_setup")
+        def pair_response(
+            exchange_index: int,
+            response: object,
+            response_url: str,
+        ) -> bool:
+            exchange = exchanges[exchange_index]
+            if exchange.response is not None:
+                return False
+            captured = CapturedResponse(
+                url=response_url,
+                status_code=_response_status_code(response),
+                payload=_response_payload(response),
+                sequence=exchange.sequence,
+            )
+            if response_predicate is not None and not response_predicate(captured):
+                return False
+            exchanges[exchange_index] = CapturedExchange(
+                sequence=exchange.sequence,
+                captured_monotonic=exchange.captured_monotonic,
+                request=exchange.request,
+                response=captured,
+            )
+            return True
+
+        def remove_pending_url_index(response_url: str, exchange_index: int) -> None:
+            pending = pending_by_url.get(response_url)
+            if pending is None:
+                return
+            try:
+                pending.remove(exchange_index)
+            except ValueError:
+                return
+            if not pending:
+                pending_by_url.pop(response_url, None)
+
+        _remaining_timeout_ms(deadline_monotonic, phase="context_page_setup")
         _register_capture_handlers(page, handle_request, handle_response)
         _goto(page, page_url, deadline_monotonic, wait_until=wait_until)
         if not exchanges:
-            raise capture_unavailable_error(phase="capture")
+            raise capture_unavailable_error(phase="capture_wait")
         if response_predicate is not None and any(
             exchange.response is None for exchange in exchanges
         ):
-            raise capture_unavailable_error(phase="capture")
+            raise capture_unavailable_error(phase="capture_wait")
 
         cookie_header = _read_cookie_header(context, deadline_monotonic)
         observed_user_agent = _read_user_agent(page, deadline_monotonic)
-        return BrowserNetworkCapture(
+        result = BrowserNetworkCapture(
             cookie_header=cookie_header,
             user_agent=observed_user_agent,
             exchanges=tuple(exchanges),
             created_monotonic=monotonic(),
         )
+    except Exception:
+        operation_failed = True
+        raise
     finally:
-        _close_quietly(context)
-        _close_quietly(browser)
+        _cleanup_browser_resources(
+            context,
+            browser,
+            deadline_monotonic,
+            suppress_errors=operation_failed,
+        )
+    assert result is not None
+    return result
 
 
 def _open_browser(
@@ -207,23 +266,23 @@ def _new_context(
     user_agent: str | None,
 ) -> object:
     try:
-        _remaining_timeout_ms(deadline_monotonic, phase="context")
+        _remaining_timeout_ms(deadline_monotonic, phase="context_page_setup")
         kwargs = {"user_agent": user_agent} if user_agent is not None else {}
         return browser.new_context(**kwargs)  # type: ignore[attr-defined]
     except BrowserBootstrapError:
         raise
     except Exception as exc:
-        _raise_mapped_exception(exc, phase="context")
+        _raise_mapped_exception(exc, phase="context_page_setup")
 
 
 def _new_page(context: object, deadline_monotonic: float) -> object:
     try:
-        _remaining_timeout_ms(deadline_monotonic, phase="context")
+        _remaining_timeout_ms(deadline_monotonic, phase="context_page_setup")
         return context.new_page()  # type: ignore[attr-defined]
     except BrowserBootstrapError:
         raise
     except Exception as exc:
-        _raise_mapped_exception(exc, phase="context")
+        _raise_mapped_exception(exc, phase="context_page_setup")
 
 
 def _register_capture_handlers(
@@ -237,7 +296,7 @@ def _register_capture_handlers(
     except BrowserBootstrapError:
         raise
     except Exception as exc:
-        _raise_mapped_exception(exc, phase="capture_setup")
+        _raise_mapped_exception(exc, phase="context_page_setup")
 
 
 def _goto(
@@ -280,12 +339,12 @@ def _read_cookie_header(context: object, deadline_monotonic: float) -> str:
 
 def _read_user_agent(page: object, deadline_monotonic: float) -> str:
     try:
-        _remaining_timeout_ms(deadline_monotonic, phase="user_agent")
+        _remaining_timeout_ms(deadline_monotonic, phase="user_agent_read")
         user_agent = page.evaluate(_NAVIGATOR_USER_AGENT_SCRIPT)  # type: ignore[attr-defined]
     except BrowserBootstrapError:
         raise
     except Exception as exc:
-        _raise_mapped_exception(exc, phase="user_agent")
+        _raise_mapped_exception(exc, phase="user_agent_read")
     return user_agent if isinstance(user_agent, str) else str(user_agent)
 
 
@@ -365,6 +424,10 @@ def _object_url(source: object) -> str:
     return value if isinstance(value, str) else str(value)
 
 
+def _response_request(response: object) -> object | None:
+    return _attribute_value(response, "request", default=None)
+
+
 def _request_method(request: object) -> str:
     value = _attribute_value(request, "method", default="GET")
     return value if isinstance(value, str) else str(value)
@@ -415,13 +478,55 @@ def _attribute_value(source: object, name: str, *, default: object) -> object:
     return value
 
 
-def _close_quietly(target: object | None) -> None:
+def _cleanup_browser_resources(
+    context: object | None,
+    browser: object | None,
+    deadline_monotonic: float,
+    *,
+    suppress_errors: bool,
+) -> None:
+    cleanup_error: Exception | None = None
+    for target in (context, browser):
+        try:
+            _close_best_effort(target, deadline_monotonic)
+        except Exception as exc:
+            if cleanup_error is None:
+                cleanup_error = exc
+    if cleanup_error is not None and not suppress_errors:
+        raise unavailable_error(
+            phase="cleanup",
+            exception_type=type(cleanup_error).__name__,
+        ) from None
+
+
+def _close_best_effort(target: object | None, deadline_monotonic: float) -> None:
     if target is None:
         return
     close = getattr(target, "close", None)
     if not callable(close):
         return
-    try:
-        close()
-    except Exception:
+    if _supports_timeout_keyword(close):
+        close(timeout=_remaining_timeout_ms_for_cleanup(deadline_monotonic))
         return
+    close()
+
+
+def _supports_timeout_keyword(close: object) -> bool:
+    try:
+        close_signature = signature(close)
+    except (TypeError, ValueError):
+        return False
+    for parameter in close_signature.parameters.values():
+        if parameter.kind == Parameter.VAR_KEYWORD:
+            return True
+        if parameter.name == "timeout" and parameter.kind in {
+            Parameter.KEYWORD_ONLY,
+            Parameter.POSITIONAL_OR_KEYWORD,
+        }:
+            return True
+    return False
+
+
+def _remaining_timeout_ms_for_cleanup(deadline_monotonic: float) -> int:
+    remaining_seconds = deadline_monotonic - monotonic()
+    return max(1, round(remaining_seconds * 1000))
