@@ -26,7 +26,9 @@ from cheapy.providers.registry import (
     ProviderLoadError,
     discover_provider_manifests,
 )
+from cheapy.providers.skyscanner.adapter import SkyscannerProviderError
 from cheapy.providers.skyscanner.provider import (
+    SkyscannerProvider,
     create_provider as create_skyscanner_provider,
 )
 
@@ -651,11 +653,36 @@ def test_google_fli_round_trip_missing_adapter_method_returns_controlled_failure
     assert result.errors[0].details["failure_type"] == "unexpected_error"
 
 
-def test_skyscanner_provider_missing_cookie_returns_failed_one_way_result(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("CHEAPY_SKYSCANNER_COOKIE", raising=False)
-    provider = create_skyscanner_provider()
+class _FailingSkyscannerSessionManager:
+    def __init__(self, error: SkyscannerProviderError) -> None:
+        self.error = error
+        self.calls = 0
+
+    def config_for_call(self, *args: object, **kwargs: object) -> object:
+        self.calls += 1
+        raise self.error
+
+    def clear_cache(self) -> None:
+        return None
+
+
+def _skyscanner_provider_with_cookie_bootstrap_failure() -> tuple[
+    SkyscannerProvider,
+    _FailingSkyscannerSessionManager,
+]:
+    manager = _FailingSkyscannerSessionManager(
+        SkyscannerProviderError(
+            failure_type="browser_cookie_unavailable",
+            message_en="Skyscanner browser bootstrap did not produce usable cookies.",
+            error_code=ErrorCode.PROVIDER_FAILED,
+            retryable=True,
+        )
+    )
+    return SkyscannerProvider(env={}, session_manager=manager), manager
+
+
+def test_skyscanner_provider_cookie_bootstrap_failure_returns_failed_one_way_result() -> None:
+    provider, manager = _skyscanner_provider_with_cookie_bootstrap_failure()
 
     result = asyncio.run(
         provider.search_exact_one_way(
@@ -667,6 +694,7 @@ def test_skyscanner_provider_missing_cookie_returns_failed_one_way_result(
         )
     )
 
+    assert manager.calls == 1
     assert result.provider_name == "skyscanner"
     assert result.capability == "exact_one_way"
     assert result.status == ProviderStatusCode.FAILED
@@ -676,16 +704,13 @@ def test_skyscanner_provider_missing_cookie_returns_failed_one_way_result(
     assert result.errors[0].details == {
         "provider": "skyscanner",
         "capability": "exact_one_way",
-        "failure_type": "missing_cookie",
+        "failure_type": "browser_cookie_unavailable",
     }
-    assert result.retryable is False
+    assert result.retryable is True
 
 
-def test_skyscanner_provider_missing_cookie_returns_failed_round_trip_result(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("CHEAPY_SKYSCANNER_COOKIE", raising=False)
-    provider = create_skyscanner_provider()
+def test_skyscanner_provider_cookie_bootstrap_failure_returns_failed_round_trip_result() -> None:
+    provider, manager = _skyscanner_provider_with_cookie_bootstrap_failure()
 
     result = asyncio.run(
         provider.search_exact_round_trip(
@@ -698,6 +723,7 @@ def test_skyscanner_provider_missing_cookie_returns_failed_round_trip_result(
         )
     )
 
+    assert manager.calls == 1
     assert result.provider_name == "skyscanner"
     assert result.capability == "exact_round_trip"
     assert result.status == ProviderStatusCode.FAILED
@@ -707,9 +733,9 @@ def test_skyscanner_provider_missing_cookie_returns_failed_round_trip_result(
     assert result.errors[0].details == {
         "provider": "skyscanner",
         "capability": "exact_round_trip",
-        "failure_type": "missing_cookie",
+        "failure_type": "browser_cookie_unavailable",
     }
-    assert result.retryable is False
+    assert result.retryable is True
 
 
 def test_load_enabled_providers_loads_all_default_enabled_providers() -> None:

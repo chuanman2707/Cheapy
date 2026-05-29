@@ -41,8 +41,15 @@ INTERNAL_OUTPUT_DENYLIST = (
     "cookie",
     "headers",
     "request_body",
+    "post_data",
     "raw_payload",
     "challenge",
+    "datadome",
+    "aws-waf-token",
+    "tvl=",
+    "tvo=",
+    "tvs=",
+    "mozilla/5.0 secret",
 )
 
 
@@ -692,3 +699,40 @@ def test_timeout_shaped_exception_basename_maps_to_timeout_reason() -> None:
         assert exception_type not in report
         assert exception_type.rsplit(".", 1)[-1] not in report
         assert "exception_type" not in report
+
+
+def test_browser_bootstrap_material_is_redacted_with_safe_reason() -> None:
+    error = ErrorV1(
+        code=ErrorCode.PROVIDER_FAILED,
+        severity=Severity.ERROR,
+        message_en=(
+            "Traveloka replay failed with datadome secret-cookie, "
+            "post_data, aws-waf-token, and Mozilla/5.0 secret."
+        ),
+        details={
+            "provider": "traveloka",
+            "capability": "exact_one_way",
+            "failure_type": "network_capture_unavailable",
+            "headers": {"cookie": "datadome=secret-cookie"},
+            "post_data": '{"searchId":"secret"}',
+        },
+        retryable=True,
+    )
+    response = _response(
+        errors=[error],
+        provider_statuses=[
+            _provider_status(
+                status=ProviderStatusCode.FAILED,
+                succeeded_call_count=0,
+                failed_call_count=1,
+                errors=[error],
+                retryable=True,
+            )
+        ],
+    )
+
+    report = render_search_report(_request(), response)
+
+    assert "[redacted] (reason: network_capture_unavailable)" in report
+    for unsafe_text in INTERNAL_OUTPUT_DENYLIST:
+        assert unsafe_text not in report.lower()

@@ -48,6 +48,7 @@ _SAFE_FAILURE_REASONS = frozenset(
         "parse_failed",
         "parse_error",
         "no_usable_results",
+        "network_capture_unavailable",
         "missing_cookie",
         "transport_error",
         "unsupported_passengers",
