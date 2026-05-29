@@ -50,6 +50,14 @@ def test_built_wheel_can_load_packaged_airport_and_provider_data(tmp_path: Path)
     assert "cheapy/providers/skyscanner/adapter.py" in names
     assert "cheapy/providers/skyscanner/normalizer.py" in names
     assert "cheapy/providers/skyscanner/provider.py" in names
+    for bootstrap_file in (
+        "cheapy/browser_bootstrap/__init__.py",
+        "cheapy/browser_bootstrap/cloak.py",
+        "cheapy/browser_bootstrap/cookies.py",
+        "cheapy/browser_bootstrap/errors.py",
+        "cheapy/browser_bootstrap/types.py",
+    ):
+        assert bootstrap_file in names
     assert "Requires-Dist: cloakbrowser>=0.3.26" in metadata
     assert "Requires-Dist: flights>=0.8.4" in metadata
     assert (
@@ -129,6 +137,12 @@ skyscanner_manifest = skyscanner_root.joinpath("manifest.toml").read_text(encodi
 assert skyscanner_root.joinpath("adapter.py").is_file()
 assert skyscanner_root.joinpath("normalizer.py").is_file()
 assert skyscanner_root.joinpath("provider.py").is_file()
+browser_bootstrap_root = files("cheapy").joinpath("browser_bootstrap")
+assert browser_bootstrap_root.joinpath("__init__.py").is_file()
+assert browser_bootstrap_root.joinpath("cloak.py").is_file()
+assert browser_bootstrap_root.joinpath("cookies.py").is_file()
+assert browser_bootstrap_root.joinpath("errors.py").is_file()
+assert browser_bootstrap_root.joinpath("types.py").is_file()
 
 assert airports["version"] == 1
 assert hubs["version"] == 1
