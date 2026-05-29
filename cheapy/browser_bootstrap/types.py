@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,7 +26,7 @@ class CapturedRequest:
 class CapturedResponse:
     url: str = field(repr=False)
     status_code: int
-    payload: Any = field(repr=False)
+    payload: object = field(repr=False)
     sequence: int
 
 
