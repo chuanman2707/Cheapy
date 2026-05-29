@@ -53,8 +53,12 @@ def _payload(item_id: str) -> dict[str, object]:
     }
 
 
-def _network_capture(payload: dict[str, object]) -> BrowserNetworkCapture:
-    url = "https://www.traveloka.com/api/v2/flight/search/poll"
+def _network_capture(
+    payload: dict[str, object],
+    *,
+    path: str = "/api/v2/flight/search/poll",
+) -> BrowserNetworkCapture:
+    url = f"https://www.traveloka.com{path}"
     request = CapturedRequest(
         url=url,
         method="POST",
@@ -157,6 +161,26 @@ def test_adapter_prefers_replay_payload_from_harvest() -> None:
     assert str(capture_calls[0]["page_url"]).startswith(
         "https://www.traveloka.com/en-en/flight/fulltwosearch?"
     )
+
+
+def test_adapter_reports_initial_source_path_from_initial_only_replay() -> None:
+    replay_payload = _payload("replay")
+    replay_client = ReplayClient(
+        traveloka_replay.TravelokaReplayResponse(200, replay_payload)
+    )
+    adapter = TravelokaAdapter(
+        capture_network=lambda **kwargs: _network_capture(
+            _payload("capture"),
+            path="/api/v2/flight/search/initial",
+        ),
+        replay_client=replay_client,
+        timeout_seconds=5.0,
+    )
+
+    result = adapter.search_exact_one_way(_one_way_request())
+
+    assert result.payload == replay_payload
+    assert result.source_path == "/api/v2/flight/search/initial"
 
 
 def test_adapter_falls_back_to_browser_capture_when_replay_is_blocked() -> None:

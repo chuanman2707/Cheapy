@@ -45,6 +45,7 @@ class TravelokaReplayResponse:
 class TravelokaReplayResult:
     payload: dict[str, object] = field(repr=False)
     source: str
+    source_path: str
 
 
 class TravelokaReplayClient(Protocol):
@@ -77,7 +78,11 @@ def replay_or_fallback(
         request = _request_from_exchange(capture, exchange)
         response = client.post(request, timeout=timeout_seconds)
         replay_payload = _payload_from_replay_response(response)
-        return TravelokaReplayResult(payload=replay_payload, source="replay")
+        return TravelokaReplayResult(
+            payload=replay_payload,
+            source="replay",
+            source_path=urlsplit(exchange.request.url).path,
+        )
     except traveloka_errors.TravelokaProviderError as exc:
         replay_error = exc
     except Exception as exc:
@@ -91,6 +96,7 @@ def replay_or_fallback(
         return TravelokaReplayResult(
             payload=fallback_payload,
             source="browser_capture",
+            source_path=urlsplit(exchange.request.url).path,
         )
     raise replay_error
 
@@ -136,7 +142,7 @@ def _select_exchange(capture: BrowserNetworkCapture) -> CapturedExchange:
 def _is_replay_candidate(exchange: CapturedExchange) -> bool:
     parsed = urlsplit(exchange.request.url)
     return (
-        parsed.path in SEARCH_PATHS
+        _is_valid_replay_url(parsed.scheme, parsed.netloc, parsed.path)
         and exchange.request.method.upper() == "POST"
     )
 

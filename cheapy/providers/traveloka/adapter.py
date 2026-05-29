@@ -129,7 +129,7 @@ class TravelokaAdapter:
             )
             return TravelokaCaptureResult(
                 payload=replay_result.payload,
-                source_path=traveloka_capture.POLL_SEARCH_PATH,
+                source_path=replay_result.source_path,
                 search_completed=traveloka_capture.search_completed(
                     replay_result.payload
                 ),

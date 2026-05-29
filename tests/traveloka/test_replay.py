@@ -140,23 +140,38 @@ def test_select_replay_request_rejects_non_exact_traveloka_url() -> None:
     assert "evil.traveloka.com" not in str(exc_info.value)
 
 
-def test_select_replay_request_validates_selected_poll_instead_of_earlier_initial() -> None:
-    with pytest.raises(TravelokaProviderError) as exc_info:
-        replay.select_replay_request(
-            _capture(
-                _exchange(
-                    sequence=10,
-                    path="/api/v2/flight/search/initial",
-                ),
-                _exchange(
-                    sequence=1,
-                    request_url="https://www.traveloka.com./api/v2/flight/search/poll",
-                ),
-            )
+def test_select_replay_request_ignores_invalid_host_poll_for_valid_initial() -> None:
+    selected = replay.select_replay_request(
+        _capture(
+            _exchange(
+                sequence=10,
+                path="/api/v2/flight/search/initial",
+            ),
+            _exchange(
+                sequence=20,
+                request_url="https://www.traveloka.com./api/v2/flight/search/poll",
+            ),
         )
+    )
 
-    assert exc_info.value.failure_type == "network_capture_unavailable"
-    assert "traveloka.com" not in str(exc_info.value)
+    assert selected.path_and_query == "/api/v2/flight/search/initial?secret=10"
+
+
+def test_select_replay_request_ignores_invalid_host_poll_for_valid_poll() -> None:
+    selected = replay.select_replay_request(
+        _capture(
+            _exchange(
+                sequence=10,
+                path="/api/v2/flight/search/poll",
+            ),
+            _exchange(
+                sequence=20,
+                request_url="https://api.traveloka.com/api/v2/flight/search/poll",
+            ),
+        )
+    )
+
+    assert selected.path_and_query == "/api/v2/flight/search/poll?secret=10"
 
 
 def test_select_replay_request_drops_unsafe_referer_and_crlf_values() -> None:
@@ -207,7 +222,29 @@ def test_replay_success_returns_replay_payload() -> None:
 
     assert result.payload == payload
     assert result.source == "replay"
+    assert result.source_path == "/api/v2/flight/search/poll"
     assert len(client.calls) == 1
+
+
+def test_replay_success_reports_selected_initial_source_path() -> None:
+    payload = _payload("replay")
+    client = FakeReplayClient(payload)
+
+    result = replay.replay_or_fallback(
+        _capture(
+            _exchange(
+                sequence=1,
+                path="/api/v2/flight/search/initial",
+                response_payload=_payload("capture"),
+            )
+        ),
+        client=client,
+        timeout_seconds=3.0,
+    )
+
+    assert result.payload == payload
+    assert result.source == "replay"
+    assert result.source_path == "/api/v2/flight/search/initial"
 
 
 def test_replay_safe_failure_falls_back_to_same_exchange_payload() -> None:
@@ -230,6 +267,7 @@ def test_replay_safe_failure_falls_back_to_same_exchange_payload() -> None:
 
     assert result.payload == capture_payload
     assert result.source == "browser_capture"
+    assert result.source_path == "/api/v2/flight/search/poll"
 
 
 def test_replay_missing_body_falls_back_to_same_exchange_payload_without_client_call() -> None:
