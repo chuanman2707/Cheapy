@@ -6,6 +6,7 @@ import subprocess
 
 import pytest
 
+from cheapy.browser_bootstrap import BrowserBootstrapSession
 from cheapy.models import ErrorCode, PassengersV1
 from cheapy.providers.base import ProviderExactOneWayRequest, ProviderExactRoundTripRequest
 from cheapy.providers.skyscanner import adapter
@@ -239,6 +240,56 @@ def test_config_repr_redacts_cookie() -> None:
     assert "__Secure-anon_token" not in text
     assert "secret" not in text
     assert "cookie" not in text
+
+
+def test_config_from_bootstrap_session_redacts_cookie_user_agent_and_uses_values() -> None:
+    session = BrowserBootstrapSession(
+        cookie_header="__Secure-anon_token=secret-cookie",
+        user_agent="SecretUA/1.0",
+        created_monotonic=100.0,
+    )
+
+    config = adapter.config_from_bootstrap_session(
+        session,
+        base_url="https://example.test/",
+        timeout_seconds=4.5,
+        deadline_monotonic=110.0,
+    )
+
+    assert config.base_url == "https://example.test"
+    assert config.cookie == "__Secure-anon_token=secret-cookie"
+    assert config.user_agent == "SecretUA/1.0"
+    assert config.timeout_seconds == 4.5
+    assert config.deadline_monotonic == 110.0
+    text = repr(config)
+    assert "__Secure-anon_token" not in text
+    assert "secret-cookie" not in text
+    assert "SecretUA" not in text
+    assert "user_agent" not in text
+    assert "cookie" not in text
+
+
+def test_config_from_bootstrap_session_empty_cookie_raises_safe_provider_error() -> None:
+    session = BrowserBootstrapSession(
+        cookie_header="  ",
+        user_agent="SecretUA/1.0",
+        created_monotonic=100.0,
+    )
+
+    with pytest.raises(adapter.SkyscannerProviderError) as exc_info:
+        adapter.config_from_bootstrap_session(
+            session,
+            timeout_seconds=4.5,
+            deadline_monotonic=110.0,
+        )
+
+    assert exc_info.value.failure_type == "browser_cookie_unavailable"
+    assert exc_info.value.error_code == ErrorCode.PROVIDER_FAILED
+    assert exc_info.value.retryable is True
+    assert_error_is_sanitized(exc_info.value)
+    text = json.dumps(exc_info.value.__dict__, sort_keys=True, default=str)
+    assert "SecretUA" not in text
+    assert "secret-cookie" not in text
 
 
 def test_build_search_body_uses_requested_adult_count() -> None:

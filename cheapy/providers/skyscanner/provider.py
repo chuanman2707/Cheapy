@@ -23,6 +23,7 @@ from cheapy.providers.skyscanner.normalizer import (
     PROVIDER_NAME,
     normalize_candidates,
 )
+from cheapy.providers.skyscanner.session import SkyscannerSessionManager
 
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
@@ -56,16 +57,19 @@ class SkyscannerProvider:
         adapter: object | None = None,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         env: Mapping[str, str] | None = None,
+        session_manager: object | None = None,
     ) -> None:
         self._adapter = adapter
         self._timeout_seconds = timeout_seconds
         self._env = dict(os.environ if env is None else env)
+        self._session_manager = session_manager or SkyscannerSessionManager()
 
     def with_timeout_seconds(self, timeout_seconds: float) -> "SkyscannerProvider":
         return SkyscannerProvider(
             adapter=self._adapter,
             timeout_seconds=max(0.001, timeout_seconds),
             env=self._env,
+            session_manager=self._session_manager,
         )
 
     async def search_exact_one_way(
@@ -169,14 +173,16 @@ class SkyscannerProvider:
             retryable=any(error.retryable for error in errors),
         )
 
-    def _adapter_for_call(self) -> object:
+    def _adapter_for_call(self, *, force_refresh: bool = False) -> tuple[object, str]:
         if self._adapter is not None:
-            return self._adapter
-        return SkyscannerAdapter.from_env(
+            return self._adapter, "injected"
+        config, source = self._session_manager.config_for_call(
             self._env,
             timeout_seconds=self._timeout_seconds,
             deadline_monotonic=monotonic() + self._timeout_seconds,
+            force_refresh=force_refresh,
         )
+        return SkyscannerAdapter.from_config(config), source
 
     def _search_sync(
         self,
@@ -184,9 +190,20 @@ class SkyscannerProvider:
         *,
         search_method_name: str,
     ) -> list[object]:
-        adapter = self._adapter_for_call()
+        adapter, source = self._adapter_for_call()
         search_method = getattr(adapter, search_method_name)
-        return search_method(request)
+        try:
+            return search_method(request)
+        except SkyscannerProviderError as exc:
+            if source == "cache" and exc.failure_type in {
+                "blocked",
+                "rate_limited",
+                "no_usable_results",
+            }:
+                adapter, _source = self._adapter_for_call(force_refresh=True)
+                refreshed_search_method = getattr(adapter, search_method_name)
+                return refreshed_search_method(request)
+            raise
 
     def _failed_result(
         self,

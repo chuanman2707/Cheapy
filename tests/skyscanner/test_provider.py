@@ -6,15 +6,25 @@ import time
 
 import pytest
 
+from cheapy.browser_bootstrap import (
+    BrowserBootstrapErrorContext,
+    BrowserBootstrapSession,
+    BrowserBootstrapUnavailable,
+)
 from cheapy.models import ErrorCode, PassengersV1, ProviderStatusCode
 from cheapy.providers.base import ProviderExactOneWayRequest, ProviderExactRoundTripRequest
 from cheapy.providers.skyscanner.adapter import (
+    SkyscannerConfig,
     SkyscannerItineraryCandidate,
     SkyscannerLegCandidate,
     SkyscannerProviderError,
 )
 from cheapy.providers.skyscanner.provider import SkyscannerProvider, create_provider
 from cheapy.providers.skyscanner import provider as skyscanner_provider
+from cheapy.providers.skyscanner.session import (
+    SkyscannerSessionError,
+    SkyscannerSessionManager,
+)
 
 
 SENSITIVE_TOKENS = (
@@ -74,6 +84,36 @@ class SleepingAdapter:
         self.one_way_calls += 1
         time.sleep(self.sleep_seconds)
         return [_candidate()]
+
+
+class FakeSessionManager:
+    def __init__(
+        self,
+        responses: list[tuple[SkyscannerConfig, str] | Exception],
+    ) -> None:
+        self.responses = responses
+        self.calls: list[dict[str, object]] = []
+
+    def config_for_call(
+        self,
+        env: object,
+        *,
+        timeout_seconds: float,
+        deadline_monotonic: float,
+        force_refresh: bool = False,
+    ) -> tuple[SkyscannerConfig, str]:
+        self.calls.append(
+            {
+                "env": env,
+                "timeout_seconds": timeout_seconds,
+                "deadline_monotonic": deadline_monotonic,
+                "force_refresh": force_refresh,
+            }
+        )
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
 
 
 def _leg(
@@ -141,6 +181,18 @@ def _round_trip_request(**overrides: object) -> ProviderExactRoundTripRequest:
     }
     data.update(overrides)
     return ProviderExactRoundTripRequest(**data)
+
+
+def _config(cookie: str = "secret-cookie") -> SkyscannerConfig:
+    return SkyscannerConfig(
+        base_url="https://www.skyscanner.com.sg",
+        market="SG",
+        locale="en-GB",
+        currency="SGD",
+        cookie=cookie,
+        timeout_seconds=7.0,
+        user_agent="SecretUA",
+    )
 
 
 def assert_no_sensitive_tokens(value: object) -> None:
@@ -254,27 +306,124 @@ def test_default_provider_builds_adapter_with_attempt_deadline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, object] = {}
+    config = _config()
+    session_manager = FakeSessionManager([(config, "bootstrap")])
 
-    def fake_from_env(env: object, **kwargs: object) -> FakeAdapter:
-        captured["env"] = env
+    def fake_from_config(config: object, **kwargs: object) -> FakeAdapter:
+        captured["config"] = config
         captured.update(kwargs)
         return FakeAdapter([_candidate()])
 
     monkeypatch.setattr(skyscanner_provider, "monotonic", lambda: 50.0)
     monkeypatch.setattr(
-        "cheapy.providers.skyscanner.provider.SkyscannerAdapter.from_env",
-        fake_from_env,
+        "cheapy.providers.skyscanner.provider.SkyscannerAdapter.from_config",
+        fake_from_config,
     )
     provider = SkyscannerProvider(
-        env={"CHEAPY_SKYSCANNER_COOKIE": "secret-cookie"},
+        env={},
         timeout_seconds=2.5,
+        session_manager=session_manager,
     )
 
     result = asyncio.run(provider.search_exact_one_way(_request()))
 
     assert result.status == ProviderStatusCode.SUCCESS
-    assert captured["timeout_seconds"] == 2.5
-    assert captured["deadline_monotonic"] == 52.5
+    assert session_manager.calls == [
+        {
+            "env": {},
+            "timeout_seconds": 2.5,
+            "deadline_monotonic": 52.5,
+            "force_refresh": False,
+        }
+    ]
+    assert captured["config"] is config
+
+
+def test_default_provider_passes_env_cookie_through_session_manager(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    config = _config(cookie="env-cookie=secret-cookie")
+    session_manager = FakeSessionManager([(config, "env")])
+
+    def fake_from_config(config: object, **kwargs: object) -> FakeAdapter:
+        captured["config"] = config
+        return FakeAdapter([_candidate()])
+
+    monkeypatch.setattr(
+        "cheapy.providers.skyscanner.provider.SkyscannerAdapter.from_config",
+        fake_from_config,
+    )
+    provider = SkyscannerProvider(
+        env={"CHEAPY_SKYSCANNER_COOKIE": "env-cookie=secret-cookie"},
+        timeout_seconds=1.0,
+        session_manager=session_manager,
+    )
+
+    result = asyncio.run(provider.search_exact_one_way(_request()))
+
+    assert result.status == ProviderStatusCode.SUCCESS
+    assert session_manager.calls[0]["env"] == {
+        "CHEAPY_SKYSCANNER_COOKIE": "env-cookie=secret-cookie"
+    }
+    assert captured["config"] is config
+
+
+def test_with_timeout_seconds_preserves_same_session_manager() -> None:
+    session_manager = FakeSessionManager([(_config(), "bootstrap")])
+    provider = SkyscannerProvider(
+        env={},
+        timeout_seconds=1.0,
+        session_manager=session_manager,
+    )
+
+    clone = provider.with_timeout_seconds(2.0)
+
+    assert clone._session_manager is session_manager
+    assert clone._timeout_seconds == 2.0
+
+
+def test_cached_no_usable_results_force_refreshes_once_and_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_config = _config(cookie="cached-cookie=secret-cookie")
+    second_config = _config(cookie="fresh-cookie=secret-cookie")
+    session_manager = FakeSessionManager(
+        [(first_config, "cache"), (second_config, "bootstrap")]
+    )
+    first_adapter = FakeAdapter(
+        SkyscannerProviderError(
+            failure_type="no_usable_results",
+            message_en="Search completed but no usable itinerary was found.",
+            error_code=ErrorCode.PROVIDER_FAILED,
+            retryable=False,
+        )
+    )
+    second_adapter = FakeAdapter([_candidate()])
+    adapters = [first_adapter, second_adapter]
+    from_config_calls: list[SkyscannerConfig] = []
+
+    def fake_from_config(config: SkyscannerConfig, **kwargs: object) -> FakeAdapter:
+        from_config_calls.append(config)
+        return adapters.pop(0)
+
+    monkeypatch.setattr(
+        "cheapy.providers.skyscanner.provider.SkyscannerAdapter.from_config",
+        fake_from_config,
+    )
+    provider = SkyscannerProvider(
+        env={},
+        timeout_seconds=1.0,
+        session_manager=session_manager,
+    )
+
+    result = asyncio.run(provider.search_exact_one_way(_request()))
+
+    assert result.status == ProviderStatusCode.SUCCESS
+    assert [call["force_refresh"] for call in session_manager.calls] == [False, True]
+    assert from_config_calls == [first_config, second_config]
+    assert first_adapter.one_way_calls == 1
+    assert second_adapter.one_way_calls == 1
 
 
 def test_provider_round_trip_uses_round_trip_adapter_and_capability() -> None:
@@ -381,16 +530,42 @@ def test_provider_preserves_and_sanitizes_normalizer_errors() -> None:
     assert_no_sensitive_tokens(result.model_dump(mode="json"))
 
 
-def test_provider_lazy_missing_cookie_with_empty_env_maps_to_failed_result() -> None:
-    provider = SkyscannerProvider(env={}, timeout_seconds=1)
+def test_bootstrap_session_manager_error_maps_to_safe_failed_result(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def fake_bootstrap(**kwargs: object) -> BrowserBootstrapSession:
+        raise BrowserBootstrapUnavailable(
+            message_en="failed with secret-cookie header raw_payload sessionid",
+            context=BrowserBootstrapErrorContext(
+                failure_type="browser_bootstrap_failed",
+                phase="setup",
+                exception_type="RuntimeError",
+            ),
+        )
+
+    session_manager = SkyscannerSessionManager(
+        bootstrap_cookies=fake_bootstrap,
+        monotonic=lambda: 0.0,
+    )
+    provider = SkyscannerProvider(
+        env={},
+        timeout_seconds=1,
+        session_manager=session_manager,
+    )
 
     result = asyncio.run(provider.search_exact_one_way(_request()))
+    captured = capsys.readouterr()
 
     assert result.status == ProviderStatusCode.FAILED
     assert result.offers == []
+    assert result.retryable is True
     assert len(result.errors) == 1
     assert result.errors[0].details == {
         "provider": "skyscanner",
         "capability": "exact_one_way",
-        "failure_type": "missing_cookie",
+        "failure_type": "browser_bootstrap_failed",
+        "exception_type": "RuntimeError",
     }
+    assert captured.out == ""
+    assert captured.err == ""
+    assert_no_sensitive_tokens(result.model_dump(mode="json"))

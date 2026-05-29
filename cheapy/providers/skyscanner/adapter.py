@@ -15,6 +15,7 @@ from typing import Protocol
 from urllib.parse import quote, urlencode, urljoin, urlsplit
 import uuid
 
+from cheapy.browser_bootstrap import BrowserBootstrapSession
 from cheapy.models import ErrorCode
 from cheapy.providers.base import ProviderExactOneWayRequest, ProviderExactRoundTripRequest
 
@@ -69,7 +70,7 @@ class SkyscannerConfig:
     currency: str
     cookie: str = field(repr=False)
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
-    user_agent: str = DEFAULT_USER_AGENT
+    user_agent: str = field(default=DEFAULT_USER_AGENT, repr=False)
     deadline_monotonic: float | None = field(default=None, repr=False)
 
 
@@ -375,6 +376,35 @@ def config_from_env(
             env.get("CHEAPY_SKYSCANNER_USER_AGENT", DEFAULT_USER_AGENT).strip()
             or DEFAULT_USER_AGENT
         ),
+        deadline_monotonic=deadline_monotonic,
+    )
+
+
+def config_from_bootstrap_session(
+    session: BrowserBootstrapSession,
+    *,
+    market: str = "SG",
+    locale: str = "en-GB",
+    currency: str = "SGD",
+    base_url: str = DEFAULT_BASE_URL,
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    deadline_monotonic: float | None = None,
+) -> SkyscannerConfig:
+    if not session.cookie_header.strip():
+        raise SkyscannerProviderError(
+            failure_type="browser_cookie_unavailable",
+            message_en="Skyscanner browser session did not return usable cookies.",
+            error_code=ErrorCode.PROVIDER_FAILED,
+            retryable=True,
+        )
+    return SkyscannerConfig(
+        base_url=base_url.rstrip("/"),
+        market=market,
+        locale=locale,
+        currency=currency,
+        cookie=session.cookie_header,
+        timeout_seconds=timeout_seconds,
+        user_agent=session.user_agent.strip() or DEFAULT_USER_AGENT,
         deadline_monotonic=deadline_monotonic,
     )
 
@@ -1140,6 +1170,15 @@ class SkyscannerAdapter:
         self._client = client
 
     @classmethod
+    def from_config(
+        cls,
+        config: SkyscannerConfig,
+        *,
+        client: HttpClient | None = None,
+    ) -> "SkyscannerAdapter":
+        return cls(config=config, client=client or CurlClient())
+
+    @classmethod
     def from_env(
         cls,
         env: Mapping[str, str],
@@ -1161,7 +1200,7 @@ class SkyscannerAdapter:
             timeout_seconds=timeout_seconds,
             deadline_monotonic=deadline_monotonic,
         )
-        return cls(config=config, client=client or CurlClient())
+        return cls.from_config(config, client=client)
 
     def search_exact_one_way(
         self,
