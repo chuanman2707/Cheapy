@@ -18,6 +18,7 @@ from typer.core import TyperGroup
 
 from cheapy import __version__
 from cheapy.airports import AirportNotFound, resolve_airport
+from cheapy.markdown_report import render_search_report
 from cheapy.mcp import run_stdio_server
 from cheapy.mcp_installer import InstallerClient, InstallerError, install_mcp
 from cheapy.models import ProviderStatusCode, SearchRequestV1, SearchResponseV1
@@ -35,6 +36,10 @@ from cheapy.watchlist import build_watchlist_request, evaluate_watchlist
 
 LIVE_TEST_ENV = "CHEAPY_RUN_LIVE_TESTS"
 STORAGE_ERROR_TYPES = (OSError, RuntimeError, sqlite3.Error)
+_MARKDOWN_FALLBACK_TEXT = (
+    "## Cheapy flight search results\n\n"
+    "Structured results are available in the JSON response.\n"
+)
 
 
 def _json_echo(payload: dict[str, Any], *, err: bool = False) -> None:
@@ -249,6 +254,33 @@ def _watchlist_check_rationale(decision_payload: dict[str, Any]) -> dict[str, An
     }
 
 
+def _safe_render_search_report(
+    request: SearchRequestV1,
+    response: SearchResponseV1,
+) -> str:
+    try:
+        return render_search_report(request, response)
+    except Exception:
+        return _MARKDOWN_FALLBACK_TEXT
+
+
+def _history_request(payload: dict[str, Any]) -> SearchRequestV1:
+    search_run = payload["search_run"]
+    passengers = json.loads(search_run["passengers_json"])
+    return SearchRequestV1.model_validate(
+        {
+            "schema_version": search_run["schema_version"],
+            "origin": search_run["origin"],
+            "destination": search_run["destination"],
+            "departure_date": search_run["departure_date"],
+            "return_date": search_run["return_date"],
+            "search_mode": search_run["search_mode"],
+            "passengers": passengers,
+            "max_results": search_run["max_results"],
+        }
+    )
+
+
 def _normalize_iata(value: str) -> str:
     normalized = value.strip().upper()
     if len(normalized) != 3 or not normalized.isascii() or not normalized.isalpha():
@@ -304,7 +336,14 @@ def history_list(
 
 
 @history_app.command("show")
-def history_show(run_id: int = typer.Argument(..., help="Search run id.")) -> None:
+def history_show(
+    run_id: int = typer.Argument(..., help="Search run id."),
+    markdown: bool = typer.Option(
+        False,
+        "--markdown",
+        help="Print a Markdown search report.",
+    ),
+) -> None:
     """Show one local search run."""
     if storage.is_storage_disabled():
         _storage_disabled_exit()
@@ -326,6 +365,14 @@ def history_show(run_id: int = typer.Argument(..., help="Search run id.")) -> No
             err=True,
         )
         raise typer.Exit(code=1)
+    if markdown:
+        try:
+            request = _history_request(payload)
+            response = SearchResponseV1.model_validate(payload["response"])
+        except (KeyError, TypeError, json.JSONDecodeError, ValidationError):
+            _history_storage_error_exit()
+        typer.echo(_safe_render_search_report(request, response), nl=False)
+        return
     _json_echo({"status": "ok", **payload})
 
 
@@ -437,6 +484,11 @@ def watchlist_list() -> None:
 @watchlist_app.command("check")
 def watchlist_check(
     watchlist_id: int = typer.Argument(..., help="Watchlist id."),
+    markdown: bool = typer.Option(
+        False,
+        "--markdown",
+        help="Print a Markdown search report.",
+    ),
 ) -> None:
     """Run a manual watchlist check."""
     if storage.is_storage_disabled():
@@ -515,6 +567,10 @@ def watchlist_check(
         _storage_disabled_exit()
     except STORAGE_ERROR_TYPES:
         _watchlist_storage_error_exit()
+
+    if markdown:
+        typer.echo(_safe_render_search_report(request, result.response), nl=False)
+        return
 
     _json_echo(
         {

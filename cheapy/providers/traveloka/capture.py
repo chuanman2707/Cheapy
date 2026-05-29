@@ -117,6 +117,10 @@ def _search_completed(payload: dict[str, object]) -> bool:
     return meta.get("searchCompleted") is True
 
 
+def search_completed(payload: dict[str, object]) -> bool:
+    return _search_completed(payload)
+
+
 def explicit_payload_item_ids(payload: object) -> set[str]:
     ids: set[str] = set()
     for path in (

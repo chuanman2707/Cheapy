@@ -3,7 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
+import multiprocessing
+import os
+from multiprocessing.queues import Queue
+from queue import Empty
+import sys
 from time import perf_counter
+from typing import Any, Iterator
 
 from cheapy.models import ErrorCode, ErrorV1, ProviderStatusCode, Severity
 from cheapy.providers.base import (
@@ -23,6 +30,7 @@ from cheapy.providers.google_fli.normalizer import (
 
 
 EXACT_ROUND_TRIP_CAPABILITY = "exact_round_trip"
+_DEFAULT_ADAPTER_CLEANUP_GRACE_SECONDS = 0.05
 
 
 class GoogleFliProvider:
@@ -37,8 +45,14 @@ class GoogleFliProvider:
         adapter: object | None = None,
         timeout_seconds: float = 30.0,
     ) -> None:
-        self._adapter = adapter if adapter is not None else GoogleFliAdapter()
+        self._adapter = adapter
         self._timeout_seconds = timeout_seconds
+
+    def with_timeout_seconds(self, timeout_seconds: float) -> "GoogleFliProvider":
+        return GoogleFliProvider(
+            adapter=self._adapter,
+            timeout_seconds=max(0.001, timeout_seconds),
+        )
 
     async def search_exact_one_way(
         self,
@@ -69,6 +83,15 @@ class GoogleFliProvider:
     ) -> ProviderResult:
         started = perf_counter()
         try:
+            if self._adapter is None:
+                result = await asyncio.to_thread(
+                    _run_default_adapter_search,
+                    request,
+                    capability=capability,
+                    search_method_name=search_method_name,
+                    timeout_seconds=self._timeout_seconds,
+                )
+                return result.model_copy(update={"duration_ms": _duration_ms(started)})
             search_method = getattr(self._adapter, search_method_name)
             flights = await asyncio.wait_for(
                 asyncio.to_thread(search_method, request),
@@ -157,6 +180,178 @@ class GoogleFliProvider:
 
 def create_provider() -> GoogleFliProvider:
     return GoogleFliProvider()
+
+
+def _run_default_adapter_search(
+    request: ProviderExactOneWayRequest | ProviderExactRoundTripRequest,
+    *,
+    capability: str,
+    search_method_name: str,
+    timeout_seconds: float,
+) -> ProviderResult:
+    if timeout_seconds <= 0:
+        raise TimeoutError
+    timeout = timeout_seconds
+    deadline = perf_counter() + timeout
+    cleanup_budget = min(_DEFAULT_ADAPTER_CLEANUP_GRACE_SECONDS, timeout * 0.25)
+    run_budget = max(0.0, timeout - cleanup_budget)
+    context = multiprocessing.get_context()
+    result_queue: Queue[Any] = context.Queue(maxsize=1)
+    process = context.Process(
+        target=_default_adapter_search_worker,
+        args=(result_queue, request, capability, search_method_name),
+    )
+    process.start()
+    process.join(min(run_budget, _remaining_process_budget(deadline)))
+    if process.is_alive():
+        process.terminate()
+        terminate_grace = cleanup_budget / 2
+        process.join(min(terminate_grace, _remaining_process_budget(deadline)))
+        if process.is_alive():
+            process.kill()
+            kill_grace = cleanup_budget - terminate_grace
+            process.join(min(kill_grace, _remaining_process_budget(deadline)))
+        raise TimeoutError
+    try:
+        remaining = _remaining_process_budget(deadline)
+        if remaining <= 0:
+            raise TimeoutError
+        payload = result_queue.get(timeout=remaining)
+    except Empty as exc:
+        raise GoogleFliProviderError(
+            failure_type="transport_error",
+            message_en="Google Fli child process did not return a result.",
+            error_code=ErrorCode.PROVIDER_FAILED,
+            retryable=True,
+            exception_type=type(exc).__name__,
+        ) from None
+    kind = payload.get("kind") if isinstance(payload, dict) else None
+    if kind == "result":
+        return ProviderResult.model_validate(payload.get("result"))
+    if kind == "provider_error":
+        error_code_value = payload.get("error_code") or ErrorCode.PROVIDER_FAILED.value
+        raise GoogleFliProviderError(
+            failure_type=str(payload.get("failure_type", "transport_error")),
+            message_en=str(payload.get("message_en", "Google Fli provider failed.")),
+            error_code=ErrorCode(str(error_code_value)),
+            retryable=bool(payload.get("retryable", False)),
+            exception_type=(
+                str(payload["exception_type"])
+                if payload.get("exception_type") is not None
+                else None
+            ),
+        )
+    if kind == "unexpected_error":
+        raise GoogleFliProviderError(
+            failure_type="unexpected_error",
+            message_en="Google Fli provider raised an unexpected exception.",
+            error_code=ErrorCode.PROVIDER_FAILED,
+            retryable=False,
+            exception_type=(
+                str(payload["exception_type"])
+                if payload.get("exception_type") is not None
+                else None
+            ),
+        )
+    raise GoogleFliProviderError(
+        failure_type="transport_error",
+        message_en="Google Fli child process returned an invalid result.",
+        error_code=ErrorCode.PROVIDER_FAILED,
+        retryable=True,
+        exception_type="InvalidChildResult",
+    )
+
+
+def _remaining_process_budget(deadline: float) -> float:
+    return max(0.0, deadline - perf_counter())
+
+
+def _default_adapter_search_worker(
+    result_queue: Queue[Any],
+    request: ProviderExactOneWayRequest | ProviderExactRoundTripRequest,
+    capability: str,
+    search_method_name: str,
+) -> None:
+    started = perf_counter()
+    try:
+        with _suppress_child_stdio():
+            adapter = GoogleFliAdapter()
+            search_method = getattr(adapter, search_method_name)
+            flights = search_method(request)
+            offers, errors = normalize_flights(
+                flights,
+                request,
+                configured_currency=getattr(adapter, "configured_currency", None),
+            )
+            errors = _errors_with_capability(errors, capability)
+            if errors and offers:
+                status = ProviderStatusCode.PARTIAL
+            elif errors:
+                status = ProviderStatusCode.FAILED
+            else:
+                status = ProviderStatusCode.SUCCESS
+            result = ProviderResult(
+                provider_name=PROVIDER_NAME,
+                capability=capability,
+                status=status,
+                offers=offers,
+                warnings=[],
+                errors=errors,
+                duration_ms=_duration_ms(started),
+                retryable=any(error.retryable for error in errors),
+            )
+        result_queue.put({"kind": "result", "result": result.model_dump(mode="json")})
+    except GoogleFliProviderError as exc:
+        result_queue.put(
+            {
+                "kind": "provider_error",
+                "failure_type": exc.failure_type,
+                "message_en": exc.message_en,
+                "error_code": exc.error_code.value,
+                "retryable": exc.retryable,
+                "exception_type": exc.exception_type,
+            }
+        )
+    except Exception as exc:
+        result_queue.put(
+            {
+                "kind": "unexpected_error",
+                "exception_type": type(exc).__name__,
+            }
+        )
+
+
+@contextmanager
+def _suppress_child_stdio() -> Iterator[None]:
+    stdout_fd = 1
+    stderr_fd = 2
+    saved_stdout_fd: int | None = None
+    saved_stderr_fd: int | None = None
+    try:
+        saved_stdout_fd = os.dup(stdout_fd)
+        saved_stderr_fd = os.dup(stderr_fd)
+        with open(os.devnull, "w", encoding="utf-8") as devnull:
+            _flush_stdio()
+            os.dup2(devnull.fileno(), stdout_fd)
+            os.dup2(devnull.fileno(), stderr_fd)
+            with redirect_stdout(devnull), redirect_stderr(devnull):
+                yield
+    finally:
+        _flush_stdio()
+        if saved_stdout_fd is not None:
+            os.dup2(saved_stdout_fd, stdout_fd)
+            os.close(saved_stdout_fd)
+        if saved_stderr_fd is not None:
+            os.dup2(saved_stderr_fd, stderr_fd)
+            os.close(saved_stderr_fd)
+
+
+def _flush_stdio() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:
+            pass
 
 
 def _provider_error(

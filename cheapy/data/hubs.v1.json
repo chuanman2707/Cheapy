@@ -3,32 +3,350 @@
   "source_name": "Wikipedia List of hub airports",
   "source_url": "https://en.wikipedia.org/wiki/List_of_hub_airports",
   "source_revision_url": "https://en.wikipedia.org/w/index.php?oldid=1344170237&title=List_of_hub_airports",
-  "retrieved_date": "2026-05-09",
+  "retrieved_date": "2026-05-28",
   "license_name": "Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0)",
   "license_url": "https://creativecommons.org/licenses/by-sa/4.0/",
-  "attribution": "Wikipedia contributors, \"List of hub airports,\" Wikipedia revision oldid=1344170237, retrieved 2026-05-09.",
-  "modification_notice": "Manual curated excerpt from the source page with modified local tiering for Cheapy MVP routing experiments.",
-  "selection_method": "manual curated excerpt for MVP routing experiments",
-  "snapshot_version": 1,
-  "notes": "Tier values are Cheapy MVP routing priorities, not Wikipedia data. Cheapy stores only selected IATA codes and local tier decisions.",
+  "attribution": "Wikipedia contributors, \"List of hub airports,\" Wikipedia revision oldid=1344170237, retrieved 2026-05-28.",
+  "modification_notice": "Manual curated excerpt from the source page with modified local tiering for Cheapy global routing experiments.",
+  "selection_method": "manual curated global hub excerpt",
+  "snapshot_version": 2,
+  "notes": "Tier values are Cheapy routing priorities, not Wikipedia data. Cheapy stores only selected IATA codes and local tier decisions.",
   "version": 1,
   "hubs": [
-    {"iata": "SIN", "tier": 1, "source_note": "Consulted Wikipedia List of hub airports; assigned Cheapy local tier 1."},
-    {"iata": "DOH", "tier": 1, "source_note": "Consulted Wikipedia List of hub airports; assigned Cheapy local tier 1."},
-    {"iata": "DXB", "tier": 1, "source_note": "Consulted Wikipedia List of hub airports; assigned Cheapy local tier 1."},
-    {"iata": "ICN", "tier": 1, "source_note": "Consulted Wikipedia List of hub airports; assigned Cheapy local tier 1."},
-    {"iata": "NRT", "tier": 1, "source_note": "Consulted Wikipedia List of hub airports; assigned Cheapy local tier 1."},
-    {"iata": "LHR", "tier": 1, "source_note": "Consulted Wikipedia List of hub airports; assigned Cheapy local tier 1."},
-    {"iata": "FRA", "tier": 1, "source_note": "Consulted Wikipedia List of hub airports; assigned Cheapy local tier 1."},
-    {"iata": "BKK", "tier": 2, "source_note": "Consulted Wikipedia List of hub airports; assigned Cheapy local tier 2."},
-    {"iata": "KUL", "tier": 2, "source_note": "Consulted Wikipedia List of hub airports; assigned Cheapy local tier 2."},
-    {"iata": "TPE", "tier": 2, "source_note": "Consulted Wikipedia List of hub airports; assigned Cheapy local tier 2."},
-    {"iata": "HKG", "tier": 2, "source_note": "Consulted Wikipedia List of hub airports; assigned Cheapy local tier 2."},
-    {"iata": "CDG", "tier": 2, "source_note": "Consulted Wikipedia List of hub airports; assigned Cheapy local tier 2."},
-    {"iata": "LAX", "tier": 2, "source_note": "Consulted Wikipedia List of hub airports; assigned Cheapy local tier 2."},
-    {"iata": "SFO", "tier": 2, "source_note": "Consulted Wikipedia List of hub airports; assigned Cheapy local tier 2."},
-    {"iata": "JFK", "tier": 3, "source_note": "Consulted Wikipedia List of hub airports; assigned Cheapy local tier 3."},
-    {"iata": "SYD", "tier": 3, "source_note": "Consulted Wikipedia List of hub airports; assigned Cheapy local tier 3."},
-    {"iata": "MEL", "tier": 3, "source_note": "Consulted Wikipedia List of hub airports; assigned Cheapy local tier 3."}
+    {
+      "iata": "SIN",
+      "tier": 1,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 1."
+    },
+    {
+      "iata": "DOH",
+      "tier": 1,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 1."
+    },
+    {
+      "iata": "DXB",
+      "tier": 1,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 1."
+    },
+    {
+      "iata": "IST",
+      "tier": 1,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 1."
+    },
+    {
+      "iata": "AMS",
+      "tier": 1,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 1."
+    },
+    {
+      "iata": "FRA",
+      "tier": 1,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 1."
+    },
+    {
+      "iata": "LHR",
+      "tier": 1,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 1."
+    },
+    {
+      "iata": "CDG",
+      "tier": 1,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 1."
+    },
+    {
+      "iata": "ICN",
+      "tier": 1,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 1."
+    },
+    {
+      "iata": "NRT",
+      "tier": 1,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 1."
+    },
+    {
+      "iata": "PEK",
+      "tier": 1,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 1."
+    },
+    {
+      "iata": "PVG",
+      "tier": 1,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 1."
+    },
+    {
+      "iata": "CAN",
+      "tier": 1,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 1."
+    },
+    {
+      "iata": "DEL",
+      "tier": 1,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 1."
+    },
+    {
+      "iata": "ATL",
+      "tier": 1,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 1."
+    },
+    {
+      "iata": "ORD",
+      "tier": 1,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 1."
+    },
+    {
+      "iata": "DFW",
+      "tier": 1,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 1."
+    },
+    {
+      "iata": "LAX",
+      "tier": 1,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 1."
+    },
+    {
+      "iata": "JFK",
+      "tier": 1,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 1."
+    },
+    {
+      "iata": "SFO",
+      "tier": 1,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 1."
+    },
+    {
+      "iata": "YYZ",
+      "tier": 1,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 1."
+    },
+    {
+      "iata": "ADD",
+      "tier": 2,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 2."
+    },
+    {
+      "iata": "AUH",
+      "tier": 2,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 2."
+    },
+    {
+      "iata": "BKK",
+      "tier": 2,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 2."
+    },
+    {
+      "iata": "BOG",
+      "tier": 2,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 2."
+    },
+    {
+      "iata": "CGK",
+      "tier": 2,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 2."
+    },
+    {
+      "iata": "DEN",
+      "tier": 2,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 2."
+    },
+    {
+      "iata": "GRU",
+      "tier": 2,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 2."
+    },
+    {
+      "iata": "HKG",
+      "tier": 2,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 2."
+    },
+    {
+      "iata": "HND",
+      "tier": 2,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 2."
+    },
+    {
+      "iata": "IAH",
+      "tier": 2,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 2."
+    },
+    {
+      "iata": "JNB",
+      "tier": 2,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 2."
+    },
+    {
+      "iata": "KUL",
+      "tier": 2,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 2."
+    },
+    {
+      "iata": "MAD",
+      "tier": 2,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 2."
+    },
+    {
+      "iata": "MEX",
+      "tier": 2,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 2."
+    },
+    {
+      "iata": "MIA",
+      "tier": 2,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 2."
+    },
+    {
+      "iata": "MNL",
+      "tier": 2,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 2."
+    },
+    {
+      "iata": "MUC",
+      "tier": 2,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 2."
+    },
+    {
+      "iata": "NBO",
+      "tier": 2,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 2."
+    },
+    {
+      "iata": "SEA",
+      "tier": 2,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 2."
+    },
+    {
+      "iata": "TPE",
+      "tier": 2,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 2."
+    },
+    {
+      "iata": "YVR",
+      "tier": 2,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 2."
+    },
+    {
+      "iata": "ZRH",
+      "tier": 2,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 2."
+    },
+    {
+      "iata": "ARN",
+      "tier": 3,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 3."
+    },
+    {
+      "iata": "ATH",
+      "tier": 3,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 3."
+    },
+    {
+      "iata": "BCN",
+      "tier": 3,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 3."
+    },
+    {
+      "iata": "BLR",
+      "tier": 3,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 3."
+    },
+    {
+      "iata": "BOM",
+      "tier": 3,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 3."
+    },
+    {
+      "iata": "BOS",
+      "tier": 3,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 3."
+    },
+    {
+      "iata": "BRU",
+      "tier": 3,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 3."
+    },
+    {
+      "iata": "CPH",
+      "tier": 3,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 3."
+    },
+    {
+      "iata": "DUB",
+      "tier": 3,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 3."
+    },
+    {
+      "iata": "EWR",
+      "tier": 3,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 3."
+    },
+    {
+      "iata": "FCO",
+      "tier": 3,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 3."
+    },
+    {
+      "iata": "GIG",
+      "tier": 3,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 3."
+    },
+    {
+      "iata": "HEL",
+      "tier": 3,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 3."
+    },
+    {
+      "iata": "KIX",
+      "tier": 3,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 3."
+    },
+    {
+      "iata": "LIS",
+      "tier": 3,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 3."
+    },
+    {
+      "iata": "MAN",
+      "tier": 3,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 3."
+    },
+    {
+      "iata": "MEL",
+      "tier": 3,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 3."
+    },
+    {
+      "iata": "MSP",
+      "tier": 3,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 3."
+    },
+    {
+      "iata": "OSL",
+      "tier": 3,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 3."
+    },
+    {
+      "iata": "PTY",
+      "tier": 3,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 3."
+    },
+    {
+      "iata": "SCL",
+      "tier": 3,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 3."
+    },
+    {
+      "iata": "SYD",
+      "tier": 3,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 3."
+    },
+    {
+      "iata": "VIE",
+      "tier": 3,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 3."
+    },
+    {
+      "iata": "WAW",
+      "tier": 3,
+      "source_note": "Consulted Wikipedia List of hub airports and local Cheapy route coverage needs; assigned Cheapy local tier 3."
+    }
   ]
 }

@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import builtins
 from datetime import datetime
+import os
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -11,6 +13,7 @@ from cheapy.models import ErrorCode, ProviderStatusCode
 from cheapy.providers.base import (
     ProviderExactOneWayRequest,
     ProviderExactRoundTripRequest,
+    ProviderResult,
 )
 from cheapy.providers.google_fli.adapter import (
     GoogleFliAdapter,
@@ -18,6 +21,7 @@ from cheapy.providers.google_fli.adapter import (
     build_search_filters,
 )
 from cheapy.providers.google_fli.provider import GoogleFliProvider
+from cheapy.providers.google_fli import provider as google_provider
 
 
 def _request() -> ProviderExactOneWayRequest:
@@ -206,6 +210,164 @@ def test_google_fli_provider_returns_success_result() -> None:
     assert result.errors == []
     assert [offer.provider for offer in result.offers] == ["google_fli"]
     assert result.duration_ms >= 0
+
+
+def test_google_fli_default_provider_delegates_to_process_helper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_if_constructed() -> object:
+        raise AssertionError("default live adapter must be isolated in child process")
+
+    calls: list[dict[str, object]] = []
+
+    def fake_process_helper(
+        request: ProviderExactOneWayRequest,
+        *,
+        capability: str,
+        search_method_name: str,
+        timeout_seconds: float,
+    ) -> ProviderResult:
+        calls.append(
+            {
+                "request": request,
+                "capability": capability,
+                "search_method_name": search_method_name,
+                "timeout_seconds": timeout_seconds,
+            }
+        )
+        return ProviderResult(
+            provider_name="google_fli",
+            capability=capability,
+            status=ProviderStatusCode.SUCCESS,
+            offers=[],
+            warnings=[],
+            errors=[],
+            duration_ms=1,
+            retryable=False,
+        )
+
+    monkeypatch.setattr(
+        "cheapy.providers.google_fli.provider.GoogleFliAdapter",
+        fail_if_constructed,
+    )
+    monkeypatch.setattr(
+        google_provider,
+        "_run_default_adapter_search",
+        fake_process_helper,
+        raising=False,
+    )
+    provider = GoogleFliProvider(timeout_seconds=0.25)
+
+    result = asyncio.run(provider.search_exact_one_way(_request()))
+
+    assert calls == [
+        {
+            "request": _request(),
+            "capability": "exact_one_way",
+            "search_method_name": "search_exact_one_way",
+            "timeout_seconds": 0.25,
+        }
+    ]
+    assert result.status == ProviderStatusCode.SUCCESS
+
+
+def test_default_adapter_process_cleanup_stays_inside_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeQueue:
+        pass
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.join_timeouts: list[float | None] = []
+            self.terminated = False
+            self.killed = False
+
+        def start(self) -> None:
+            pass
+
+        def join(self, timeout: float | None = None) -> None:
+            self.join_timeouts.append(timeout)
+
+        def is_alive(self) -> bool:
+            return True
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def kill(self) -> None:
+            self.killed = True
+
+    class FakeContext:
+        def __init__(self, process: FakeProcess) -> None:
+            self.process = process
+
+        def Queue(self, maxsize: int) -> FakeQueue:
+            assert maxsize == 1
+            return FakeQueue()
+
+        def Process(self, **kwargs: object) -> FakeProcess:
+            assert kwargs["target"] is google_provider._default_adapter_search_worker
+            return self.process
+
+    process = FakeProcess()
+    monkeypatch.setattr(
+        google_provider.multiprocessing,
+        "get_context",
+        lambda: FakeContext(process),
+    )
+
+    with pytest.raises(TimeoutError):
+        google_provider._run_default_adapter_search(
+            _request(),
+            capability="exact_one_way",
+            search_method_name="search_exact_one_way",
+            timeout_seconds=0.1,
+        )
+
+    assert process.terminated is True
+    assert process.killed is True
+    assert sum(timeout or 0 for timeout in process.join_timeouts) <= 0.1
+
+
+def test_default_adapter_worker_suppresses_child_stdio(
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    class FakeQueue:
+        def __init__(self) -> None:
+            self.payloads: list[dict[str, object]] = []
+
+        def put(self, payload: dict[str, object]) -> None:
+            self.payloads.append(payload)
+
+    class NoisyAdapter:
+        configured_currency = "USD"
+
+        def search_exact_one_way(
+            self,
+            request: ProviderExactOneWayRequest,
+        ) -> list[object]:
+            print("child stdout secret")
+            print("child stderr secret", file=sys.stderr)
+            os.write(1, b"child fd stdout secret\n")
+            os.write(2, b"child fd stderr secret\n")
+            return []
+
+    monkeypatch.setattr(google_provider, "GoogleFliAdapter", NoisyAdapter)
+    queue = FakeQueue()
+
+    google_provider._default_adapter_search_worker(
+        queue,
+        _request(),
+        "exact_one_way",
+        "search_exact_one_way",
+    )
+
+    captured = capfd.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+    assert queue.payloads[0]["kind"] == "result"
 
 
 def test_google_fli_provider_returns_round_trip_success_result() -> None:

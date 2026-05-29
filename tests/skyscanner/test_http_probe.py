@@ -7,6 +7,8 @@ import sys
 
 import pytest
 
+from cheapy.providers.skyscanner import adapter as skyscanner_adapter
+
 
 def load_probe():
     root = Path(__file__).resolve().parents[2]
@@ -32,7 +34,7 @@ def test_normalize_iata_rejects_invalid_values(value: str) -> None:
     with pytest.raises(probe.ProbeError) as exc_info:
         probe.normalize_iata(value)
 
-    assert exc_info.value.code == "invalid_argument"
+    assert exc_info.value.failure_type == "invalid_argument"
 
 
 def test_date_parts_validates_and_formats_date() -> None:
@@ -49,15 +51,15 @@ def test_date_parts_rejects_invalid_dates(value: str) -> None:
     with pytest.raises(probe.ProbeError) as exc_info:
         probe.date_parts(value)
 
-    assert exc_info.value.code == "invalid_argument"
+    assert exc_info.value.failure_type == "invalid_argument"
 
 
 def test_require_cookie_rejects_missing_cookie() -> None:
     with pytest.raises(probe.ProbeError) as exc_info:
         probe.require_cookie({"CHEAPY_SKYSCANNER_COOKIE": ""})
 
-    assert exc_info.value.code == "missing_cookie"
-    assert "cookie" in exc_info.value.message.lower()
+    assert exc_info.value.failure_type == "missing_cookie"
+    assert "cookie" in exc_info.value.message_en.lower()
 
 
 def test_default_config_from_env_uses_safe_defaults() -> None:
@@ -243,7 +245,9 @@ def test_curl_client_post_uses_temp_config_without_cookie_in_argv() -> None:
     assert isinstance(args, list)
     assert all("secret-cookie" not in arg for arg in args)
     assert all("body-token" not in arg for arg in args)
+    assert all("https://example.test/search" not in arg for arg in args)
     assert "--data-binary" in args
+    assert 'url = "https://example.test/search"' in call["config"]
     assert '"session=secret-cookie"' in call["config"]
     assert '"accept: application/json"' in call["config"]
     assert '"x-test: value"' in call["config"]
@@ -254,7 +258,7 @@ def test_curl_client_post_uses_temp_config_without_cookie_in_argv() -> None:
 
 
 def test_curl_client_get_encodes_params_and_omits_body() -> None:
-    calls: list[list[str]] = []
+    calls: list[dict[str, object]] = []
 
     def fake_run(
         args: list[str],
@@ -264,7 +268,8 @@ def test_curl_client_get_encodes_params_and_omits_body() -> None:
         timeout: float,
         check: bool,
     ) -> subprocess.CompletedProcess[str]:
-        calls.append(args)
+        config_path = Path(args[args.index("--config") + 1])
+        calls.append({"args": args, "config": config_path.read_text()})
         return subprocess.CompletedProcess(args, 0, stdout='[]\n200', stderr="")
 
     client = probe.CurlClient(runner=fake_run)
@@ -278,10 +283,17 @@ def test_curl_client_get_encodes_params_and_omits_body() -> None:
 
     assert response.status_code == 200
     assert response.json() == []
-    args = calls[0]
+    call = calls[0]
+    args = call["args"]
+    assert isinstance(args, list)
     assert "--data-binary" not in args
-    assert args[-1] == "https://example.test/autosuggest?q=SIN%2FSGN&enabled=true"
     assert all("secret-cookie" not in arg for arg in args)
+    assert all("SIN%2FSGN" not in arg for arg in args)
+    assert all("autosuggest" not in arg for arg in args)
+    assert (
+        'url = "https://example.test/autosuggest?q=SIN%2FSGN&enabled=true"'
+        in call["config"]
+    )
 
 
 def test_curl_client_transport_error_is_sanitized() -> None:
@@ -455,7 +467,7 @@ def test_get_entity_id_maps_no_match_to_entity_not_found() -> None:
     with pytest.raises(probe.ProbeError) as exc_info:
         probe.get_entity_id("HAN", config=config(), client=client)
 
-    assert exc_info.value.code == "entity_not_found"
+    assert exc_info.value.failure_type == "entity_not_found"
 
 
 @pytest.mark.parametrize("payload", [{}, {"places": {}}, {"Places": "not a list"}])
@@ -465,7 +477,7 @@ def test_get_entity_id_maps_missing_or_non_list_places_to_parse_error(payload: o
     with pytest.raises(probe.ProbeError) as exc_info:
         probe.get_entity_id("HAN", config=config(), client=client)
 
-    assert exc_info.value.code == "autosuggest_parse_error"
+    assert exc_info.value.failure_type == "parse_error"
 
 
 def test_get_entity_id_maps_ambiguous_airports() -> None:
@@ -483,9 +495,9 @@ def test_get_entity_id_maps_ambiguous_airports() -> None:
     with pytest.raises(probe.ProbeError) as exc_info:
         probe.get_entity_id("HAN", config=config(), client=client)
 
-    assert exc_info.value.code == "entity_ambiguous"
-    assert "Hanoi A" in exc_info.value.message
-    assert "secret" not in exc_info.value.message
+    assert exc_info.value.failure_type == "entity_ambiguous"
+    assert "HAN" in exc_info.value.message_en
+    assert "secret" not in exc_info.value.message_en
 
 
 def test_get_entity_id_maps_http_error() -> None:
@@ -494,7 +506,7 @@ def test_get_entity_id_maps_http_error() -> None:
     with pytest.raises(probe.ProbeError) as exc_info:
         probe.get_entity_id("HAN", config=config(), client=client)
 
-    assert exc_info.value.code == "autosuggest_http_error"
+    assert exc_info.value.failure_type == "blocked"
 
 
 def test_get_entity_id_maps_invalid_json() -> None:
@@ -503,8 +515,8 @@ def test_get_entity_id_maps_invalid_json() -> None:
     with pytest.raises(probe.ProbeError) as exc_info:
         probe.get_entity_id("HAN", config=config(), client=client)
 
-    assert exc_info.value.code == "autosuggest_parse_error"
-    assert "raw secret body" not in exc_info.value.message
+    assert exc_info.value.failure_type == "parse_error"
+    assert "raw secret body" not in exc_info.value.message_en
     assert exc_info.value.__cause__ is None
 
 
@@ -514,8 +526,8 @@ def test_get_entity_id_maps_transport_error() -> None:
     with pytest.raises(probe.ProbeError) as exc_info:
         probe.get_entity_id("HAN", config=config(), client=client)
 
-    assert exc_info.value.code == "autosuggest_transport_error"
-    assert "transport token secret" not in exc_info.value.message
+    assert exc_info.value.failure_type == "transport_error"
+    assert "transport token secret" not in exc_info.value.message_en
     assert exc_info.value.__cause__ is None
 
 
@@ -541,6 +553,7 @@ def test_build_search_body_maps_one_way_without_place_of_stay() -> None:
         destination=entity("SGN", "95673379"),
         departure_date="2026-06-11",
         return_date=None,
+        adults=1,
     )
 
     assert body["cabinClass"] == "ECONOMY"
@@ -557,6 +570,7 @@ def test_build_search_body_maps_round_trip_with_place_of_stay() -> None:
         destination=entity("SGN", "95673379", place_of_stay_entity_id="27546329"),
         departure_date="2026-06-11",
         return_date="2026-06-16",
+        adults=1,
     )
 
     assert len(body["legs"]) == 2
@@ -578,9 +592,10 @@ def test_build_search_body_rejects_return_before_departure() -> None:
             destination=entity("SGN", "95673379"),
             departure_date="2026-06-11",
             return_date="2026-06-10",
+            adults=1,
         )
 
-    assert exc_info.value.code == "invalid_argument"
+    assert exc_info.value.failure_type == "invalid_argument"
 
 
 def test_build_search_body_maps_invalid_return_date_to_probe_error() -> None:
@@ -590,14 +605,19 @@ def test_build_search_body_maps_invalid_return_date_to_probe_error() -> None:
             destination=entity("SGN", "95673379"),
             departure_date="2026-06-11",
             return_date="2026-02-30",
+            adults=1,
         )
 
-    assert exc_info.value.code == "invalid_argument"
+    assert exc_info.value.failure_type == "invalid_argument"
 
 
 def test_search_posts_minimal_headers_and_uuid_view_id(monkeypatch: pytest.MonkeyPatch) -> None:
     client = FakeClient(FakeResponse(payload={"context": {"status": "complete"}, "itineraries": {"results": []}}))
-    monkeypatch.setattr(probe.uuid, "uuid4", lambda: "11111111-2222-4333-8444-555555555555")
+    monkeypatch.setattr(
+        skyscanner_adapter.uuid,
+        "uuid4",
+        lambda: "11111111-2222-4333-8444-555555555555",
+    )
 
     with pytest.raises(probe.ProbeError) as exc_info:
         probe.fetch_flights(
@@ -609,7 +629,7 @@ def test_search_posts_minimal_headers_and_uuid_view_id(monkeypatch: pytest.Monke
             client=client,
         )
 
-    assert exc_info.value.code == "no_usable_results"
+    assert exc_info.value.failure_type == "no_usable_results"
     post = client.post_calls[0]
     assert post["url"] == "https://www.skyscanner.com.sg/g/radar/api/v2/web-unified-search/"
     assert post["headers"] == {
@@ -646,7 +666,7 @@ def test_fetch_flights_maps_search_http_error() -> None:
             client=client,
         )
 
-    assert exc_info.value.code == "search_http_error"
+    assert exc_info.value.failure_type == "rate_limited"
 
 
 def test_fetch_flights_maps_search_invalid_json() -> None:
@@ -662,8 +682,8 @@ def test_fetch_flights_maps_search_invalid_json() -> None:
             client=client,
         )
 
-    assert exc_info.value.code == "search_parse_error"
-    assert "jwt secret body" not in exc_info.value.message
+    assert exc_info.value.failure_type == "parse_error"
+    assert "jwt secret body" not in exc_info.value.message_en
     assert exc_info.value.__cause__ is None
 
 
@@ -687,8 +707,8 @@ def test_fetch_flights_maps_incomplete_status() -> None:
             client=client,
         )
 
-    assert exc_info.value.code == "search_incomplete"
-    assert "token-secret-body" not in exc_info.value.message
+    assert exc_info.value.failure_type == "timeout"
+    assert "token-secret-body" not in exc_info.value.message_en
 
 
 def test_fetch_flights_polls_incomplete_search_session() -> None:
@@ -742,7 +762,7 @@ def test_fetch_flights_polls_incomplete_search_session() -> None:
 
 
 def test_fetch_flights_retries_until_polled_search_completes(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(probe, "_sleep_between_search_polls", lambda: None, raising=False)
+    monkeypatch.setattr(skyscanner_adapter.time, "sleep", lambda _: None)
 
     class SlowPollingClient:
         def __init__(self) -> None:
@@ -849,7 +869,7 @@ def test_fetch_flights_maps_missing_results_path() -> None:
             client=client,
         )
 
-    assert exc_info.value.code == "search_parse_error"
+    assert exc_info.value.failure_type == "parse_error"
 
 
 def itinerary(
@@ -1142,7 +1162,7 @@ def test_print_results_rejects_non_positive_limit() -> None:
     with pytest.raises(probe.ProbeError) as exc_info:
         probe.print_results(results, limit=0)
 
-    assert exc_info.value.code == "invalid_argument"
+    assert exc_info.value.failure_type == "invalid_argument"
 
 
 def test_main_prints_safe_error_for_missing_cookie(
@@ -1234,7 +1254,7 @@ def test_run_probe_rejects_non_positive_limit_before_network_calls() -> None:
             client=client,
         )
 
-    assert exc_info.value.code == "invalid_argument"
+    assert exc_info.value.failure_type == "invalid_argument"
     assert client.calls == []
 
 
@@ -1335,4 +1355,4 @@ def test_fetch_flights_maps_no_usable_results() -> None:
             client=client,
         )
 
-    assert exc_info.value.code == "no_usable_results"
+    assert exc_info.value.failure_type == "no_usable_results"

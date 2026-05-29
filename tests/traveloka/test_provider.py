@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 from decimal import Decimal
+import os
+import sys
 from time import sleep
 from typing import Any
 
@@ -11,8 +13,10 @@ from cheapy.models import ErrorCode, ProviderStatusCode
 from cheapy.providers.base import (
     ProviderExactOneWayRequest,
     ProviderExactRoundTripRequest,
+    ProviderResult,
 )
 from cheapy.providers.traveloka import provider as traveloka_provider
+from cheapy.providers.traveloka.adapter import TravelokaAdapter
 from cheapy.providers.traveloka.errors import TravelokaProviderError
 from cheapy.providers.traveloka.provider import TravelokaProvider
 from cheapy.providers.traveloka.results import (
@@ -172,20 +176,194 @@ def _selected_round_trip_result(
     )
 
 
-def test_traveloka_provider_builds_default_adapter_with_provider_timeout(
+def test_traveloka_default_provider_delegates_to_process_helper(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    captured_timeout: list[float] = []
+    def fail_if_constructed(*, timeout_seconds: float) -> object:
+        raise AssertionError("default live adapter must be isolated in child process")
 
-    class FakeDefaultAdapter:
+    calls: list[dict[str, object]] = []
+
+    def fake_process_helper(
+        request: ProviderExactOneWayRequest,
+        *,
+        capability: str,
+        search_method_name: str,
+        timeout_seconds: float,
+    ) -> ProviderResult:
+        calls.append(
+            {
+                "request": request,
+                "capability": capability,
+                "search_method_name": search_method_name,
+                "timeout_seconds": timeout_seconds,
+            }
+        )
+        return ProviderResult(
+            provider_name="traveloka",
+            capability=capability,
+            status=ProviderStatusCode.SUCCESS,
+            offers=[],
+            warnings=[],
+            errors=[],
+            duration_ms=1,
+            retryable=False,
+        )
+
+    monkeypatch.setattr(traveloka_provider, "TravelokaAdapter", fail_if_constructed)
+    monkeypatch.setattr(
+        traveloka_provider,
+        "_run_default_adapter_search",
+        fake_process_helper,
+        raising=False,
+    )
+    provider = TravelokaProvider(timeout_seconds=12.5)
+
+    result = asyncio.run(provider.search_exact_one_way(_request()))
+
+    assert calls == [
+        {
+            "request": _request(),
+            "capability": "exact_one_way",
+            "search_method_name": "search_exact_one_way",
+            "timeout_seconds": 12.5,
+        }
+    ]
+    assert result.status == ProviderStatusCode.SUCCESS
+
+
+def test_default_adapter_process_cleanup_stays_inside_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeQueue:
+        pass
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.join_timeouts: list[float | None] = []
+            self.terminated = False
+            self.killed = False
+
+        def start(self) -> None:
+            pass
+
+        def join(self, timeout: float | None = None) -> None:
+            self.join_timeouts.append(timeout)
+
+        def is_alive(self) -> bool:
+            return True
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def kill(self) -> None:
+            self.killed = True
+
+    class FakeContext:
+        def __init__(self, process: FakeProcess) -> None:
+            self.process = process
+
+        def Queue(self, maxsize: int) -> FakeQueue:
+            assert maxsize == 1
+            return FakeQueue()
+
+        def Process(self, **kwargs: object) -> FakeProcess:
+            assert kwargs["target"] is traveloka_provider._default_adapter_search_worker
+            return self.process
+
+    process = FakeProcess()
+    monkeypatch.setattr(
+        traveloka_provider.multiprocessing,
+        "get_context",
+        lambda: FakeContext(process),
+    )
+
+    with pytest.raises(TimeoutError):
+        traveloka_provider._run_default_adapter_search(
+            _request(),
+            capability="exact_one_way",
+            search_method_name="search_exact_one_way",
+            timeout_seconds=0.1,
+        )
+
+    assert process.terminated is True
+    assert process.killed is True
+    assert sum(timeout or 0 for timeout in process.join_timeouts) <= 0.1
+
+
+def test_default_provider_process_timeout_maps_to_retryable_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def raise_timeout(
+        request: ProviderExactOneWayRequest,
+        *,
+        capability: str,
+        search_method_name: str,
+        timeout_seconds: float,
+    ) -> ProviderResult:
+        raise TimeoutError("secret timeout details")
+
+    monkeypatch.setattr(
+        traveloka_provider,
+        "_run_default_adapter_search",
+        raise_timeout,
+    )
+    provider = TravelokaProvider(timeout_seconds=0.1)
+
+    result = asyncio.run(provider.search_exact_one_way(_request()))
+
+    assert result.status == ProviderStatusCode.FAILED
+    assert result.retryable is True
+    assert result.errors[0].code == ErrorCode.PROVIDER_TIMEOUT
+    assert result.errors[0].retryable is True
+    assert result.errors[0].details == {
+        "provider": "traveloka",
+        "capability": "exact_one_way",
+        "failure_type": "timeout",
+    }
+    assert "secret timeout details" not in result.model_dump_json()
+
+
+def test_default_adapter_worker_suppresses_child_stdio(
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    class FakeQueue:
+        def __init__(self) -> None:
+            self.payloads: list[dict[str, object]] = []
+
+        def put(self, payload: dict[str, object]) -> None:
+            self.payloads.append(payload)
+
+    class NoisyAdapter:
         def __init__(self, *, timeout_seconds: float) -> None:
-            captured_timeout.append(timeout_seconds)
+            self.timeout_seconds = timeout_seconds
 
-    monkeypatch.setattr(traveloka_provider, "TravelokaAdapter", FakeDefaultAdapter)
+        def search_exact_one_way(
+            self,
+            request: ProviderExactOneWayRequest,
+        ) -> TravelokaCaptureResult:
+            print("child stdout secret")
+            print("child stderr secret", file=sys.stderr)
+            os.write(1, b"child fd stdout secret\n")
+            os.write(2, b"child fd stderr secret\n")
+            return _capture(_payload())
 
-    TravelokaProvider(timeout_seconds=12.5)
+    monkeypatch.setattr(traveloka_provider, "TravelokaAdapter", NoisyAdapter)
+    queue = FakeQueue()
 
-    assert captured_timeout == [12.5]
+    traveloka_provider._default_adapter_search_worker(
+        queue,
+        _request(),
+        "exact_one_way",
+        "search_exact_one_way",
+        1.0,
+    )
+
+    captured = capfd.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+    assert queue.payloads[0]["kind"] == "result"
 
 
 def test_traveloka_provider_returns_success_result() -> None:
@@ -330,6 +508,68 @@ def test_traveloka_provider_maps_unsupported_response_failure() -> None:
         "capability": "exact_round_trip",
         "failure_type": "unsupported_response",
     }
+
+
+def test_with_timeout_seconds_preserves_traveloka_adapter_replay_dependencies() -> None:
+    def capture_network(**kwargs: object) -> object:
+        raise AssertionError("not called")
+
+    replay_client = object()
+    launch_browser = lambda **kwargs: object()
+    adapter = TravelokaAdapter(
+        timeout_seconds=20,
+        poll_interval_seconds=0.75,
+        launch_browser=launch_browser,
+        capture_network=capture_network,
+        replay_client=replay_client,
+    )
+    provider = TravelokaProvider(adapter=adapter, timeout_seconds=20)
+
+    cloned = provider.with_timeout_seconds(3.5)
+
+    cloned_adapter = cloned._adapter
+    assert isinstance(cloned_adapter, TravelokaAdapter)
+    assert cloned_adapter is not adapter
+    assert cloned_adapter._timeout_seconds == 3.5
+    assert cloned_adapter._poll_interval_seconds == 0.75
+    assert cloned_adapter._launch_browser is launch_browser
+    assert cloned_adapter._capture_network is capture_network
+    assert cloned_adapter._replay_client is replay_client
+
+
+def test_traveloka_provider_maps_replay_failure_without_secret_leaks() -> None:
+    class SecretAdapter:
+        configured_currency = "USD"
+
+        def search_exact_one_way(
+            self, request: ProviderExactOneWayRequest
+        ) -> TravelokaCaptureResult:
+            raise TravelokaProviderError(
+                failure_type="blocked",
+                message_en=(
+                    "Traveloka replay failed with datadome secret-cookie, "
+                    "https://www.traveloka.com/api/v2/flight/search/poll?secret=1"
+                ),
+                error_code=ErrorCode.PROVIDER_BLOCKED,
+                retryable=False,
+                http_status_code=403,
+            )
+
+    provider = TravelokaProvider(adapter=SecretAdapter(), timeout_seconds=1)
+
+    result = asyncio.run(provider.search_exact_one_way(_request()))
+
+    assert result.status == ProviderStatusCode.FAILED
+    assert result.errors[0].details == {
+        "provider": "traveloka",
+        "capability": "exact_one_way",
+        "failure_type": "blocked",
+        "http_status_code": 403,
+    }
+    rendered = result.model_dump_json().lower()
+    assert "secret-cookie" not in rendered
+    assert "datadome" not in rendered
+    assert "traveloka.com/api" not in rendered
 
 
 def test_traveloka_provider_does_not_wrap_adapter_with_equal_duration_timeout() -> None:
