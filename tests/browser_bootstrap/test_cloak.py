@@ -274,6 +274,67 @@ def test_capture_waits_for_late_request_response_before_reading_cookies() -> Non
     assert capture.exchanges[0].response.payload == {"id": "late"}
 
 
+def test_capture_waits_for_quiet_period_after_first_response() -> None:
+    initial_request = FakeRequest(
+        url="https://example.com/api/search/initial",
+        method="POST",
+        post_data="initial-body",
+    )
+    poll_request = FakeRequest(
+        url="https://example.com/api/search/poll",
+        method="POST",
+        post_data="poll-body",
+    )
+    page = FakePage(
+        events=[
+            initial_request,
+            FakeResponse(
+                url="https://example.com/api/search/initial",
+                status=200,
+                payload={"id": "initial"},
+                request=initial_request,
+            ),
+        ],
+        wait_events=[
+            [
+                poll_request,
+                FakeResponse(
+                    url="https://example.com/api/search/poll",
+                    status=200,
+                    payload={"id": "poll"},
+                    request=poll_request,
+                ),
+            ],
+        ],
+        user_agent="Secret-UA/2.76",
+    )
+    context = FakeContext(
+        page,
+        cookies=[{"name": "session", "value": "secret-cookie"}],
+    )
+    browser = FakeBrowser(context)
+
+    capture = cloak.capture_first_party_requests(
+        "https://example.com/search",
+        monotonic() + 5,
+        request_predicate=lambda captured: captured.method == "POST",
+        response_predicate=lambda captured: captured.status_code == 200,
+        launch_browser=launcher_for(browser),
+    )
+
+    assert len(page.wait_calls) >= 2
+    assert [exchange.request.post_data for exchange in capture.exchanges] == [
+        "initial-body",
+        "poll-body",
+    ]
+    response_payloads = [
+        exchange.response.payload
+        for exchange in capture.exchanges
+        if exchange.response is not None
+    ]
+    assert response_payloads == [{"id": "initial"}, {"id": "poll"}]
+
+
 def test_capture_with_response_predicate_keeps_unpaired_exchange_when_one_response_matches() -> None:
     unpaired_request = FakeRequest(
         url="https://example.com/api/search",
